@@ -14,8 +14,9 @@ const state = {
 
 // Configuration
 const config = {
-    // Using system7.app subdomains for AppleTalk networking
-    baseUrl: 'system7.app',
+    // Using infinitemac.org for embedding
+    // Note: For true multiplayer networking, custom DNS setup is required
+    baseUrl: 'infinitemac.org',
     embedPath: '/embed',
     systemVersion: 'System%207.5.3',
     defaultSettings: {
@@ -107,7 +108,7 @@ function loadGame(gameId) {
 
     // Update UI
     document.getElementById('currentGameId').textContent = gameId;
-    document.getElementById('networkZone').textContent = `${gameId}.${config.baseUrl}`;
+    document.getElementById('networkZone').textContent = gameId;
     document.getElementById('sessionStart').textContent = new Date().toLocaleTimeString();
 
     // Switch views
@@ -131,21 +132,27 @@ function loadGame(gameId) {
     }, 15000);
 }
 
-// Build the Infinite Mac embed URL with subdomain
+// Build the Infinite Mac embed URL
 function buildEmbedUrl(gameId) {
-    // Use subdomain for AppleTalk zone
-    const subdomain = gameId;
     const params = new URLSearchParams({
         disk: config.systemVersion,
         ...config.defaultSettings
     });
 
-    // Note: In a real deployment, this would be:
-    // return `https://${subdomain}.${config.baseUrl}${config.embedPath}?${params}`;
+    // Try using subdomain-based networking with system7.app
+    // If this doesn't work, falls back to main infinitemac.org
+    const useSubdomain = false; // Set to true to enable subdomain networking
 
-    // For development/demo, we'll use the main infinitemac.org with a note
-    // that this needs to be deployed to use real subdomain networking
-    return `https://${subdomain}.${config.baseUrl}${config.embedPath}?${params}`;
+    if (useSubdomain) {
+        // Use subdomain for AppleTalk networking zone
+        // This requires DNS to be configured for *.system7.app
+        const subdomain = gameId;
+        return `https://${subdomain}.system7.app${config.embedPath}?${params}`;
+    } else {
+        // Use main infinitemac.org (no automatic networking, but should load)
+        // Players can still manually set up networking within the emulator
+        return `https://${config.baseUrl}${config.embedPath}?${params}`;
+    }
 }
 
 // Leave current game
