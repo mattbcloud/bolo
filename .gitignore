@@ -1,0 +1,27 @@
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Dependencies (if adding npm later)
+node_modules/
+package-lock.json
+
+# Build outputs (if adding build process later)
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+
+# Temporary files
+tmp/
+temp/
