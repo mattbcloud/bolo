@@ -18,10 +18,11 @@ const config = {
     // Note: For true multiplayer networking, custom DNS setup is required
     baseUrl: 'infinitemac.org',
     embedPath: '/embed',
-    systemVersion: 'System%207.5.3',
+    systemVersion: 'System 7.5.3',
+    machine: 'Quadra 650',
     defaultSettings: {
-        infinite_hd: 'true',
-        screen_update_messages: 'false'
+        infinite_hd: true,
+        screen_update_messages: false
     }
 };
 
@@ -136,6 +137,7 @@ function loadGame(gameId) {
 function buildEmbedUrl(gameId) {
     const params = new URLSearchParams({
         disk: config.systemVersion,
+        machine: config.machine,
         ...config.defaultSettings
     });
 
