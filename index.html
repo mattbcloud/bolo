@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bolo - Multiplayer Tank Battle</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            overflow: hidden;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #gameCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #2a2a2a;
+            cursor: crosshair;
+        }
+        
+        #lobby {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(20, 20, 20, 0.95);
+            border: 2px solid #4a9eff;
+            border-radius: 10px;
+            padding: 30px;
+            min-width: 400px;
+            box-shadow: 0 0 30px rgba(74, 158, 255, 0.3);
+            z-index: 1000;
+        }
+        
+        #lobby h1 {
+            text-align: center;
+            color: #4a9eff;
+            margin-bottom: 20px;
+            text-shadow: 0 0 10px rgba(74, 158, 255, 0.5);
+        }
+        
+        .lobby-section {
+            margin: 20px 0;
+        }
+        
+        .lobby-section label {
+            display: block;
+            margin-bottom: 5px;
+            color: #aaa;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .lobby-section input,
+        .lobby-section select {
+            width: 100%;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid #4a9eff;
+            border-radius: 5px;
+            color: #fff;
+            font-size: 14px;
+        }
+        
+        .lobby-section input:focus,
+        .lobby-section select:focus {
+            outline: none;
+            border-color: #6bb0ff;
+            box-shadow: 0 0 5px rgba(74, 158, 255, 0.3);
+        }
+        
+        .lobby-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .btn {
+            flex: 1;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #4a9eff, #2e7dd4);
+            border: none;
+            border-radius: 5px;
+            color: #fff;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .btn:hover {
+            background: linear-gradient(135deg, #6bb0ff, #4a9eff);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(74, 158, 255, 0.3);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .btn-secondary {
+            background: linear-gradient(135deg, #666, #444);
+        }
+        
+        .btn-secondary:hover {
+            background: linear-gradient(135deg, #777, #555);
+        }
+        
+        #gameList {
+            max-height: 150px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            border-radius: 5px;
+            padding: 5px;
+            background: rgba(0, 0, 0, 0.3);
+        }
+        
+        .game-item {
+            padding: 8px;
+            margin: 2px 0;
+            background: rgba(74, 158, 255, 0.1);
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .game-item:hover {
+            background: rgba(74, 158, 255, 0.2);
+        }
+        
+        .game-item.selected {
+            background: rgba(74, 158, 255, 0.3);
+            border: 1px solid #4a9eff;
+        }
+        
+        #hud {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 10px;
+            border: 1px solid #4a9eff;
+        }
+        
+        .hud-item {
+            display: inline-block;
+            margin: 0 15px;
+            font-size: 14px;
+        }
+        
+        .hud-label {
+            color: #aaa;
+            margin-right: 5px;
+        }
+        
+        .hud-value {
+            color: #4a9eff;
+            font-weight: bold;
+        }
+        
+        .health-bar {
+            display: inline-block;
+            width: 100px;
+            height: 10px;
+            background: rgba(255, 0, 0, 0.3);
+            border: 1px solid #666;
+            border-radius: 5px;
+            overflow: hidden;
+            vertical-align: middle;
+            margin-left: 5px;
+        }
+        
+        .health-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff0000, #ffaa00);
+            transition: width 0.3s;
+        }
+        
+        #chat {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            width: 300px;
+            display: none;
+        }
+        
+        #chatMessages {
+            height: 150px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid #333;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .chat-message {
+            margin: 5px 0;
+            font-size: 12px;
+        }
+        
+        .chat-player {
+            color: #4a9eff;
+            font-weight: bold;
+        }
+        
+        #chatInput {
+            width: 100%;
+            padding: 8px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid #333;
+            border-radius: 5px;
+            color: #fff;
+        }
+        
+        #minimap {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 200px;
+            height: 200px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 2px solid #4a9eff;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        #minimapCanvas {
+            width: 100%;
+            height: 100%;
+            border-radius: 3px;
+        }
+        
+        #connectionStatus {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            padding: 5px 10px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 5px;
+            font-size: 12px;
+            display: none;
+        }
+        
+        .status-connected {
+            color: #4f4;
+        }
+        
+        .status-connecting {
+            color: #ff4;
+        }
+        
+        .status-disconnected {
+            color: #f44;
+        }
+        
+        #loadingScreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #1a1a1a;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+        
+        .loader {
+            border: 4px solid rgba(74, 158, 255, 0.1);
+            border-top: 4px solid #4a9eff;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .loading-text {
+            margin-top: 20px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        
+        <!-- Loading Screen -->
+        <div id="loadingScreen">
+            <div class="loader"></div>
+            <div class="loading-text">Loading Bolo...</div>
+        </div>
+        
+        <!-- Lobby -->
+        <div id="lobby">
+            <h1>BOLO</h1>
+            <div class="lobby-section">
+                <label>Player Name</label>
+                <input type="text" id="playerName" placeholder="Enter your name" maxlength="20">
+            </div>
+            
+            <div class="lobby-section">
+                <label>Server</label>
+                <input type="text" id="serverUrl" value="ws://localhost:3000" placeholder="ws://server:port">
+            </div>
+            
+            <div class="lobby-section">
+                <label>Available Games</label>
+                <div id="gameList">
+                    <div class="game-item">Searching for games...</div>
+                </div>
+            </div>
+            
+            <div class="lobby-section">
+                <label>Or Create New Game</label>
+                <input type="text" id="gameName" placeholder="Game name">
+            </div>
+            
+            <div class="lobby-buttons">
+                <button class="btn" id="createGameBtn">Create Game</button>
+                <button class="btn" id="joinGameBtn">Join Selected</button>
+                <button class="btn btn-secondary" id="quickPlayBtn">Quick Play</button>
+            </div>
+        </div>
+        
+        <!-- HUD -->
+        <div id="hud">
+            <span class="hud-item">
+                <span class="hud-label">Health:</span>
+                <span class="health-bar">
+                    <div class="health-fill" id="healthFill" style="width: 100%"></div>
+                </span>
+            </span>
+            <span class="hud-item">
+                <span class="hud-label">Ammo:</span>
+                <span class="hud-value" id="ammoCount">30/50</span>
+            </span>
+            <span class="hud-item">
+                <span class="hud-label">Mines:</span>
+                <span class="hud-value" id="mineCount">5</span>
+            </span>
+            <span class="hud-item">
+                <span class="hud-label">Score:</span>
+                <span class="hud-value" id="scoreCount">0</span>
+            </span>
+            <span class="hud-item">
+                <span class="hud-label">Players:</span>
+                <span class="hud-value" id="playerCount">1/16</span>
+            </span>
+        </div>
+        
+        <!-- Chat -->
+        <div id="chat">
+            <div id="chatMessages"></div>
+            <input type="text" id="chatInput" placeholder="Press Enter to chat..." maxlength="100">
+        </div>
+        
+        <!-- Minimap -->
+        <div id="minimap">
+            <canvas id="minimapCanvas"></canvas>
+        </div>
+        
+        <!-- Connection Status -->
+        <div id="connectionStatus">
+            <span id="statusText">Connecting...</span>
+            <span id="pingText"></span>
+        </div>
+    </div>
+    
+    <script type="module" src="game.js"></script>
+</body>
+</html>
