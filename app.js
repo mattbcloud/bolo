@@ -19,7 +19,8 @@ const config = {
     embedPath: '/embed',
     disk: 'System 7.5.3',
     machine: 'Quadra 650',
-    infinite_hd: true
+    infinite_hd: true,
+    appleTalk: true  // Enable AppleTalk networking
 };
 
 // Initialize application
@@ -135,13 +136,15 @@ function buildEmbedUrl(gameId) {
     const params = new URLSearchParams({
         disk: config.disk,
         infinite_hd: config.infinite_hd,
-        machine: config.machine
+        machine: config.machine,
+        appleTalk: config.appleTalk
     });
 
     const embedUrl = `https://${config.baseUrl}${config.embedPath}?${params.toString()}`;
 
     // Log for debugging
     console.log('Generated embed URL:', embedUrl);
+    console.log('Game ID (network zone):', gameId);
 
     return embedUrl;
 }
