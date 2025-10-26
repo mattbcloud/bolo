@@ -1,0 +1,188 @@
+/*
+Orona, © 2010 Stéphan Kochen
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+*/
+
+* {
+  margin: 0; border: 0; padding: 0;
+  overflow: hidden;
+}
+
+body {
+  background: black;
+}
+
+.unclosable .ui-dialog-titlebar-close {
+  display: none;
+}
+
+#join-team {
+  margin: 0;
+}
+
+#join-team .ui-button {
+  margin-right: 5px;
+}
+
+#join-team .ui-button-text {
+  line-height: 0;
+}
+
+.bolo-team {
+  display: inline-block;
+  width: 32px; height: 32px;
+}
+
+.bolo-team-red  { background: #ff0000; }
+.bolo-team-blue { background: #0000ff; }
+
+canvas {
+  cursor: crosshair;
+}
+
+#input-dummy {
+  position: absolute;
+  z-index: -1;
+}
+
+.vignette {
+  position: fixed; z-index: 10;
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: black; color: white;
+}
+
+.vignette-message {
+  position: absolute;
+  top: 45%; left: 0; right: 0;
+  text-align: center;
+}
+
+#hud {
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+}
+
+#pillStatus, #baseStatus, #tankStatus {
+  position: absolute;
+  border: 2px solid #c0c0f0;
+  background: black;
+}
+
+.deco {
+  background: url(../images/hud.png);
+}
+
+#tankStatus {
+  bottom: 8px; right: 8px;
+  width: 51px; height: 150px;
+}
+
+#tankStatus .deco {
+  position: absolute;
+  bottom: 3px; left: 3px;
+  width: 45px; height: 9px;
+  background-position: -112px 0px;
+}
+
+.gauge {
+  position: absolute;
+  top: 3px; bottom: 15px;
+  width: 3px;
+}
+
+.gauge-content {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  background: yellow;
+}
+
+#tank-shells { left:  6px; }
+#tank-mines  { left: 18px; }
+#tank-armour { left: 30px; }
+#tank-trees  { left: 42px; }
+
+#pillStatus, #baseStatus {
+  width: 129px; height: 66px;
+}
+
+#pillStatus .deco, #baseStatus .deco {
+  position: absolute;
+  bottom: 3px; right: 4px;
+  width: 16px; height: 16px;
+}
+
+#pillStatus .pill, #baseStatus .base {
+  float: left;
+  width: 16px; height: 16px;
+  margin: 4px 1px 1px 4px;
+  background: url(../images/hud.png);
+}
+
+#pillStatus {
+  bottom: 8px; left: 8px;
+}
+
+#pillStatus .deco {
+  background-position: 0px 0px;
+}
+
+#pillStatus .pill[status='dead']    { background-position: -64px 0px; }
+#pillStatus .pill[status='healthy'] { background-position: -80px 0px; }
+#pillStatus .pill[status='carried'] { background-position: -96px 0px; }
+
+#baseStatus {
+  bottom: 8px; left: 149px;
+}
+
+#baseStatus .deco {
+  background-position: -16px 0px;
+}
+
+#baseStatus .base[status='healthy']    { background-position: -32px 0px; }
+#baseStatus .base[status='vulnerable'] { background-position: -48px 0px; }
+
+#tool-select {
+  position: absolute;
+  top: 8px; left: 50%;
+  margin: 0 0 0 -140px; width: 280px;
+  text-align: center;
+}
+
+#tool-select .ui-button {
+  margin-right: 1px;
+}
+
+#tool-select .ui-button-text {
+  padding: 3px; line-height: 0;
+}
+
+.bolo-tool {
+  display: inline-block;
+  width: 46px; height: 42px;
+  background: url(../images/hud.png);
+}
+
+.bolo-tool-forest   { background-position:    0px -16px; }
+.bolo-tool-road     { background-position:  -46px -16px; }
+.bolo-tool-building { background-position:  -92px -16px; }
+.bolo-tool-pillbox  { background-position: -138px -16px; }
+.bolo-tool-mine     { background-position: -184px -16px; }
+
+#chat-input, #chat-messages {
+  position: absolute; left: 8px;
+}
+
+#chat-input input, #chat-messages {
+  width: 400px;
+  font: bold 11px sans-serif;
+}
+
+#chat-input { top: 70px; }
+#chat-messages { top: 86px; }
+
+.msg      { color: #ffffff }
+.msg-team { color: #00ff00 }
