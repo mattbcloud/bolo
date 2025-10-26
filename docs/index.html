@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bolo - Tank Warfare Game</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+        h1 {
+            color: #4a9eff;
+            border-bottom: 2px solid #4a9eff;
+            padding-bottom: 10px;
+        }
+        .game-link {
+            display: inline-block;
+            margin: 20px 0;
+            padding: 15px 30px;
+            background-color: #4a9eff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 18px;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        .game-link:hover {
+            background-color: #357abd;
+        }
+        .info {
+            background-color: #2a2a2a;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        code {
+            background-color: #3a3a3a;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        ul {
+            line-height: 1.8;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎮 Bolo - Tank Warfare Game</h1>
+
+    <p>A browser-based version of the classic tank warfare game.</p>
+
+    <a href="orona/index.html?local" class="game-link">▶ Play Now (Single Player)</a>
+
+    <div class="info">
+        <h2>About</h2>
+        <p>Orona is a HTML5/JavaScript port of Bolo, originally created by Stuart Cheshire. This browser version was developed by Stéphan Kochen.</p>
+
+        <h3>Controls</h3>
+        <ul>
+            <li><strong>Mouse:</strong> Aim and shoot</li>
+            <li><strong>Arrow Keys:</strong> Move camera view</li>
+            <li><strong>WASD:</strong> Tank movement</li>
+            <li><strong>Spacebar:</strong> Fire</li>
+            <li><strong>Shift:</strong> Deploy mines</li>
+        </ul>
+
+        <h3>Technical Info</h3>
+        <p>Built with CoffeeScript, Browserify, and HTML5 Canvas/WebGL rendering.</p>
+        <p>Source code: <a href="https://github.com/stephank/orona" style="color: #4a9eff;">github.com/stephank/orona</a></p>
+        <p>License: GPL-2.0</p>
+    </div>
+
+    <div class="info">
+        <h2>Repository Documentation</h2>
+        <p>For more details, see the documentation in the repository root:</p>
+        <ul>
+            <li><code>ORONA_EXPLORATION.md</code> - Technical architecture analysis</li>
+            <li><code>ORONA_QUICKSTART.md</code> - Local setup guide</li>
+            <li><code>setup-orona.sh</code> - Automated setup script</li>
+        </ul>
+    </div>
+</body>
+</html>
