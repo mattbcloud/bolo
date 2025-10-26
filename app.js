@@ -15,15 +15,11 @@ const state = {
 // Configuration
 const config = {
     // Using infinitemac.org for embedding
-    // Note: For true multiplayer networking, custom DNS setup is required
     baseUrl: 'infinitemac.org',
     embedPath: '/embed',
-    systemVersion: 'System 7.5.3',
+    disk: 'System 7.5.3',
     machine: 'Quadra 650',
-    defaultSettings: {
-        infinite_hd: true,
-        screen_update_messages: false
-    }
+    infinite_hd: true
 };
 
 // Initialize application
@@ -135,26 +131,19 @@ function loadGame(gameId) {
 
 // Build the Infinite Mac embed URL
 function buildEmbedUrl(gameId) {
+    // Build parameters matching the working example format
     const params = new URLSearchParams({
-        disk: config.systemVersion,
-        machine: config.machine,
-        ...config.defaultSettings
+        disk: config.disk,
+        infinite_hd: config.infinite_hd,
+        machine: config.machine
     });
 
-    // Try using subdomain-based networking with system7.app
-    // If this doesn't work, falls back to main infinitemac.org
-    const useSubdomain = false; // Set to true to enable subdomain networking
+    const embedUrl = `https://${config.baseUrl}${config.embedPath}?${params.toString()}`;
 
-    if (useSubdomain) {
-        // Use subdomain for AppleTalk networking zone
-        // This requires DNS to be configured for *.system7.app
-        const subdomain = gameId;
-        return `https://${subdomain}.system7.app${config.embedPath}?${params}`;
-    } else {
-        // Use main infinitemac.org (no automatic networking, but should load)
-        // Players can still manually set up networking within the emulator
-        return `https://${config.baseUrl}${config.embedPath}?${params}`;
-    }
+    // Log for debugging
+    console.log('Generated embed URL:', embedUrl);
+
+    return embedUrl;
 }
 
 // Leave current game
