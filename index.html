@@ -1,145 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bolo Multiplayer - Classic Mac Tank Combat</title>
-    <link rel="stylesheet" href="styles.css">
+<title>Bolo</title>
+<link rel="shortcut icon" href="images/favicon.png">
+<link rel="stylesheet" href="http://ajax.googleapis.com/ajax/libs/jqueryui/1.8.14/themes/base/jquery.ui.all.css">
+<link rel="stylesheet" href="css/bolo.css">
+<link rel="stylesheet" href="css/jquery.ui.theme.css">
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.6.4/jquery.min.js"></script>
+<script src="js/jquery.cookie.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jqueryui/1.8.16/jquery-ui.min.js"></script>
+<script src="js/bolo-bundle.js"></script>
+<script>
+$(function() {
+  var World = BoloWorld;
+  world = new World();
+  world.start();
+});
+</script>
 </head>
-<body>
-    <div class="container">
-        <header>
-            <h1>🎮 Bolo Multiplayer</h1>
-            <p class="subtitle">Classic Mac tank combat in your browser</p>
-        </header>
-
-        <!-- Lobby View -->
-        <div id="lobby" class="view active">
-            <div class="card">
-                <h2>Join a Game</h2>
-                <div class="form-group">
-                    <label for="gameId">Game ID</label>
-                    <input
-                        type="text"
-                        id="gameId"
-                        placeholder="Enter game ID (e.g., tank-battle-42)"
-                        autocomplete="off">
-                </div>
-                <button onclick="joinGame()" class="btn btn-primary">Join Game</button>
-            </div>
-
-            <div class="divider">
-                <span>or</span>
-            </div>
-
-            <div class="card">
-                <h2>Create New Game</h2>
-                <div class="form-group">
-                    <label for="playerName">Your Name (Optional)</label>
-                    <input
-                        type="text"
-                        id="playerName"
-                        placeholder="Enter your name"
-                        autocomplete="off">
-                </div>
-                <button onclick="createGame()" class="btn btn-success">Create New Game</button>
-            </div>
-
-            <div class="card info-card">
-                <h3>How It Works</h3>
-                <ol>
-                    <li>Create a new game or join an existing one with a game ID</li>
-                    <li>Share the game ID with other players</li>
-                    <li>Wait for players to join (game ID must be the same)</li>
-                    <li>Once in the emulator, launch Bolo from the Infinite HD</li>
-                    <li>Set up or join a network game in Bolo</li>
-                </ol>
-                <p class="warning">
-                    <strong>Note:</strong> AppleTalk networking is enabled. All players using the same Game ID should be on the same network zone. If multiplayer doesn't work automatically, you may need to manually configure networking within Bolo.
-                </p>
-            </div>
-        </div>
-
-        <!-- Game View -->
-        <div id="game" class="view">
-            <div class="game-header">
-                <div class="game-info">
-                    <h2>Game: <span id="currentGameId" class="game-id-display"></span></h2>
-                    <p class="share-text">Share this Game ID with other players to join</p>
-                </div>
-                <button onclick="leaveGame()" class="btn btn-danger">Leave Game</button>
-            </div>
-
-            <div class="game-container">
-                <div class="emulator-wrapper">
-                    <div id="loadingScreen" class="loading-screen">
-                        <div class="loading-content">
-                            <div class="spinner"></div>
-                            <p>Loading Mac Emulator...</p>
-                            <p class="loading-detail">This may take 10-15 seconds</p>
-                        </div>
-                    </div>
-                    <iframe
-                        id="emulator"
-                        width="640"
-                        height="480"
-                        allow="cross-origin-isolated"
-                        frameborder="0"
-                        title="Macintosh Emulator">
-                    </iframe>
-                </div>
-
-                <div class="sidebar">
-                    <div class="card">
-                        <h3>Network Status</h3>
-                        <div id="networkStatus" class="status-box">
-                            <span class="status-indicator connecting"></span>
-                            <span>Connecting...</span>
-                        </div>
-                        <div class="network-info">
-                            <p><strong>MAC Address:</strong> <span id="macAddress">Not initialized</span></p>
-                            <p><strong>Network Zone:</strong> <span id="networkZone">-</span></p>
-                            <p><strong>AppleTalk:</strong> <span style="color: var(--success-color);">Enabled</span></p>
-                        </div>
-                    </div>
-
-                    <div class="card">
-                        <h3>Quick Guide</h3>
-                        <div class="instructions">
-                            <h4>Starting Bolo:</h4>
-                            <ol>
-                                <li>Wait for Mac to boot (Happy Mac icon)</li>
-                                <li>Double-click "Infinite HD" on desktop</li>
-                                <li>Find and launch "Bolo"</li>
-                                <li>Choose "Join Network Game" or "Start Server"</li>
-                            </ol>
-                            <h4>Controls:</h4>
-                            <ul>
-                                <li>Click inside to capture mouse</li>
-                                <li>Use Mac keyboard shortcuts</li>
-                                <li>ESC to release mouse (if supported)</li>
-                            </ul>
-                        </div>
-                    </div>
-
-                    <div class="card">
-                        <h3>Session Info</h3>
-                        <div class="session-info">
-                            <p><strong>Started:</strong> <span id="sessionStart">-</span></p>
-                            <p><strong>Duration:</strong> <span id="sessionDuration">0:00</span></p>
-                            <p class="session-warning">⏰ Recommended: &lt; 20 minutes</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <footer>
-        <p>Built with <a href="https://infinitemac.org" target="_blank">Infinite Mac</a> by Mihai Parparita</p>
-        <p>Bolo is a classic Macintosh multiplayer tank game</p>
-    </footer>
-
-    <script src="app.js"></script>
-</body>
+<body></body>
 </html>
