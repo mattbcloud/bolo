@@ -397,12 +397,8 @@ class Application
     handler = @getSocketPathHandler path
     return connection.destroy() if handler == false
 
-    # Check if WebSocket is supported and upgrade is requested
-    if WebSocket.isWebSocket(request)
-      ws = new WebSocket(request, connection, initialData)
-      handler ws
-    else
-      connection.destroy()
+    ws = new WebSocket(request, connection, initialData)
+    handler ws
 
 
 ## Entry point
