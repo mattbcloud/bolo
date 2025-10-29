@@ -1,0 +1,31 @@
+{
+  "name": "bolo-multiplayer",
+  "version": "1.0.0",
+  "description": "Bolo multiplayer tank warfare game server",
+  "homepage": "https://github.com/mattbcloud/bolo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mattbcloud/bolo.git"
+  },
+  "author": {
+    "name": "mattbcloud"
+  },
+  "engines": {
+    "node": ">=14.x"
+  },
+  "scripts": {
+    "start": "node bin/bolo-server config.json",
+    "dev": "node bin/bolo-server config.json"
+  },
+  "dependencies": {
+    "browserify": "10.2.6",
+    "coffee-script": "1.12.7",
+    "coffeeify": "1.2.0",
+    "connect": "2",
+    "faye-websocket": "0.4",
+    "villain": "=0.2.0"
+  },
+  "bin": {
+    "bolo-server": "./bin/bolo-server"
+  }
+}

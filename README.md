@@ -2,7 +2,9 @@
 
 A fully playable HTML5 port of **Bolo**, the classic Macintosh tank combat game, running natively in your web browser. No plugins, no downloads, no emulation required.
 
-**[🎮 Play Now](https://mattbcloud.github.io/bolo/?local)**
+**[🎮 Play Single-Player](https://mattbcloud.github.io/bolo/?local)**
+
+**NEW:** 🚀 **[Deploy Multiplayer Server to Railway](RAILWAY_DEPLOYMENT.md)** - Play with friends in real-time!
 
 ---
 
@@ -68,6 +70,30 @@ https://mattbcloud.github.io/bolo/
    ```
    http://localhost:8080/?local
    ```
+
+### Run Multiplayer Server
+
+This repository now includes a full multiplayer server! Deploy to Railway in minutes:
+
+**Quick Deploy:**
+1. Push this repo to GitHub
+2. Connect to Railway.app
+3. Railway auto-deploys the server
+4. Share your game URL with friends!
+
+**Detailed instructions:** See [RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md)
+
+**Local multiplayer server:**
+```bash
+# Install dependencies
+npm install
+git submodule update --init
+
+# Start server
+npm start
+
+# Play at http://localhost:8124
+```
 
 ---
 
