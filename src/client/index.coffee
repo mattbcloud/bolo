@@ -4,7 +4,9 @@ BoloNetworkWorld = require './world/client'
 
 ## Exports
 
-if location.search == '?local' or location.hostname.split('.')[1] == 'github'
+# Use local mode only if explicitly requested with ?local
+# Otherwise use network mode (connects to Railway server)
+if location.search == '?local'
   module.exports = BoloLocalWorld
 else
   module.exports = BoloNetworkWorld

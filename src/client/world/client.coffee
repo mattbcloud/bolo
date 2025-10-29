@@ -57,7 +57,18 @@ class BoloClientWorld extends ClientWorld
       return @vignette.message 'Invalid game ID'
     else
       path = "/demo"
-    @ws = new WebSocket("ws://#{location.host}#{path}")
+
+    # Determine WebSocket server URL
+    # If running on GitHub Pages, connect to Railway server
+    # Otherwise connect to the same host (for local development)
+    if location.hostname.indexOf('github.io') >= 0
+      serverHost = 'web-production-7b7f6.up.railway.app'
+      protocol = 'wss:'
+    else
+      serverHost = location.host
+      protocol = if location.protocol == 'https:' then 'wss:' else 'ws:'
+
+    @ws = new WebSocket("#{protocol}//#{serverHost}#{path}")
     ws = $(@ws)
     ws.one 'open.bolo', =>
       @connected()

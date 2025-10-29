@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>Bolo</title>
+<title>Bolo - Multiplayer Tank Warfare</title>
 <link rel="shortcut icon" href="images/favicon.png">
 <link rel="stylesheet" href="http://ajax.googleapis.com/ajax/libs/jqueryui/1.8.14/themes/base/jquery.ui.all.css">
 <link rel="stylesheet" href="css/bolo.css">
@@ -9,6 +9,28 @@
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.6.4/jquery.min.js"></script>
 <script src="js/jquery.cookie.js"></script>
 <script src="https://ajax.googleapis.com/ajax/libs/jqueryui/1.8.16/jquery-ui.min.js"></script>
+
+<!-- Configure Railway server for multiplayer -->
+<script>
+// Override WebSocket to redirect to Railway server
+window.BOLO_SERVER = 'web-production-7b7f6.up.railway.app';
+window.BOLO_USE_WSS = true;
+
+(function() {
+  var OriginalWebSocket = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    // If connecting to github.io, redirect to Railway server
+    if (window.location.hostname.indexOf('github.io') >= 0) {
+      var path = url.split(window.location.host)[1] || '/demo';
+      var protocol = window.BOLO_USE_WSS ? 'wss://' : 'ws://';
+      url = protocol + window.BOLO_SERVER + path;
+      console.log('Connecting to Railway server:', url);
+    }
+    return new OriginalWebSocket(url, protocols);
+  };
+})();
+</script>
+
 <script src="js/bolo-bundle.js"></script>
 <script>
 $(function() {
