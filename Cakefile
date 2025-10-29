@@ -8,7 +8,8 @@ task 'build:jsbundle', 'Compile the Bolo client JavaScript bundle', (callback) -
   console.log 'Building client JavaScript bundle...'
   b = browserify('./src/client/index.coffee', {
     basedir: __dirname,
-    extensions: ['.coffee', '.js']
+    extensions: ['.coffee', '.js'],
+    standalone: 'BoloWorld'
   })
   b.transform('coffeeify')
 
