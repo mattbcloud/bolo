@@ -14,7 +14,8 @@
     "node": ">=14.x"
   },
   "scripts": {
-    "start": "node bin/bolo-server config.json",
+    "build": "coffee -c node_modules/villain/*.coffee && coffee -c node_modules/villain/world/*.coffee && coffee -c node_modules/villain/world/net/*.coffee && coffee -c -o lib/ src/ && cake build:jsbundle",
+    "start": "npm run build && node bin/bolo-server config.json",
     "dev": "node bin/bolo-server config.json"
   },
   "dependencies": {
