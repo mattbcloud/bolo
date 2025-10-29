@@ -4,8 +4,8 @@ BoloNetworkWorld = require './world/client'
 
 ## Exports
 
-# Use local mode only if explicitly requested with ?local
-# Otherwise use network mode (connects to Railway server)
+# Use local mode if explicitly requested with ?local
+# Otherwise use network mode
 if location.search == '?local'
   module.exports = BoloLocalWorld
 else

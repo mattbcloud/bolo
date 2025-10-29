@@ -58,17 +58,9 @@ class BoloClientWorld extends ClientWorld
     else
       path = "/demo"
 
-    # Determine WebSocket server URL
-    # If running on GitHub Pages, connect to Railway server
-    # Otherwise connect to the same host (for local development)
-    if location.hostname.indexOf('github.io') >= 0
-      serverHost = 'web-production-7b7f6.up.railway.app'
-      protocol = 'wss:'
-    else
-      serverHost = location.host
-      protocol = if location.protocol == 'https:' then 'wss:' else 'ws:'
-
-    @ws = new WebSocket("#{protocol}//#{serverHost}#{path}")
+    # Connect to same host using appropriate protocol
+    protocol = if location.protocol == 'https:' then 'wss:' else 'ws:'
+    @ws = new WebSocket("#{protocol}//#{location.host}#{path}")
     ws = $(@ws)
     ws.one 'open.bolo', =>
       @connected()
