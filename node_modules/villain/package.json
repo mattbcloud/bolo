@@ -1,0 +1,22 @@
+{
+  "name": "villain",
+  "version": "0.2.0",
+  "description": "The evil library for real-time games.",
+
+  "homepage": "http://stephank.github.com/villain/",
+  "repository": {
+    "type": "git",
+    "url": "http://github.com/stephank/villain.git"
+  },
+  "author": {
+    "name": "Stéphan Kochen",
+    "email": "stephan@kochen.nl",
+    "url": "http://stephan.kochen.nl/"
+  },
+
+  "engines: ": {
+    "node": "0.4"
+  },
+
+  "main": "./index"
+}

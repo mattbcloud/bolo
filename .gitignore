@@ -12,6 +12,7 @@ npm-debug.log*
 
 # Dependencies (if adding npm later)
 node_modules/
+!node_modules/villain/
 package-lock.json
 
 # Build outputs (if adding build process later)
