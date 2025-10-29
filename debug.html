@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Bolo Connection Debug</title>
+<style>
+body { font-family: monospace; padding: 20px; background: #222; color: #0f0; }
+.error { color: #f00; }
+.success { color: #0f0; }
+.info { color: #ff0; }
+</style>
+</head>
+<body>
+<h1>Bolo Railway Connection Test</h1>
+<div id="log"></div>
+
+<script>
+function log(msg, type) {
+  const div = document.createElement('div');
+  div.className = type || 'info';
+  div.textContent = new Date().toISOString() + ' - ' + msg;
+  document.getElementById('log').appendChild(div);
+}
+
+log('Testing connection to Railway server...', 'info');
+log('Server: web-production-7b7f6.up.railway.app', 'info');
+
+try {
+  const wsUrl = 'wss://web-production-7b7f6.up.railway.app/demo';
+  log('Attempting WebSocket connection to: ' + wsUrl, 'info');
+
+  const ws = new WebSocket(wsUrl);
+
+  ws.onopen = function() {
+    log('✓ WebSocket connected successfully!', 'success');
+    log('Connection state: ' + ws.readyState, 'success');
+  };
+
+  ws.onerror = function(error) {
+    log('✗ WebSocket error occurred', 'error');
+    log('Error: ' + JSON.stringify(error), 'error');
+  };
+
+  ws.onclose = function(event) {
+    log('WebSocket closed', 'info');
+    log('Code: ' + event.code + ', Reason: ' + event.reason, 'info');
+    log('Was clean: ' + event.wasClean, 'info');
+  };
+
+  ws.onmessage = function(msg) {
+    log('Received message: ' + msg.data, 'success');
+  };
+
+} catch(e) {
+  log('Exception: ' + e.message, 'error');
+}
+
+log('Current location: ' + window.location.href, 'info');
+log('Protocol: ' + window.location.protocol, 'info');
+</script>
+</body>
+</html>

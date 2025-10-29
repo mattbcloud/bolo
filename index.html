@@ -19,12 +19,28 @@ window.BOLO_USE_WSS = true;
 (function() {
   var OriginalWebSocket = window.WebSocket;
   window.WebSocket = function(url, protocols) {
+    console.log('WebSocket original URL:', url);
+    console.log('Current hostname:', window.location.hostname);
+
     // If connecting to github.io, redirect to Railway server
     if (window.location.hostname.indexOf('github.io') >= 0) {
-      var path = url.split(window.location.host)[1] || '/demo';
+      // Extract path from WebSocket URL
+      var path = '/demo';  // Default path
+      try {
+        // Parse the WebSocket URL to get the path
+        var urlObj = new URL(url);
+        path = urlObj.pathname + urlObj.search;
+      } catch (e) {
+        // If URL parsing fails, try to extract path manually
+        var matches = url.match(/(?:ws|wss):\/\/[^\/]+(\/.*)/);
+        if (matches && matches[1]) {
+          path = matches[1];
+        }
+      }
+
       var protocol = window.BOLO_USE_WSS ? 'wss://' : 'ws://';
       url = protocol + window.BOLO_SERVER + path;
-      console.log('Connecting to Railway server:', url);
+      console.log('Redirecting WebSocket to Railway:', url);
     }
     return new OriginalWebSocket(url, protocols);
   };
