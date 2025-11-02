@@ -103,7 +103,9 @@ export class BoloClientWorld extends ClientWorld {
       path = '/demo';
     }
 
-    this.ws = new WebSocket(`ws://${location.host}${path}`);
+    // Use wss:// for HTTPS, ws:// for HTTP
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.ws = new WebSocket(`${wsProtocol}//${location.host}${path}`);
 
     this.ws.addEventListener('open', () => {
       this.connected();
