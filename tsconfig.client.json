@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "outDir": "./dist/client",
+    "rootDir": "./src"
+  },
+  "include": [
+    "src/client/**/*",
+    "src/constants.ts",
+    "src/helpers.ts",
+    "src/map.ts",
+    "src/net.ts",
+    "src/object.ts",
+    "src/objects/**/*",
+    "src/sounds.ts",
+    "src/struct.ts",
+    "src/team_colors.ts",
+    "src/world_map.ts",
+    "src/world_mixin.ts"
+  ]
+}
