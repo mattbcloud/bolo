@@ -5,4 +5,6 @@
 *.gz
 /*.json
 !/package.json
+!/tsconfig*.json
+!/config.railway.json
 /maps/**
