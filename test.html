@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+<title>Bolo Test - Localhost</title>
+<link rel="stylesheet" href="css/bolo-bundle.css">
+<link rel="shortcut icon" href="images/favicon.png">
+<script type="module">
+import World from './src/client/index.ts';
+
+window.onerror = function(msg, url, line, col, error) {
+  document.body.innerHTML += '<pre style="color:red">ERROR: ' + msg + '\nLine: ' + line + '\n' + (error ? error.stack : '') + '</pre>';
+  return false;
+};
+
+window.addEventListener('load', function() {
+  const statusEl = document.getElementById('status');
+  statusEl.innerHTML = 'Page loaded. Hostname: ' + location.hostname;
+  try {
+    statusEl.innerHTML += '<br>Module loaded successfully!';
+    statusEl.innerHTML += '<br>World type: ' + World.name;
+
+    const world = new World();
+    statusEl.innerHTML += '<br>World created!';
+
+    world.start();
+    statusEl.innerHTML += '<br>World started!';
+  } catch(e) {
+    statusEl.innerHTML += '<br><span style="color:red">Error: ' + e.message + '<br>' + e.stack + '</span>';
+  }
+});
+</script>
+</head>
+<body>
+<h1>Bolo Test Page</h1>
+<div id="status">Loading...</div>
+</body>
+</html>

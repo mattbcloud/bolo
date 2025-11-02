@@ -152,6 +152,26 @@ canvas {
   text-align: center;
 }
 
+#tool-select input[type="radio"] {
+  display: none;
+}
+
+#tool-select label {
+  display: inline-block;
+  margin-right: 2px;
+  cursor: pointer;
+}
+
+#tool-select label .bolo-tool {
+  border: 2px solid black;
+  border-radius: 4px;
+}
+
+#tool-select input[type="radio"]:checked + label .bolo-tool {
+  border-color: white;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+}
+
 #tool-select .ui-button {
   margin-right: 1px;
 }

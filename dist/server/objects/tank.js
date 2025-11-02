@@ -1,0 +1,538 @@
+/**
+ * The Tank class contains all the logic you need to tread well. (And all the other logic needed
+ * to punish you if you don't.)
+ */
+import { TILE_SIZE_WORLD } from '../constants';
+import { distance } from '../helpers';
+import BoloObject from '../object';
+import * as sounds from '../sounds';
+import Explosion from './explosion';
+import MineExplosion from './mine_explosion';
+import Shell from './shell';
+import Fireball from './fireball';
+import Builder from './builder';
+const { round, floor, ceil, min, sqrt, max, sin, cos, PI } = Math;
+export class Tank extends BoloObject {
+    /**
+     * Tanks are only ever spawned and destroyed on the server.
+     */
+    constructor(world) {
+        super(world);
+        this.styled = true;
+        this.team = null;
+        // Movement
+        this.speed = 0.0;
+        this.slideTicks = 0;
+        this.slideDirection = 0;
+        this.accelerating = false;
+        this.braking = false;
+        // Turning
+        this.direction = 0;
+        this.turningClockwise = false;
+        this.turningCounterClockwise = false;
+        this.turnSpeedup = 0;
+        // Resources
+        this.shells = 40;
+        this.mines = 0;
+        this.armour = 40;
+        this.trees = 0;
+        // Combat
+        this.reload = 0;
+        this.shooting = false;
+        this.firingRange = 7;
+        // Water/boat
+        this.waterTimer = 0;
+        this.onBoat = true;
+        this.cell = null;
+        // Track position updates.
+        this.on('netUpdate', (changes) => {
+            if (changes.hasOwnProperty('x') || changes.hasOwnProperty('y') || changes.armour === 255) {
+                this.updateCell();
+            }
+        });
+    }
+    /**
+     * Keep the player list updated.
+     */
+    anySpawn() {
+        this.updateCell();
+        this.world.addTank(this);
+        this.on('finalize', () => this.world.removeTank(this));
+    }
+    /**
+     * Helper, called in several places that change tank position.
+     */
+    updateCell() {
+        if (this.x != null && this.y != null) {
+            this.cell = this.world.map.cellAtWorld(this.x, this.y);
+        }
+        else {
+            this.cell = null;
+        }
+    }
+    /**
+     * (Re)spawn the tank. Initializes all state. Only ever called on the server.
+     */
+    reset() {
+        const startingPos = this.world.map.getRandomStart();
+        [this.x, this.y] = startingPos.cell.getWorldCoordinates();
+        this.direction = startingPos.direction * 16;
+        this.updateCell();
+        this.speed = 0.0;
+        this.slideTicks = 0;
+        this.slideDirection = 0;
+        this.accelerating = false;
+        this.braking = false;
+        this.turningClockwise = false;
+        this.turningCounterClockwise = false;
+        this.turnSpeedup = 0;
+        // FIXME: gametype dependant.
+        this.shells = 40;
+        this.mines = 0;
+        this.armour = 40;
+        this.trees = 0;
+        this.reload = 0;
+        this.shooting = false;
+        this.firingRange = 7;
+        this.waterTimer = 0;
+        this.onBoat = true;
+        // Clear the fireball reference so camera stops following it
+        this.fireball = null;
+    }
+    serialization(isCreate, p) {
+        if (isCreate) {
+            p('B', 'team');
+            p('O', 'builder');
+        }
+        p('B', 'armour');
+        // Are we dead?
+        if (this.armour === 255) {
+            p('O', 'fireball');
+            this.x = this.y = null;
+            return;
+        }
+        else {
+            this.fireball?.clear();
+        }
+        p('H', 'x');
+        p('H', 'y');
+        p('B', 'direction');
+        // Uses 0.25 increments, so we can pack this as a byte.
+        p('B', 'speed', {
+            tx: (v) => v * 4,
+            rx: (v) => v / 4,
+        });
+        p('B', 'slideTicks');
+        p('B', 'slideDirection');
+        // FIXME: should simply be a signed byte.
+        p('B', 'turnSpeedup', {
+            tx: (v) => v + 50,
+            rx: (v) => v - 50,
+        });
+        p('B', 'shells');
+        p('B', 'mines');
+        p('B', 'trees');
+        p('B', 'reload');
+        p('B', 'firingRange', {
+            tx: (v) => v * 2,
+            rx: (v) => v / 2,
+        });
+        p('B', 'waterTimer');
+        // Group bit fields.
+        p('f', 'accelerating');
+        p('f', 'braking');
+        p('f', 'turningClockwise');
+        p('f', 'turningCounterClockwise');
+        p('f', 'shooting');
+        p('f', 'onBoat');
+    }
+    /**
+     * Get the 1/16th direction step.
+     * FIXME: Should move our angle-related calculations to a separate module or so.
+     */
+    getDirection16th() {
+        return round((this.direction - 1) / 16) % 16;
+    }
+    getSlideDirection16th() {
+        return round((this.slideDirection - 1) / 16) % 16;
+    }
+    /**
+     * Return an array of pillboxes this tank is carrying.
+     */
+    getCarryingPillboxes() {
+        return this.world.map.pills.filter((pill) => pill.inTank && pill.owner?.$ === this);
+    }
+    /**
+     * Get the tilemap index to draw. This is the index in styled.png.
+     */
+    getTile() {
+        const tx = this.getDirection16th();
+        const ty = this.onBoat ? 1 : 0;
+        return [tx, ty];
+    }
+    /**
+     * Tell whether the other tank is an ally.
+     */
+    isAlly(other) {
+        return other === this || (this.team !== 255 && other.team === this.team);
+    }
+    /**
+     * Adjust the firing range.
+     */
+    increaseRange() {
+        this.firingRange = min(7, this.firingRange + 0.5);
+    }
+    decreaseRange() {
+        this.firingRange = max(1, this.firingRange - 0.5);
+    }
+    /**
+     * We've taken a hit. Check if we were killed, otherwise slide and possibly kill our boat.
+     */
+    takeShellHit(shell) {
+        this.armour -= 5;
+        if (this.armour < 0) {
+            const largeExplosion = this.shells + this.mines > 20;
+            // Only spawn on server (ClientWorld doesn't have this method)
+            if (this.world.spawn) {
+                this.ref('fireball', this.world.spawn(Fireball, this.x, this.y, shell.direction, largeExplosion));
+            }
+            this.kill();
+        }
+        else {
+            this.slideTicks = 8;
+            this.slideDirection = shell.direction;
+            if (this.onBoat) {
+                this.onBoat = false;
+                this.speed = 0;
+                if (this.cell.isType('^'))
+                    this.sink();
+            }
+        }
+        return sounds.HIT_TANK;
+    }
+    /**
+     * We've taken a hit from a mine. Mostly similar to the above.
+     */
+    takeMineHit() {
+        this.armour -= 10;
+        if (this.armour < 0) {
+            const largeExplosion = this.shells + this.mines > 20;
+            // Only spawn on server (ClientWorld doesn't have this method)
+            if (this.world.spawn) {
+                this.ref('fireball', this.world.spawn(Fireball, this.x, this.y, this.direction, largeExplosion));
+            }
+            this.kill();
+        }
+        else if (this.onBoat) {
+            this.onBoat = false;
+            this.speed = 0;
+            if (this.cell.isType('^'))
+                this.sink();
+        }
+    }
+    // World updates
+    spawn(team) {
+        this.team = team;
+        this.reset();
+        // Only spawn on server (ClientWorld doesn't have this method)
+        if (this.world.spawn) {
+            this.ref('builder', this.world.spawn(Builder, this));
+        }
+    }
+    update() {
+        // Don't update if not spawned yet
+        if (!this.cell)
+            return;
+        if (this.death())
+            return;
+        this.shootOrReload();
+        this.turn();
+        this.accelerate();
+        this.fixPosition();
+        this.move();
+    }
+    destroy() {
+        this.dropPillboxes();
+        // Only destroy on server (ClientWorld doesn't have this method)
+        if (this.world.destroy) {
+            this.world.destroy(this.builder.$);
+        }
+    }
+    death() {
+        if (this.armour !== 255)
+            return false;
+        // Count down ticks from 255, before respawning.
+        if (this.world.authority && --this.respawnTimer === 0) {
+            delete this.respawnTimer;
+            this.reset();
+            return false;
+        }
+        return true;
+    }
+    shootOrReload() {
+        if (this.reload > 0)
+            this.reload--;
+        if (!this.shooting || this.reload !== 0 || this.shells <= 0)
+            return;
+        // We're clear to fire a shot.
+        this.shells--;
+        this.reload = 13;
+        // Only spawn on server (ClientWorld doesn't have this method)
+        if (this.world.spawn) {
+            this.world.spawn(Shell, this, { range: this.firingRange, onWater: this.onBoat });
+        }
+        this.soundEffect(sounds.SHOOTING);
+    }
+    turn() {
+        // Determine turn rate (increased by 27% for tighter turning).
+        const maxTurn = this.cell.getTankTurn(this) * 1.27;
+        // Are the key presses cancelling eachother out?
+        if (this.turningClockwise === this.turningCounterClockwise) {
+            this.turnSpeedup = 0;
+            return;
+        }
+        // Determine angular acceleration, and apply speed-up.
+        let acceleration;
+        if (this.turningCounterClockwise) {
+            acceleration = maxTurn;
+            if (this.turnSpeedup < 10)
+                acceleration /= 2;
+            if (this.turnSpeedup < 0)
+                this.turnSpeedup = 0;
+            this.turnSpeedup++;
+        }
+        else {
+            // if turningClockwise
+            acceleration = -maxTurn;
+            if (this.turnSpeedup > -10)
+                acceleration /= 2;
+            if (this.turnSpeedup > 0)
+                this.turnSpeedup = 0;
+            this.turnSpeedup--;
+        }
+        // Turn the tank.
+        this.direction += acceleration;
+        // Normalize direction.
+        while (this.direction < 0)
+            this.direction += 256;
+        if (this.direction >= 256)
+            this.direction %= 256;
+    }
+    accelerate() {
+        // Determine acceleration.
+        const maxSpeed = this.cell.getTankSpeed(this);
+        let acceleration;
+        // Is terrain forcing us to slow down?
+        if (this.speed > maxSpeed) {
+            acceleration = -0.25;
+        }
+        // Are key presses cancelling eachother out?
+        else if (this.accelerating === this.braking) {
+            acceleration = 0.0;
+        }
+        // What's does the player want to do?
+        else if (this.accelerating) {
+            acceleration = 0.25;
+        }
+        else {
+            acceleration = -0.25; // if braking
+        }
+        // Adjust speed, and clip as necessary.
+        if (acceleration > 0.0 && this.speed < maxSpeed) {
+            this.speed = min(maxSpeed, this.speed + acceleration);
+        }
+        else if (acceleration < 0.0 && this.speed > 0.0) {
+            this.speed = max(0.0, this.speed + acceleration);
+        }
+    }
+    fixPosition() {
+        // Check to see if there's a solid underneath the tank. This could happen if some other player
+        // builds underneath us. In that case, we try to nudge the tank off the solid.
+        if (this.cell.getTankSpeed(this) === 0) {
+            const halftile = TILE_SIZE_WORLD / 2;
+            if (this.x % TILE_SIZE_WORLD >= halftile)
+                this.x++;
+            else
+                this.x--;
+            if (this.y % TILE_SIZE_WORLD >= halftile)
+                this.y++;
+            else
+                this.y--;
+            this.speed = max(0.0, this.speed - 1);
+        }
+        // Also check if we're on top of another tank.
+        for (const other of this.world.tanks) {
+            if (other !== this && other.armour !== 255) {
+                if (distance(this, other) <= 255) {
+                    // FIXME: winbolo actually does an increasing size of nudges while the tanks are colliding,
+                    // keeping a static/global variable. But perhaps this should be combined with tank sliding?
+                    if (other.x < this.x)
+                        this.x++;
+                    else
+                        this.x--;
+                    if (other.y < this.y)
+                        this.y++;
+                    else
+                        this.y--;
+                }
+            }
+        }
+    }
+    move() {
+        let dx = 0, dy = 0;
+        // FIXME: Our angle unit should match more closely that of JavaScript.
+        if (this.speed > 0) {
+            const rad = ((256 - this.getDirection16th() * 16) * 2 * PI) / 256;
+            dx += round(cos(rad) * ceil(this.speed));
+            dy += round(sin(rad) * ceil(this.speed));
+        }
+        if (this.slideTicks > 0) {
+            const rad = ((256 - this.getSlideDirection16th() * 16) * 2 * PI) / 256;
+            dx += round(cos(rad) * 16);
+            dy += round(sin(rad) * 16);
+            this.slideTicks--;
+        }
+        const newx = this.x + dx;
+        const newy = this.y + dy;
+        let slowDown = true;
+        // Check if we're running into an obstacle in either axis direction.
+        if (dx !== 0) {
+            const ahead = dx > 0 ? newx + 64 : newx - 64;
+            const aheadCell = this.world.map.cellAtWorld(ahead, newy);
+            if (aheadCell.getTankSpeed(this) !== 0) {
+                slowDown = false;
+                if (!this.onBoat || aheadCell.isType(' ', '^') || this.speed >= 16) {
+                    this.x = newx;
+                }
+            }
+        }
+        if (dy !== 0) {
+            const ahead = dy > 0 ? newy + 64 : newy - 64;
+            const aheadCell = this.world.map.cellAtWorld(newx, ahead);
+            if (aheadCell.getTankSpeed(this) !== 0) {
+                slowDown = false;
+                if (!this.onBoat || aheadCell.isType(' ', '^') || this.speed >= 16) {
+                    this.y = newy;
+                }
+            }
+        }
+        if (dx !== 0 || dy !== 0) {
+            // If we're completely obstructed, reduce our speed.
+            if (slowDown) {
+                this.speed = max(0.0, this.speed - 1);
+            }
+            // Update the cell reference.
+            const oldcell = this.cell;
+            this.updateCell();
+            // Check our new terrain if we changed cells.
+            if (oldcell !== this.cell)
+                this.checkNewCell(oldcell);
+        }
+        if (!this.onBoat && this.speed <= 3 && this.cell.isType(' ')) {
+            if (++this.waterTimer === 15) {
+                if (this.shells !== 0 || this.mines !== 0) {
+                    this.soundEffect(sounds.BUBBLES);
+                }
+                this.shells = max(0, this.shells - 1);
+                this.mines = max(0, this.mines - 1);
+                this.waterTimer = 0;
+            }
+        }
+        else {
+            this.waterTimer = 0;
+        }
+    }
+    checkNewCell(oldcell) {
+        // FIXME: check for mine impact
+        // FIXME: Reveal hidden mines nearby
+        // Check if we just entered or left the water.
+        if (this.onBoat) {
+            if (!this.cell.isType(' ', '^'))
+                this.leaveBoat(oldcell);
+        }
+        else {
+            if (this.cell.isType('^')) {
+                this.sink();
+                return;
+            }
+            if (this.cell.isType('b'))
+                this.enterBoat();
+        }
+        if (this.cell.mine) {
+            // Only spawn on server (ClientWorld doesn't have this method)
+            if (this.world.spawn) {
+                this.world.spawn(MineExplosion, this.cell);
+            }
+        }
+    }
+    leaveBoat(oldcell) {
+        // Check if we're running over another boat; destroy it if so.
+        if (this.cell.isType('b')) {
+            // Don't need to retile surrounding cells for this.
+            this.cell.setType(' ', false, 0);
+            // Create a small explosion at the center of the tile.
+            const x = (this.cell.x + 0.5) * TILE_SIZE_WORLD;
+            const y = (this.cell.y + 0.5) * TILE_SIZE_WORLD;
+            // Only spawn on server (ClientWorld doesn't have this method)
+            if (this.world.spawn) {
+                this.world.spawn(Explosion, x, y);
+            }
+            this.world.soundEffect(sounds.SHOT_BUILDING, x, y);
+        }
+        else {
+            // Leave a boat if we were on a river.
+            if (oldcell.isType(' ')) {
+                // Don't need to retile surrounding cells for this.
+                oldcell.setType('b', false, 0);
+            }
+            this.onBoat = false;
+        }
+    }
+    enterBoat() {
+        // Don't need to retile surrounding cells for this.
+        this.cell.setType(' ', false, 0);
+        this.onBoat = true;
+    }
+    sink() {
+        this.world.soundEffect(sounds.TANK_SINKING, this.x, this.y);
+        // FIXME: Somehow blame a killer, if instigated by a shot?
+        this.kill();
+    }
+    kill() {
+        // FIXME: Message the other players. Probably want a scoreboard too.
+        this.dropPillboxes();
+        this.x = this.y = null;
+        this.armour = 255;
+        // The respawnTimer attribute exists only on the server.
+        // It is deleted once the timer is triggered, which happens in death().
+        this.respawnTimer = 255;
+    }
+    /**
+     * Drop all pillboxes we own in a neat square area.
+     */
+    dropPillboxes() {
+        const pills = this.getCarryingPillboxes();
+        if (pills.length === 0)
+            return;
+        let x = this.cell.x;
+        const sy = this.cell.y;
+        const width = round(sqrt(pills.length));
+        const delta = floor(width / 2);
+        x -= delta;
+        const ey = sy + width;
+        while (pills.length !== 0) {
+            for (let y = sy; y < ey; y++) {
+                const cell = this.world.map.cellAtTile(x, y);
+                if (cell.base || cell.pill || cell.isType('|', '}', 'b'))
+                    continue;
+                const pill = pills.pop();
+                if (!pill)
+                    return;
+                pill.placeAt(cell);
+            }
+            x += 1;
+        }
+    }
+}
+export default Tank;
+//# sourceMappingURL=tank.js.map
