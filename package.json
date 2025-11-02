@@ -22,7 +22,7 @@
     "build:server": "tsc -p tsconfig.server.json",
     "dev": "vite",
     "dev:server": "tsx watch src/server/command.ts",
-    "start": "node dist/server/server/command.js",
+    "start": "node dist/server/server/command.js config.railway.json",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist"
   },

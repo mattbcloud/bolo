@@ -482,7 +482,8 @@ export class Application {
         this.games = {};
         this.ircClients = [];
         this.options = options;
-        const webroot = path.join(path.dirname(fs.realpathSync(__filename)), '../../');
+        // Server is at dist/server/server/command.js, so ../../../ goes to project root
+        const webroot = path.join(path.dirname(fs.realpathSync(__filename)), '../../../');
         this.connectServer = connect();
         if (this.options.web?.log) {
             // Modern connect doesn't have logger middleware by default
@@ -492,6 +493,9 @@ export class Application {
             });
         }
         this.connectServer.use('/', redirector(this.options.general?.base || ''));
+        // Serve built client files (index.html and assets)
+        this.connectServer.use('/', serveStatic(path.join(webroot, 'dist/client')));
+        // Serve static assets (images, sounds, css, maps) from root
         this.connectServer.use('/', serveStatic(webroot));
         this.games = {};
         this.ircClients = [];

@@ -50,9 +50,11 @@ export function run() {
         console.log("I don't understand the contents of that file.");
         throw e;
     }
+    // Use PORT environment variable if available (for Railway, Heroku, etc.)
+    const port = process.env.PORT ? parseInt(process.env.PORT) : config.web.port;
     const app = createBoloApp(config);
-    app.listen(config.web.port);
-    console.log(`Bolo server listening on port ${config.web.port}.`);
+    app.listen(port);
+    console.log(`Bolo server listening on port ${port}.`);
     if (config.irc) {
         if (createBoloIrcClient) {
             for (const [link, options] of Object.entries(config.irc)) {
