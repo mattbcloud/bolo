@@ -268,7 +268,7 @@ export class BoloServerWorld extends ServerWorld {
             this.onError(ws, new Error('Client specified invalid team.'));
         }
         ws.tank = this.spawn(Tank, message.team);
-        ws.tank.name = message.name;
+        ws.tank.name = message.nick;
         ws.nick = message.nick;
         // Log player join with details
         const teamName = getTeamName(message.team);
