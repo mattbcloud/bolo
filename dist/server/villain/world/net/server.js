@@ -53,12 +53,9 @@ export class ServerWorld {
             obj.spawn(...args);
         }
         // Call anySpawn if it exists - used for client/server common initialization
+        // Note: Tank's anySpawn() calls addTank() which adds to this.tanks, so we don't add here
         if (obj.anySpawn && typeof obj.anySpawn === 'function') {
             obj.anySpawn();
-        }
-        // Track tanks separately
-        if (obj.constructor.name === 'Tank') {
-            this.tanks.push(obj);
         }
         return obj;
     }
