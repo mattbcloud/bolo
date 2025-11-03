@@ -31,6 +31,12 @@ const __filename = fileURLToPath(import.meta.url);
 const { random: mathRandom, round: mathRound } = Math;
 const allObjects = allObjectsModule;
 
+// Helper function to get team name from team number
+function getTeamName(team: number): string {
+  const teamNames = ['RED', 'BLUE', 'YELLOW', 'GREEN', 'ORANGE', 'PURPLE'];
+  return teamNames[team] || 'NEUTRAL';
+}
+
 // Server World
 
 export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterface {
@@ -162,7 +168,11 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
 
   onEnd(ws: any, code: number, reason: string): void {
     if (ws.tank) {
+      const playerName = ws.nick || ws.tank.name || 'Unknown';
+      const teamName = getTeamName(ws.tank.team);
+      console.log(`[PLAYER DISCONNECT] Player "${playerName}" disconnected (was on team ${teamName}, tank idx=${ws.tank.idx})`);
       this.destroy(ws.tank);
+      console.log(`[PLAYERS] Total tanks remaining: ${this.tanks.length}`);
     }
     ws.tank = null;
     const idx = this.clients.indexOf(ws);
@@ -293,13 +303,19 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     if (typeof message.nick !== 'string' || message.nick.length > 20) {
       this.onError(ws, new Error('Client specified invalid nickname.'));
     }
-    if (typeof message.team !== 'number' || !(message.team === 0 || message.team === 1)) {
+    if (typeof message.team !== 'number' || message.team < 0 || message.team > 5) {
       this.onError(ws, new Error('Client specified invalid team.'));
     }
 
     ws.tank = this.spawn(Tank, message.team);
     ws.tank.name = message.name;
     ws.nick = message.nick;
+
+    // Log player join with details
+    const teamName = getTeamName(message.team);
+    console.log(`[PLAYER JOIN] Player "${message.nick}" joined team ${teamName} (tank idx=${ws.tank.idx}, tank_idx=${ws.tank.tank_idx})`);
+    console.log(`[PLAYERS] Total tanks in game: ${this.tanks.length}`);
+    console.log(`[PLAYERS] Connected players: ${this.tanks.map((t: any) => `${t.name || 'Unknown'} (team=${getTeamName(t.team)})`).join(', ')}`);
 
     // Mark client as NOT synchronized yet - sendPackets() will handle initial sync
     ws.synchronized = false;

@@ -66,7 +66,16 @@ export class ClientWorld {
 
     // Track tanks separately
     if (obj.constructor.name === 'Tank') {
-      this.tanks.push(obj);
+      // Check if this tank already exists in the tanks array (prevent duplicates)
+      const existingIndex = this.tanks.findIndex((t: any) => t && t.idx === obj.idx);
+      if (existingIndex === -1) {
+        // Tank doesn't exist, add it
+        this.tanks.push(obj);
+      } else {
+        // Tank already exists, replace it
+        console.log(`[netSpawn] Tank at idx=${obj.idx} already exists in tanks array, replacing`);
+        this.tanks[existingIndex] = obj;
+      }
     }
 
     // Return the number of bytes consumed (3 bytes: typeIdx + idx)
@@ -79,6 +88,16 @@ export class ClientWorld {
 
     // Mark the object as destroyed (set to null)
     if (this.objects[idx]) {
+      const obj = this.objects[idx];
+
+      // Remove from tanks array if it's a tank
+      if (obj.constructor.name === 'Tank') {
+        const tankIndex = this.tanks.indexOf(obj);
+        if (tankIndex !== -1) {
+          this.tanks.splice(tankIndex, 1);
+        }
+      }
+
       this.objects[idx] = null;
     }
 

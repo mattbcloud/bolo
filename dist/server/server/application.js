@@ -482,8 +482,8 @@ export class Application {
         this.games = {};
         this.ircClients = [];
         this.options = options;
-        // Server is at dist/server/server/command.js, so ../../../ goes to project root
-        const webroot = path.join(path.dirname(fs.realpathSync(__filename)), '../../../');
+        // When running with tsx, __filename is src/server/application.ts, so ../../ goes to project root
+        const webroot = path.join(path.dirname(fs.realpathSync(__filename)), '../../');
         this.connectServer = connect();
         if (this.options.web?.log) {
             // Modern connect doesn't have logger middleware by default

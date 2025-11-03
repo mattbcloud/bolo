@@ -37,8 +37,12 @@ body {
   width: 32px; height: 32px;
 }
 
-.bolo-team-red  { background: #ff0000; }
-.bolo-team-blue { background: #0000ff; }
+.bolo-team-red    { background: #ff0000; }
+.bolo-team-blue   { background: #0000ff; }
+.bolo-team-yellow { background: #ffff00; }
+.bolo-team-green  { background: #00ff00; }
+.bolo-team-orange { background: #ffa500; }
+.bolo-team-purple { background: #800080; }
 
 canvas {
   cursor: crosshair;
@@ -66,7 +70,7 @@ canvas {
   top: 0; right: 0; bottom: 0; left: 0;
 }
 
-#pillStatus, #baseStatus, #tankStatus {
+#pillStatus, #baseStatus, #tankStatus, #playersStatus {
   position: absolute;
   border: 2px solid #c0c0f0;
   background: black;
@@ -105,11 +109,11 @@ canvas {
 #tank-armour { left: 30px; }
 #tank-trees  { left: 42px; }
 
-#pillStatus, #baseStatus {
+#pillStatus, #baseStatus, #playersStatus {
   width: 129px; height: 66px;
 }
 
-#pillStatus .deco, #baseStatus .deco {
+#pillStatus .deco, #baseStatus .deco, #playersStatus .deco {
   position: absolute;
   bottom: 3px; right: 4px;
   width: 16px; height: 16px;
@@ -144,6 +148,37 @@ canvas {
 
 #baseStatus .base[status='healthy']    { background-position: -32px 0px; }
 #baseStatus .base[status='vulnerable'] { background-position: -48px 0px; }
+
+#playersStatus {
+  bottom: 8px; left: 290px;
+}
+
+#playersStatus .deco {
+  background-image: url(../images/styled.png);
+  background-position: 0px 0px;
+  background-size: 272px 64px;
+  transform: rotate(-90deg);
+}
+
+#playersStatus .player {
+  float: left;
+  width: 16px; height: 16px;
+  margin: 4px 1px 1px 4px;
+  border-radius: 50%;
+  position: relative;
+}
+
+#playersStatus .player[data-dead="true"]::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  background: url(../images/hud.png);
+  background-position: -64px 0px;
+  border-radius: 0;
+}
 
 #tool-select {
   position: absolute;

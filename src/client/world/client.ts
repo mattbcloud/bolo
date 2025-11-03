@@ -35,6 +35,14 @@ const JOIN_DIALOG_TEMPLATE = `
           <label for="join-team-red"><span class="bolo-team bolo-team-red"></span></label>
           <input type="radio" id="join-team-blue" name="join-team" value="blue"></input>
           <label for="join-team-blue"><span class="bolo-team bolo-team-blue"></span></label>
+          <input type="radio" id="join-team-yellow" name="join-team" value="yellow"></input>
+          <label for="join-team-yellow"><span class="bolo-team bolo-team-yellow"></span></label>
+          <input type="radio" id="join-team-green" name="join-team" value="green"></input>
+          <label for="join-team-green"><span class="bolo-team bolo-team-green"></span></label>
+          <input type="radio" id="join-team-orange" name="join-team" value="orange"></input>
+          <label for="join-team-orange"><span class="bolo-team bolo-team-orange"></span></label>
+          <input type="radio" id="join-team-purple" name="join-team" value="purple"></input>
+          <label for="join-team-purple"><span class="bolo-team bolo-team-purple"></span></label>
         </p>
       </div>
       <div>
@@ -154,13 +162,18 @@ export class BoloClientWorld extends ClientWorld {
     }
     this.loop.start();
 
-    let red = 0;
-    let blue = 0;
+    // Count players in each team
+    const teamCounts = [0, 0, 0, 0, 0, 0]; // red, blue, yellow, green, orange, purple
     for (const tank of this.tanks) {
-      if (tank.team === 0) red++;
-      if (tank.team === 1) blue++;
+      if (tank.team >= 0 && tank.team < 6) {
+        teamCounts[tank.team]++;
+      }
     }
-    const disadvantaged = blue < red ? 'blue' : 'red';
+
+    // Find team with fewest players for default selection
+    const teamNames = ['red', 'blue', 'yellow', 'green', 'orange', 'purple'];
+    let minCount = Math.min(...teamCounts);
+    let disadvantaged = teamNames[teamCounts.indexOf(minCount)];
 
     const dialogContainer = document.createElement('div');
     dialogContainer.innerHTML = JOIN_DIALOG_TEMPLATE;
@@ -227,6 +240,18 @@ export class BoloClientWorld extends ClientWorld {
         break;
       case 'blue':
         team = 1;
+        break;
+      case 'yellow':
+        team = 2;
+        break;
+      case 'green':
+        team = 3;
+        break;
+      case 'orange':
+        team = 4;
+        break;
+      case 'purple':
+        team = 5;
         break;
       default:
         team = -1;

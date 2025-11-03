@@ -29,6 +29,7 @@ export class BaseRenderer {
   tankIndicators?: Record<string, HTMLDivElement>;
   pillIndicators?: Array<[HTMLDivElement, any]>;
   baseIndicators?: Array<[HTMLDivElement, any]>;
+  playerIndicators?: Array<HTMLDivElement>;
   currentTool: string | null = null;
 
   /**
@@ -312,6 +313,7 @@ export class BaseRenderer {
     this.initHudTankStatus();
     this.initHudPillboxes();
     this.initHudBases();
+    this.initHudPlayers();
     this.initHudToolSelect();
     this.initHudNotices();
     this.updateHud();
@@ -381,6 +383,21 @@ export class BaseRenderer {
       container.appendChild(node);
       return [node, base];
     });
+  }
+
+  /**
+   * Create the connected players indicator.
+   */
+  initHudPlayers(): void {
+    const container = document.createElement('div');
+    container.id = 'playersStatus';
+    this.hud!.appendChild(container);
+
+    const deco = document.createElement('div');
+    deco.className = 'deco';
+    container.appendChild(deco);
+
+    this.playerIndicators = [];
   }
 
   /**
@@ -531,6 +548,50 @@ export class BaseRenderer {
         if (node.style.backgroundColor !== newColor) {
           console.log(`[HUD] Base idx=${base.idx} arrayIdx=${i} color changing from ${node.style.backgroundColor} to ${newColor}`);
           node.style.backgroundColor = newColor;
+        }
+      }
+    }
+
+    // Connected Players.
+    if (this.playerIndicators) {
+      const container = document.getElementById('playersStatus');
+      if (container) {
+        // Get all valid tanks (filter out null/undefined)
+        const validTanks = this.world.tanks.filter((tank: any) => tank);
+
+        // Remove excess indicators if we have more than the current number of valid tanks
+        while (this.playerIndicators.length > validTanks.length) {
+          const node = this.playerIndicators.pop();
+          if (node) {
+            node.remove();
+          }
+        }
+
+        // Update or create indicators for each valid tank
+        for (let i = 0; i < validTanks.length; i++) {
+          const tank = validTanks[i];
+
+          // Create indicator if it doesn't exist for this index
+          if (!this.playerIndicators[i]) {
+            const node = document.createElement('div');
+            node.className = 'player';
+            container.appendChild(node);
+            this.playerIndicators[i] = node;
+          }
+
+          const node = this.playerIndicators[i];
+
+          // Update team color
+          const color = TEAM_COLORS[tank.team] || { r: 112, g: 112, b: 112 };
+          node.style.backgroundColor = `rgb(${color.r},${color.g},${color.b})`;
+
+          // Show X overlay for destroyed tanks
+          const isDead = tank.armour === 255;
+          if (isDead) {
+            node.setAttribute('data-dead', 'true');
+          } else {
+            node.removeAttribute('data-dead');
+          }
         }
       }
     }
