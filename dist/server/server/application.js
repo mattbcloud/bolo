@@ -681,15 +681,14 @@ export class Application {
         this.loop.start();
     }
     possiblyStopLoop() {
-        if (!this.haveOpenSlots()) {
-            this.loop.stop();
-        }
+        // Never stop the loop - we need it running to perform cleanup checks on empty games
+        // The loop will continue as long as there are games (including the demo game)
     }
     tick() {
         for (const [gid, game] of Object.entries(this.games)) {
             game.tick();
         }
-        // Periodically check for empty games and close them (check every 1000 ticks ~16 seconds)
+        // Periodically check for empty games and close them (check every ~16 seconds)
         this.tickCounter++;
         if (this.tickCounter % 1000 === 0) {
             const now = Date.now();
