@@ -85,6 +85,7 @@ export class BoloClientWorld extends ClientWorld {
   rangeAdjustTimer!: number;
   objects!: any[];
   tanks!: any[];
+  lobbyRefreshInterval?: number;
 
   constructor() {
     super();
@@ -167,6 +168,11 @@ export class BoloClientWorld extends ClientWorld {
     // Load maps and games
     this.loadMaps();
     this.loadGames();
+
+    // Set up periodic refresh of game list (every 3 seconds)
+    this.lobbyRefreshInterval = window.setInterval(() => {
+      this.loadGames();
+    }, 3000);
 
     // Set up create game button
     document.getElementById('create-game-btn')?.addEventListener('click', () => {
@@ -262,6 +268,12 @@ export class BoloClientWorld extends ClientWorld {
    * Connect to a specific game
    */
   connectToGame(gameId: string): void {
+    // Stop lobby refresh interval
+    if (this.lobbyRefreshInterval) {
+      clearInterval(this.lobbyRefreshInterval);
+      this.lobbyRefreshInterval = undefined;
+    }
+
     // Remove lobby if present
     document.getElementById('lobby-dialog')?.remove();
 

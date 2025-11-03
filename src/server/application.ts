@@ -310,7 +310,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     }
 
     ws.tank = this.spawn(Tank, message.team);
-    ws.tank.name = message.name;
+    ws.tank.name = message.nick;
     ws.nick = message.nick;
 
     // Log player join with details
