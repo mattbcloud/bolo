@@ -65,7 +65,9 @@ export class ClientWorld {
     this.objects[idx] = obj;
 
     // Track tanks separately
-    if (obj.constructor.name === 'Tank') {
+    // Use ObjectClass comparison instead of constructor.name to avoid minification issues
+    const TankClass = (this.constructor as typeof ClientWorld).types[3]; // Tank is registered as type index 3
+    if (ObjectClass === TankClass) {
       // Check if this tank already exists in the tanks array (prevent duplicates)
       const existingIndex = this.tanks.findIndex((t: any) => t && t.idx === obj.idx);
       if (existingIndex === -1) {
@@ -91,7 +93,9 @@ export class ClientWorld {
       const obj = this.objects[idx];
 
       // Remove from tanks array if it's a tank
-      if (obj.constructor.name === 'Tank') {
+      // Use type index comparison instead of constructor.name to avoid minification issues
+      const TankClass = (this.constructor as typeof ClientWorld).types[3]; // Tank is registered as type index 3
+      if (obj.constructor === TankClass) {
         const tankIndex = this.tanks.indexOf(obj);
         if (tankIndex !== -1) {
           this.tanks.splice(tankIndex, 1);
