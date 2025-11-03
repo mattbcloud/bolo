@@ -1,5 +1,6 @@
 {
   "general": {
+    "base": "https://web-bolo.com",
     "maxgames": 5
   },
   "web": {
