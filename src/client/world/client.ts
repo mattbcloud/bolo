@@ -97,19 +97,177 @@ export class BoloClientWorld extends ClientWorld {
    */
   loaded(vignette: Vignette): void {
     this.vignette = vignette;
-    this.vignette.message('Connecting to the multiplayer game');
     this.heartbeatTimer = 0;
 
-    let path: string;
+    // Check if we have a game ID in the URL
     const m = /^\?([a-z]{20})$/.exec(location.search);
     if (m) {
-      path = `/match/${m[1]}`;
+      // Direct link to a game - connect immediately
+      this.connectToGame(m[1]);
     } else if (location.search) {
       this.vignette.message('Invalid game ID');
       return;
     } else {
-      path = '/demo';
+      // No game ID - show lobby
+      this.showLobby();
     }
+  }
+
+  /**
+   * Show the lobby to select or create a game
+   */
+  showLobby(): void {
+    // Clear the loading message
+    if (this.vignette) {
+      this.vignette.message('');
+    }
+
+    // Create lobby UI
+    const lobbyHTML = `
+      <div id="lobby-dialog" style="
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.9);
+        color: white;
+        padding: 30px;
+        border: 2px solid #c0c0f0;
+        min-width: 600px;
+        max-width: 800px;
+        max-height: 80vh;
+        overflow-y: auto;
+        font-family: sans-serif;
+        z-index: 10000;
+      ">
+        <h1 style="margin: 0 0 20px 0; text-align: center;">Bolo Multiplayer Lobby</h1>
+
+        <div id="active-games-section">
+          <h2 style="margin: 20px 0 10px 0;">Active Games</h2>
+          <div id="active-games-list" style="margin-bottom: 20px;">
+            Loading...
+          </div>
+        </div>
+
+        <div id="create-game-section">
+          <h2 style="margin: 20px 0 10px 0;">Create New Game</h2>
+          <div style="margin-bottom: 10px;">
+            <label for="map-select">Select Map:</label>
+            <select id="map-select" style="margin-left: 10px; padding: 5px; width: 300px;">
+              <option value="">Loading maps...</option>
+            </select>
+          </div>
+          <button id="create-game-btn" style="padding: 10px 20px; cursor: pointer;" disabled>Create Game</button>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', lobbyHTML);
+
+    // Load maps and games
+    this.loadMaps();
+    this.loadGames();
+
+    // Set up create game button
+    document.getElementById('create-game-btn')?.addEventListener('click', () => {
+      this.createGame();
+    });
+
+    // Expose join function globally for the Join buttons
+    (window as any).boloJoinGame = (gid: string) => this.connectToGame(gid);
+  }
+
+  /**
+   * Load available maps from the server
+   */
+  async loadMaps(): Promise<void> {
+    try {
+      const response = await fetch('/api/maps');
+      const maps = await response.json();
+
+      const select = document.getElementById('map-select') as HTMLSelectElement;
+      if (!select) return;
+
+      select.innerHTML = maps.map((map: any) =>
+        `<option value="${map.name}">${map.name}</option>`
+      ).join('');
+
+      const createBtn = document.getElementById('create-game-btn') as HTMLButtonElement;
+      if (createBtn) createBtn.disabled = false;
+    } catch (error) {
+      console.error('Failed to load maps:', error);
+    }
+  }
+
+  /**
+   * Load active games from the server
+   */
+  async loadGames(): Promise<void> {
+    try {
+      const response = await fetch('/api/games');
+      const games = await response.json();
+
+      const gamesList = document.getElementById('active-games-list');
+      if (!gamesList) return;
+
+      if (games.length === 0) {
+        gamesList.innerHTML = '<p style="color: #888;">No active games. Create one below!</p>';
+      } else {
+        gamesList.innerHTML = games.map((game: any) => `
+          <div style="border: 1px solid #666; padding: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <strong>${game.mapName}</strong>
+              <span style="color: #888; margin-left: 10px;">${game.playerCount} player${game.playerCount !== 1 ? 's' : ''}</span>
+            </div>
+            <button onclick="window.boloJoinGame('${game.gid}')" style="padding: 5px 15px; cursor: pointer;">Join</button>
+          </div>
+        `).join('');
+      }
+    } catch (error) {
+      console.error('Failed to load games:', error);
+    }
+  }
+
+  /**
+   * Create a new game with the selected map
+   */
+  async createGame(): Promise<void> {
+    const select = document.getElementById('map-select') as HTMLSelectElement;
+    if (!select || !select.value) return;
+
+    const mapName = select.value;
+
+    try {
+      const response = await fetch('/api/games', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mapName })
+      });
+
+      const game = await response.json();
+
+      if (response.ok) {
+        // Connect to the new game
+        this.connectToGame(game.gid);
+      } else {
+        alert(game.error || 'Failed to create game');
+      }
+    } catch (error) {
+      console.error('Failed to create game:', error);
+      alert('Failed to create game');
+    }
+  }
+
+  /**
+   * Connect to a specific game
+   */
+  connectToGame(gameId: string): void {
+    // Remove lobby if present
+    document.getElementById('lobby-dialog')?.remove();
+
+    this.vignette?.message('Connecting to game...');
+
+    const path = gameId === 'demo' ? '/demo' : `/match/${gameId}`;
 
     // Use wss:// for HTTPS, ws:// for HTTP
     const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';

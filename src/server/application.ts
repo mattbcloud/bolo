@@ -49,6 +49,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   gid?: string;
   url?: string;
   tanks: any[] = [];
+  emptyStartTime: number | null = null;  // Track when game became empty
 
   // Methods from BoloWorldMixin (applied via helpers.extend at the bottom of the file)
   boloInit!: () => void;
@@ -66,6 +67,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     this.map.world = this;
     this.oddTick = false;
     this.spawnMapObjects();
+    this.emptyStartTime = Date.now();  // Game starts empty
   }
 
   insert(obj: any): void {
@@ -588,6 +590,7 @@ export class Application {
   maps!: MapIndex;
   loop: any;
   demo?: any;
+  tickCounter: number = 0;
 
   constructor(options: ServerConfig = {} as ServerConfig) {
     this.options = options;
@@ -603,10 +606,6 @@ export class Application {
       });
     }
     this.connectServer.use('/', redirector(this.options.general?.base || ''));
-    // Serve built client files (index.html and assets)
-    this.connectServer.use('/', serveStatic(path.join(webroot, 'dist/client')));
-    // Serve static assets (images, sounds, css, maps) from root
-    this.connectServer.use('/', serveStatic(webroot));
 
     this.games = {};
     this.ircClients = [];
@@ -617,6 +616,82 @@ export class Application {
         if (err) console.log(err);
       });
     });
+
+    // API endpoints for lobby (after this.games and this.maps are initialized)
+    this.connectServer.use('/api/maps', (req: any, res: any) => {
+      res.setHeader('Content-Type', 'application/json');
+      const mapList = Object.keys(this.maps.nameIndex).map(name => ({
+        name,
+        path: this.maps.nameIndex[name].path
+      }));
+      res.end(JSON.stringify(mapList));
+    });
+
+    this.connectServer.use('/api/games', (req: any, res: any) => {
+      if (req.method === 'GET') {
+        // List active games
+        res.setHeader('Content-Type', 'application/json');
+        const gameList = Object.keys(this.games).map(gid => ({
+          gid,
+          url: this.games[gid].url,
+          mapName: this.games[gid].map.name || 'Unknown',
+          playerCount: this.games[gid].tanks.length
+        }));
+        res.end(JSON.stringify(gameList));
+      } else if (req.method === 'POST') {
+        // Create new game with specified map
+        let body = '';
+        req.on('data', (chunk: any) => body += chunk);
+        req.on('end', () => {
+          try {
+            const { mapName } = JSON.parse(body);
+            const mapDescriptor = this.maps.get(mapName);
+
+            if (!mapDescriptor) {
+              res.statusCode = 404;
+              res.end(JSON.stringify({ error: 'Map not found' }));
+              return;
+            }
+
+            if (!this.haveOpenSlots()) {
+              res.statusCode = 503;
+              res.end(JSON.stringify({ error: 'Server full' }));
+              return;
+            }
+
+            fs.readFile(mapDescriptor.path, (err, data) => {
+              if (err) {
+                res.statusCode = 500;
+                res.end(JSON.stringify({ error: 'Failed to load map' }));
+                return;
+              }
+
+              const game = this.createGame(data);
+              game.map.name = mapName; // Store map name for reference
+
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({
+                gid: game.gid,
+                url: game.url,
+                mapName,
+                playerCount: 0
+              }));
+            });
+          } catch (e) {
+            res.statusCode = 400;
+            res.end(JSON.stringify({ error: 'Invalid request' }));
+          }
+        });
+      } else {
+        res.statusCode = 405;
+        res.end('Method not allowed');
+      }
+    });
+
+    // Serve built client files (index.html and assets)
+    this.connectServer.use('/', serveStatic(path.join(webroot, 'dist/client')));
+    // Serve static assets (images, sounds, css, maps) from root
+    this.connectServer.use('/', serveStatic(webroot));
 
     this.loop = createLoop({
       rate: TICK_LENGTH_MS,
@@ -638,6 +713,7 @@ export class Application {
         return cb?.(`Unable to start demo game: ${err.toString()}`);
       }
       this.demo = this.createGame(data);
+      this.demo.map.name = 'Everard Island'; // Store map name for reference
       cb?.(null);
     });
   }
@@ -732,6 +808,28 @@ export class Application {
   tick(): void {
     for (const [gid, game] of Object.entries(this.games)) {
       game.tick();
+    }
+
+    // Periodically check for empty games and close them (check every 1000 ticks ~16 seconds)
+    this.tickCounter++;
+    if (this.tickCounter % 1000 === 0) {
+      const now = Date.now();
+      const ONE_HOUR_MS = 60 * 60 * 1000;
+
+      for (const [gid, game] of Object.entries(this.games)) {
+        // Skip the demo game - never close it
+        if (game === this.demo) {
+          continue;
+        }
+
+        // Check if game has been empty for over an hour
+        if (game.emptyStartTime !== null &&
+            game.emptyStartTime !== undefined &&
+            (now - game.emptyStartTime) > ONE_HOUR_MS) {
+          console.log(`Closing empty game '${gid}' (empty for ${Math.floor((now - game.emptyStartTime) / 1000 / 60)} minutes)`);
+          this.closeGame(game);
+        }
+      }
     }
   }
 
