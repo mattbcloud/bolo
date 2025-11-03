@@ -32,6 +32,10 @@ export const BoloWorldMixin = {
     tank.tank_idx = this.tanks.length;
     this.tanks.push(tank);
     if (this.authority) this.resolveMapObjectOwners();
+    // Clear empty timer when first player joins
+    if (this.tanks.length === 1 && this.emptyStartTime !== undefined) {
+      this.emptyStartTime = null;
+    }
   },
 
   removeTank(this: any, tank: any): void {
@@ -40,6 +44,10 @@ export const BoloWorldMixin = {
       this.tanks[i].tank_idx = i;
     }
     if (this.authority) this.resolveMapObjectOwners();
+    // Start empty timer when last player leaves
+    if (this.tanks.length === 0 && this.emptyStartTime !== undefined) {
+      this.emptyStartTime = Date.now();
+    }
   },
 
   // Map helpers
