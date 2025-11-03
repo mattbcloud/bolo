@@ -284,8 +284,8 @@ export class Tank extends BoloObject {
         this.soundEffect(sounds.SHOOTING);
     }
     turn() {
-        // Determine turn rate (increased by 27% for tighter turning).
-        const maxTurn = this.cell.getTankTurn(this) * 1.27;
+        // Determine turn rate (increased by 82.88% for tighter turning).
+        const maxTurn = this.cell.getTankTurn(this) * 1.8288;
         // Are the key presses cancelling eachother out?
         if (this.turningClockwise === this.turningCounterClockwise) {
             this.turnSpeedup = 0;

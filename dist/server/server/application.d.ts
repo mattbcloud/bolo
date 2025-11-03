@@ -19,6 +19,7 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     gid?: string;
     url?: string;
     tanks: any[];
+    emptyStartTime: number | null;
     boloInit: () => void;
     addTank: (tank: any) => void;
     removeTank: (tank: any) => void;
@@ -94,6 +95,7 @@ export declare class Application {
     maps: MapIndex;
     loop: any;
     demo?: any;
+    tickCounter: number;
     constructor(options?: ServerConfig);
     resetDemo(cb?: (err: string | null) => void): void;
     haveOpenSlots(): boolean;
