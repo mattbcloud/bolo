@@ -97,6 +97,36 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
    */
   tick(): void {
     super.tick();
+
+    // Forest regeneration - check a few random cells each tick
+    // This spreads the work out rather than checking all cells periodically
+    for (let i = 0; i < 3; i++) {
+      const x = Math.floor(Math.random() * 256);
+      const y = Math.floor(Math.random() * 256);
+      const cell = this.map.cellAtTile(x, y);
+
+      // Only regenerate on grass tiles (not bases, pillboxes, or other terrain)
+      if (cell.isType('.') && !cell.base && !cell.pill) {
+        // Count neighboring forest cells
+        let forestCount = 0;
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            if (dx === 0 && dy === 0) continue;
+            const neighbor = cell.neigh(dx, dy);
+            if (neighbor.isType('#')) forestCount++;
+          }
+        }
+
+        // Higher chance with more forest neighbors
+        // Base rate: 0.00005 per tick (very slow natural growth)
+        // With neighbors: up to 0.0004 per tick (8 neighbors * 0.00005 each)
+        const growthChance = 0.00005 * (1 + forestCount);
+        if (Math.random() < growthChance) {
+          cell.setType('#');
+        }
+      }
+    }
+
     this.sendPackets();
   }
 

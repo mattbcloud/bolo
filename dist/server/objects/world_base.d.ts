@@ -4,7 +4,9 @@
 import BoloObject from '../object';
 export declare class WorldBase extends BoloObject {
     styled: boolean;
-    team: number | null;
+    _team: number | null;
+    get team(): number | null;
+    set team(value: number | null);
     owner_idx: number;
     armour: number;
     shells: number;

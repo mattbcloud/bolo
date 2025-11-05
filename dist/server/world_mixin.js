@@ -22,9 +22,26 @@ export const BoloWorldMixin = {
         }
     },
     removeTank(tank) {
+        const removedIdx = tank.tank_idx;
         this.tanks.splice(tank.tank_idx, 1);
+        // Renumber all subsequent tanks
         for (let i = tank.tank_idx; i < this.tanks.length; i++) {
             this.tanks[i].tank_idx = i;
+        }
+        // Update owner_idx on all map objects to reflect the renumbered tanks
+        for (const obj of this.getAllMapObjects()) {
+            if (obj.owner_idx !== 255) {
+                if (obj.owner_idx === removedIdx) {
+                    // The owner was the removed tank - clear ownership but preserve team
+                    // This allows the base to remain claimed by the team even though the specific player left
+                    obj.owner_idx = 255;
+                    obj.ref('owner', null);
+                }
+                else if (obj.owner_idx > removedIdx) {
+                    // The owner was a tank with higher index - decrement to match renumbered tank
+                    obj.owner_idx -= 1;
+                }
+            }
         }
         if (this.authority)
             this.resolveMapObjectOwners();

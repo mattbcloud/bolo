@@ -67,7 +67,13 @@ export class ServerWorld {
         // Remove from tanks array if it's a tank
         const tankIdx = this.tanks.indexOf(obj);
         if (tankIdx !== -1) {
-            this.tanks.splice(tankIdx, 1);
+            // Call removeTank if available (from WorldMixin), otherwise remove directly
+            if (typeof this.removeTank === 'function') {
+                this.removeTank(obj);
+            }
+            else {
+                this.tanks.splice(tankIdx, 1);
+            }
         }
     }
     dump(obj, isCreate = false) {
