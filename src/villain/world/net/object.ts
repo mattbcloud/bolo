@@ -44,7 +44,36 @@ export class NetWorldObject extends WorldObject {
     const packer = buildPacker();
 
     (this as any).serialization(isCreate, (format: string, propName: string, options?: any) => {
+      // Debug logging for base team serialization - BEFORE reading the value
+      if (this.constructor.name === 'WorldBase' && propName === 'team') {
+        const hasOwnProperty = Object.prototype.hasOwnProperty.call(this, 'team');
+        console.log(`[DUMP BEFORE READ] WorldBase idx=${(this as any).idx}, hasOwnProperty('team')=${hasOwnProperty}`);
+        console.log(`[DUMP BEFORE READ] Direct access: this['team']=${(this as any)['team']}, this._team=${(this as any)._team}`);
+        console.log(`[DUMP BEFORE READ] Direct access via bracket on _team: this['_team']=${(this as any)['_team']}`);
+
+        // Check all properties on the object
+        console.log(`[DUMP BEFORE READ] Object.keys(this):`, Object.keys(this));
+        console.log(`[DUMP BEFORE READ] Has own _team:`, Object.prototype.hasOwnProperty.call(this, '_team'));
+
+        if (hasOwnProperty) {
+          const ownDesc = Object.getOwnPropertyDescriptor(this, 'team');
+          console.log(`[DUMP BEFORE READ] Own property descriptor:`, ownDesc);
+        }
+
+        // Add stack trace to see when dump is called
+        console.log(`[DUMP BEFORE READ] Stack trace:`, new Error().stack?.split('\n').slice(0, 5).join('\n'));
+      }
+
       let value = (this as any)[propName];
+
+      // Debug logging for base team serialization
+      if (this.constructor.name === 'WorldBase' && propName === 'team') {
+        console.log(`[DUMP] WorldBase idx=${(this as any).idx} serializing team=${value} (type: ${typeof value}), isCreate=${isCreate}, _team=${(this as any)._team}`);
+
+        // Try reading via getter explicitly
+        const viaGetter = (this as any).team;
+        console.log(`[DUMP] Via explicit getter call: ${viaGetter}`);
+      }
 
       // Apply transform if provided
       if (options?.tx) {
@@ -104,7 +133,31 @@ export class NetWorldObject extends WorldObject {
         console.log(`[LOAD PROPERTY] Current value of ${propName}:`, (this as any)[propName]);
       }
 
-      (this as any)[propName] = value;
+      // Check if there's a setter for this property and use it
+      // This prevents creating an own property that shadows the getter/setter
+      const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this), propName);
+
+      // Extra logging for team property
+      if (this.constructor.name === 'WorldBase' && propName === 'team') {
+        console.log(`[LOAD DESCRIPTOR CHECK] Base idx=${(this as any).idx}, descriptor found:`, !!descriptor, 'has setter:', !!descriptor?.set);
+        console.log(`[LOAD DESCRIPTOR CHECK] Prototype:`, Object.getPrototypeOf(this).constructor.name);
+        // Check if there's an own property shadowing the getter/setter
+        const ownDesc = Object.getOwnPropertyDescriptor(this, propName);
+        console.log(`[LOAD DESCRIPTOR CHECK] Has own property '${propName}':`, !!ownDesc, 'own descriptor:', ownDesc);
+      }
+
+      if (descriptor && descriptor.set) {
+        // Use the setter
+        descriptor.set.call(this, value);
+
+        // Verify the setter worked
+        if (this.constructor.name === 'WorldBase' && propName === 'team') {
+          console.log(`[LOAD AFTER SETTER] Base idx=${(this as any).idx}, value after setter call:`, (this as any)[propName]);
+        }
+      } else {
+        // No setter, use direct assignment
+        (this as any)[propName] = value;
+      }
       changes[propName] = value;
     });
 
