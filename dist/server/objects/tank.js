@@ -40,6 +40,9 @@ export class Tank extends BoloObject {
         this.reload = 0;
         this.shooting = false;
         this.firingRange = 7;
+        // Statistics
+        this.kills = 0;
+        this.deaths = 0;
         // Water/boat
         this.waterTimer = 0;
         this.onBoat = true;
@@ -94,6 +97,7 @@ export class Tank extends BoloObject {
         this.reload = 0;
         this.shooting = false;
         this.firingRange = 7;
+        // Don't reset kills and deaths - they persist across respawns in the same game
         this.waterTimer = 0;
         this.onBoat = true;
         // Clear the fireball reference so camera stops following it
@@ -138,6 +142,8 @@ export class Tank extends BoloObject {
             rx: (v) => v / 2,
         });
         p('B', 'waterTimer');
+        p('B', 'kills');
+        p('B', 'deaths');
         // Group bit fields.
         p('f', 'accelerating');
         p('f', 'braking');
@@ -196,6 +202,12 @@ export class Tank extends BoloObject {
             if (this.world.spawn) {
                 this.ref('fireball', this.world.spawn(Fireball, this.x, this.y, shell.direction, largeExplosion));
             }
+            // Track death and kill statistics
+            this.deaths++;
+            // Credit the kill to the attacker (via attribution)
+            if (shell.attribution && shell.attribution.$ && shell.attribution.$ !== this) {
+                shell.attribution.$.kills++;
+            }
             this.kill();
         }
         else {
@@ -221,6 +233,9 @@ export class Tank extends BoloObject {
             if (this.world.spawn) {
                 this.ref('fireball', this.world.spawn(Fireball, this.x, this.y, this.direction, largeExplosion));
             }
+            // Track death from mine
+            this.deaths++;
+            // TODO: Track who placed the mine for kill attribution
             this.kill();
         }
         else if (this.onBoat) {
@@ -284,8 +299,8 @@ export class Tank extends BoloObject {
         this.soundEffect(sounds.SHOOTING);
     }
     turn() {
-        // Determine turn rate (increased by 82.88% for tighter turning).
-        const maxTurn = this.cell.getTankTurn(this) * 1.8288;
+        // Determine turn rate (increased by 165.6% for tighter turning).
+        const maxTurn = this.cell.getTankTurn(this) * 2.6555;
         // Are the key presses cancelling eachother out?
         if (this.turningClockwise === this.turningCounterClockwise) {
             this.turnSpeedup = 0;
@@ -495,6 +510,8 @@ export class Tank extends BoloObject {
     }
     sink() {
         this.world.soundEffect(sounds.TANK_SINKING, this.x, this.y);
+        // Track death from sinking
+        this.deaths++;
         // FIXME: Somehow blame a killer, if instigated by a shot?
         this.kill();
     }

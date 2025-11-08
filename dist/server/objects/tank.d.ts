@@ -23,6 +23,8 @@ export declare class Tank extends BoloObject {
     reload: number;
     shooting: boolean;
     firingRange: number;
+    kills: number;
+    deaths: number;
     waterTimer: number;
     onBoat: boolean;
     respawnTimer?: number;
