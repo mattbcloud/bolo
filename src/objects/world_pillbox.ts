@@ -60,13 +60,6 @@ export class WorldPillbox extends BoloObject {
       if (changes.hasOwnProperty('inTank') || changes.hasOwnProperty('carried')) {
         this.updateCell();
       }
-      // Debug logging for team changes
-      if (changes.hasOwnProperty('team')) {
-        console.log(`[Pillbox netUpdate] team changed to ${this.team}, owner=${this.owner_idx}`);
-      }
-      if (changes.hasOwnProperty('owner')) {
-        console.log(`[Pillbox netUpdate] owner changed to ${this.owner_idx}, team=${this.team}, hasTeamChange=${changes.hasOwnProperty('team')}`);
-      }
       // Only update owner-derived fields if team wasn't directly updated
       // (since team is now sent via serialization)
       if (changes.hasOwnProperty('owner') && !changes.hasOwnProperty('team')) {

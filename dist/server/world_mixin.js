@@ -81,16 +81,11 @@ export const BoloWorldMixin = {
             // If owner_idx is 255 (neutral) or invalid, this.tanks[owner_idx] will be undefined
             // and we should NOT overwrite the existing owner reference
             if (obj.owner_idx !== 255 && obj.owner_idx < this.tanks.length) {
-                console.log(`[resolveMapObjectOwners] Updating ${obj.constructor.name} idx=${obj.idx} owner to tank ${obj.owner_idx}`);
                 obj.ref('owner', this.tanks[obj.owner_idx]);
             }
             else if (obj.owner_idx === 255 && obj.owner) {
                 // If explicitly neutral but has an owner, clear it
-                console.log(`[resolveMapObjectOwners] Clearing ${obj.constructor.name} idx=${obj.idx} owner (was tank ${obj.owner.$.tank_idx})`);
                 obj.ref('owner', null);
-            }
-            else {
-                console.log(`[resolveMapObjectOwners] Skipping ${obj.constructor.name} idx=${obj.idx} (owner_idx=${obj.owner_idx}, has owner=${!!obj.owner})`);
             }
             obj.cell?.retile();
         }

@@ -165,7 +165,6 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
 
     // To synchronize the object list to the client, we use changesPacket with fullCreate=true
     // This sends CREATE messages followed by TINY_UPDATE messages for each object
-    console.log(`[SERVER] Client connecting, objects count: ${this.objects.length}, non-null: ${this.objects.filter(o => o).length}`);
 
     // Build a snapshot of all existing objects at this moment, including nulls to preserve indices
     // The client needs to have the same sparse array structure as the server
@@ -176,7 +175,6 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       obj ? ['create', obj, idx] as [string, any, number] : ['create', null, idx] as [string, any, number]
     );
 
-    console.log(`[SERVER] Sending initial sync with ${this.changes.filter(c => c[1]).length} non-null objects out of ${this.changes.length} total`);
     let packetData = this.changesPacket(true, true);  // Pass isInitialSync=true for first client
     packet = Buffer.from(packetData).toString('base64');
     ws.send(packet);
@@ -436,18 +434,15 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     let newClientPacket: any;
     if (hasNewClients) {
       // Create full snapshot of all objects for new clients
-      console.log(`[INITIAL_SYNC] Building initial sync packet, objects.length=${this.objects.length}`);
       const savedChanges = this.changes;
       this.changes = [];
       for (let i = 0; i < this.objects.length; i++) {
         const obj = this.objects[i];
         if (obj) {
-          console.log(`[INITIAL_SYNC] Including object at array index ${i}, idx=${obj.idx}, type=${obj.constructor.name}`);
           // Use obj.idx (not array index) to match the server's object index
           this.changes.push(['create', obj, obj.idx] as [string, any, number]);
         }
       }
-      console.log(`[INITIAL_SYNC] Total objects to sync: ${this.changes.length}`);
       newClientPacket = this.changesPacket(true, true);  // Pass isInitialSync=true
       this.changes = savedChanges;  // Restore changes for existing clients
       newClientPacket = Buffer.from(newClientPacket).toString('base64');
@@ -515,8 +510,6 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   changesPacket(fullCreate: boolean, isInitialSync: boolean = false): number[] {
     if (this.changes.length === 0) return [];
 
-    console.log(`[CHANGES_PACKET] fullCreate=${fullCreate}, isInitialSync=${isInitialSync}, changes count=${this.changes.length}`);
-
     let data: number[] = [];
     const needUpdate: any[] = [];
 
@@ -528,7 +521,6 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
         case 'create': {
           // Skip null objects - they're just placeholders to preserve indices
           if (!obj) break;
-          console.log(`[CHANGES_PACKET] CREATE: type=${obj.constructor.name}, idx=${idx}, _net_type_idx=${obj._net_type_idx}`);
           // Always send TINY_UPDATE after CREATE to initialize object state
           needUpdate.push(obj);
           // Only add to newlyCreated if this is a real creation (not initial sync)
@@ -540,7 +532,6 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
           break;
         }
         case 'destroy': {
-          console.log(`[CHANGES_PACKET] DESTROY: idx=${idx}`);
           for (let i = 0; i < needUpdate.length; i++) {
             if (needUpdate[i] === obj) {
               needUpdate.splice(i, 1);
@@ -553,9 +544,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
         case 'mapChange': {
           const x = change[1], y = change[2], ascii = change[3], life = change[4], mine = change[5];
           const asciiCode = ascii.charCodeAt(0);
-          console.log(`[MAPCHANGE] x=${x}, y=${y}, ascii='${ascii}' (code=${asciiCode}), life=${life}, mine=${mine}`);
           const packed = pack('BBBBf', x, y, asciiCode, life, mine);
-          console.log(`[MAPCHANGE] Packed ${packed.length} bytes:`, packed);
           data = data.concat([net.MAPCHANGE_MESSAGE], packed);
           break;
         }
@@ -567,18 +556,14 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       }
     }
 
-    console.log(`[CHANGES_PACKET] needUpdate count=${needUpdate.length}`);
     for (const obj of needUpdate) {
       // CRITICAL FIX: Newly created objects must ALWAYS use isCreate=true for TINY_UPDATE
       // because the client sets isCreate=true based on _createdViaMessage flag
       // If we send isCreate=false but client expects isCreate=true, byte counts won't match!
       const useFullCreate = fullCreate || this.newlyCreated.has(obj);
       const objData = this.dump(obj, useFullCreate);
-      console.log(`[CHANGES_PACKET] TINY_UPDATE: type=${obj.constructor.name}, idx=${obj.idx}, data length=${objData.length}, isCreate=${useFullCreate}`);
       data = data.concat([net.TINY_UPDATE_MESSAGE], pack('H', obj.idx), objData);
     }
-
-    console.log(`[CHANGES_PACKET] Total packet length=${data.length}`);
 
     // Clear changes array so they don't get re-broadcast
     this.changes = [];
@@ -649,25 +634,49 @@ export class Application {
 
     // API endpoints for lobby (after this.games and this.maps are initialized)
     this.connectServer.use('/api/maps', (req: any, res: any) => {
-      res.setHeader('Content-Type', 'application/json');
-      const mapList = Object.keys(this.maps.nameIndex).map(name => ({
-        name,
-        path: this.maps.nameIndex[name].path
-      }));
-      res.end(JSON.stringify(mapList));
+      try {
+        res.setHeader('Content-Type', 'application/json');
+        if (!this.maps || !this.maps.nameIndex) {
+          console.error('[API ERROR] Maps not initialized yet');
+          res.statusCode = 503;
+          res.end(JSON.stringify({ error: 'Maps are still being loaded' }));
+          return;
+        }
+        const mapList = Object.keys(this.maps.nameIndex).map(name => ({
+          name,
+          path: this.maps.nameIndex[name].path
+        }));
+        res.end(JSON.stringify(mapList));
+      } catch (error) {
+        console.error('[API ERROR] /api/maps failed:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: 'Internal server error', message: String(error) }));
+      }
     });
 
     this.connectServer.use('/api/games', (req: any, res: any) => {
       if (req.method === 'GET') {
         // List active games
-        res.setHeader('Content-Type', 'application/json');
-        const gameList = Object.keys(this.games).map(gid => ({
-          gid,
-          url: this.games[gid].url,
-          mapName: this.games[gid].map.name || 'Unknown',
-          playerCount: this.games[gid].tanks.length
-        }));
-        res.end(JSON.stringify(gameList));
+        try {
+          res.setHeader('Content-Type', 'application/json');
+          if (!this.games) {
+            console.error('[API ERROR] Games object not initialized');
+            res.statusCode = 503;
+            res.end(JSON.stringify({ error: 'Server not ready' }));
+            return;
+          }
+          const gameList = Object.keys(this.games).map(gid => ({
+            gid,
+            url: this.games[gid].url,
+            mapName: this.games[gid].map.name || 'Unknown',
+            playerCount: this.games[gid].tanks.length
+          }));
+          res.end(JSON.stringify(gameList));
+        } catch (error) {
+          console.error('[API ERROR] /api/games GET failed:', error);
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: 'Internal server error', message: String(error) }));
+        }
       } else if (req.method === 'POST') {
         // Create new game with specified map
         let body = '';
