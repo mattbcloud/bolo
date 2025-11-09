@@ -72,9 +72,9 @@ export class WorldBase extends BoloObject {
         p('B', 'owner_idx');
         p('B', 'team');
         p('O', 'refueling');
-        if (this.refueling) {
-            p('B', 'refuelCounter');
-        }
+        // Always send refuelCounter to avoid desync when refueling object reference
+        // can't be resolved yet on the client (object may not exist in client's array yet)
+        p('B', 'refuelCounter');
         p('B', 'armour');
         p('B', 'shells');
         p('B', 'mines');

@@ -4,7 +4,9 @@
 import BoloObject from '../object';
 export declare class WorldPillbox extends BoloObject {
     styled: boolean;
-    team: number | null;
+    private _teamValue;
+    get team(): number | null;
+    set team(value: number | null);
     owner_idx: number;
     armour: number;
     speed: number;
@@ -34,6 +36,10 @@ export declare class WorldPillbox extends BoloObject {
     serialization(isCreate: boolean, p: Function): void;
     /**
      * Get the tilemap index to draw. This is the index in styled.png.
+     * Returns [column, row] where row determines the team color:
+     * - row 0: neutral (yellow)
+     * - row 1: team RED
+     * - row 2: team BLUE
      */
     getTile(): [number, number];
     /**

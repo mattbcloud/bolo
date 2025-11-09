@@ -41,6 +41,7 @@ export class Tank extends BoloObject {
   // Combat
   reload: number = 0;
   shooting: boolean = false;
+  layingMine: boolean = false;
   firingRange: number = 7;
 
   // Statistics
@@ -117,6 +118,7 @@ export class Tank extends BoloObject {
 
     this.reload = 0;
     this.shooting = false;
+    this.layingMine = false;
     this.firingRange = 7;
 
     // Don't reset kills and deaths - they persist across respawns in the same game
@@ -178,6 +180,7 @@ export class Tank extends BoloObject {
     p('f', 'turningClockwise');
     p('f', 'turningCounterClockwise');
     p('f', 'shooting');
+    p('f', 'layingMine');
     p('f', 'onBoat');
   }
 
@@ -296,6 +299,7 @@ export class Tank extends BoloObject {
 
     if (this.death()) return;
     this.shootOrReload();
+    this.layMine();
     this.turn();
     this.accelerate();
     this.fixPosition();
@@ -335,6 +339,31 @@ export class Tank extends BoloObject {
       this.world.spawn(Shell, this, { range: this.firingRange, onWater: this.onBoat });
     }
     this.soundEffect(sounds.SHOOTING);
+  }
+
+  layMine(): void {
+    if (!this.layingMine || this.mines <= 0) return;
+
+    // Get the direction behind the tank (opposite direction)
+    const behindDirection = (this.direction + 128) % 256;
+    const rad = ((256 - round((behindDirection - 1) / 16) % 16 * 16) * 2 * PI) / 256;
+
+    // Calculate position one tile behind the tank
+    const behindX = this.x! + round(cos(rad) * TILE_SIZE_WORLD);
+    const behindY = this.y! + round(sin(rad) * TILE_SIZE_WORLD);
+    const behindCell = this.world.map.cellAtWorld(behindX, behindY);
+
+    // Check if we can place a mine here (same rules as builder)
+    // Cannot place on: bases, pillboxes, water ('^', ' '), walls ('|'), ruins ('}'), boats ('b')
+    if (behindCell.base || behindCell.pill || behindCell.mine ||
+        behindCell.isType('^', ' ', '|', 'b', '}')) {
+      return;
+    }
+
+    // Place the mine
+    behindCell.setType(null, true, 0);
+    this.mines--;
+    this.soundEffect(sounds.MAN_LAY_MINE);
   }
 
   turn(): void {

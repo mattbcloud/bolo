@@ -86,6 +86,9 @@ export class BoloClientWorld extends ClientWorld {
   objects!: any[];
   tanks!: any[];
   lobbyRefreshInterval?: number;
+  keyBindings!: any;
+  viewMode!: 'tank' | 'pillbox';
+  currentPillboxIndex!: number;
 
   constructor() {
     super();
@@ -160,6 +163,10 @@ export class BoloClientWorld extends ClientWorld {
           </div>
           <button id="create-game-btn" style="padding: 10px 20px; cursor: pointer;" disabled>Create Game</button>
         </div>
+
+        <div style="margin-top: 30px; text-align: center; border-top: 1px solid #666; padding-top: 20px;">
+          <button id="key-settings-btn" style="padding: 10px 20px; cursor: pointer;">Key Settings</button>
+        </div>
       </div>
     `;
 
@@ -177,6 +184,11 @@ export class BoloClientWorld extends ClientWorld {
     // Set up create game button
     document.getElementById('create-game-btn')?.addEventListener('click', () => {
       this.createGame();
+    });
+
+    // Set up key settings button
+    document.getElementById('key-settings-btn')?.addEventListener('click', () => {
+      this.showKeySettings();
     });
 
     // Expose join function globally for the Join buttons
@@ -262,6 +274,359 @@ export class BoloClientWorld extends ClientWorld {
       console.error('Failed to create game:', error);
       alert('Failed to create game');
     }
+  }
+
+  /**
+   * Show the key settings dialog
+   */
+  showKeySettings(): void {
+    // Default key bindings
+    const defaultKeys = {
+      accelerate: 'ArrowUp',
+      decelerate: 'ArrowDown',
+      turnLeft: 'ArrowLeft',
+      turnRight: 'ArrowRight',
+      increaseRange: 'KeyL',
+      decreaseRange: 'Semicolon',
+      shoot: 'Space',
+      layMine: 'Tab',
+      tankView: 'Enter',
+      pillboxView: 'KeyP',
+      autoSlowdown: true,
+      autoGunsight: true
+    };
+
+    // Load saved keys from cookies
+    const savedKeys = getCookie('keyBindings');
+    const keys = savedKeys ? { ...defaultKeys, ...JSON.parse(savedKeys) } : defaultKeys;
+
+    // Helper to get friendly key name
+    const getFriendlyKeyName = (code: string): string => {
+      const keyMap: Record<string, string> = {
+        'Space': 'Spc',
+        'ArrowUp': '↑',
+        'ArrowDown': '↓',
+        'ArrowLeft': '←',
+        'ArrowRight': '→',
+        'Enter': 'Ret',
+        'Tab': 'Tab',
+        'Semicolon': ';',
+        'Comma': ',',
+        'Period': '.',
+        'Slash': '/',
+        'Backslash': '\\',
+        'BracketLeft': '[',
+        'BracketRight': ']',
+        'Quote': "'",
+        'Backquote': '`',
+        'Minus': '-',
+        'Equal': '='
+      };
+
+      if (keyMap[code]) return keyMap[code];
+      if (code.startsWith('Key')) return code.substring(3);
+      if (code.startsWith('Digit')) return code.substring(5);
+      return code;
+    };
+
+    const dialogHTML = `
+      <div id="key-settings-overlay" style="
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 20000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">
+        <div id="key-settings-dialog" style="
+          background: #c0c0c0;
+          border: 2px outset #dfdfdf;
+          box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
+          padding: 16px;
+          min-width: 400px;
+          font-family: 'Chicago', 'Charcoal', sans-serif;
+          color: black;
+        ">
+          <div style="
+            background: white;
+            border: 2px inset #808080;
+            padding: 12px;
+            margin-bottom: 16px;
+            text-align: center;
+            font-weight: bold;
+          ">Key Settings</div>
+
+          <div style="margin-bottom: 16px;">
+            <div style="font-weight: bold; margin-bottom: 8px;">Drive tank</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
+              <label style="width: 120px;">Accelerate:</label>
+              <input type="text" readonly class="key-input" data-binding="accelerate"
+                value="${getFriendlyKeyName(keys.accelerate)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Decelerate:</label>
+              <input type="text" readonly class="key-input" data-binding="decelerate"
+                value="${getFriendlyKeyName(keys.decelerate)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+
+            <div style="font-weight: bold; margin-bottom: 8px;">Rotate tank</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
+              <label style="width: 120px;">Anti-clockwise:</label>
+              <input type="text" readonly class="key-input" data-binding="turnLeft"
+                value="${getFriendlyKeyName(keys.turnLeft)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Clockwise:</label>
+              <input type="text" readonly class="key-input" data-binding="turnRight"
+                value="${getFriendlyKeyName(keys.turnRight)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+
+            <div style="font-weight: bold; margin-bottom: 8px;">Gun range</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
+              <label style="width: 120px;">Increase:</label>
+              <input type="text" readonly class="key-input" data-binding="increaseRange"
+                value="${getFriendlyKeyName(keys.increaseRange)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Decrease:</label>
+              <input type="text" readonly class="key-input" data-binding="decreaseRange"
+                value="${getFriendlyKeyName(keys.decreaseRange)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+
+            <div style="font-weight: bold; margin-bottom: 8px;">Weapons</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
+              <label style="width: 120px;">Shoot:</label>
+              <input type="text" readonly class="key-input" data-binding="shoot"
+                value="${getFriendlyKeyName(keys.shoot)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Lay mine:</label>
+              <input type="text" readonly class="key-input" data-binding="layMine"
+                value="${getFriendlyKeyName(keys.layMine)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+
+            <div style="font-weight: bold; margin-bottom: 8px;">Switch views</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
+              <label style="width: 120px;">Tank view:</label>
+              <input type="text" readonly class="key-input" data-binding="tankView"
+                value="${getFriendlyKeyName(keys.tankView)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Pillbox view:</label>
+              <input type="text" readonly class="key-input" data-binding="pillboxView"
+                value="${getFriendlyKeyName(keys.pillboxView)}"
+                style="
+                  width: 80px;
+                  border: 1px inset #808080;
+                  background: white;
+                  padding: 2px 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: monospace;
+                ">
+            </div>
+
+            <div style="margin-top: 12px;">
+              <div style="margin-bottom: 4px;">
+                <label style="cursor: pointer;">
+                  <input type="checkbox" id="auto-slowdown" ${keys.autoSlowdown ? 'checked' : ''}>
+                  Auto Slowdown
+                </label>
+              </div>
+              <div>
+                <label style="cursor: pointer;">
+                  <input type="checkbox" id="auto-gunsight" ${keys.autoGunsight ? 'checked' : ''}>
+                  Enable automatic show &amp; hide of gunsight
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div style="text-align: center; display: flex; gap: 8px; justify-content: center;">
+            <button id="key-settings-cancel" style="
+              padding: 4px 16px;
+              border: 2px outset #dfdfdf;
+              background: #c0c0c0;
+              cursor: pointer;
+              min-width: 80px;
+            ">Cancel</button>
+            <button id="key-settings-ok" style="
+              padding: 4px 16px;
+              border: 2px outset #dfdfdf;
+              background: #c0c0c0;
+              cursor: pointer;
+              min-width: 80px;
+            ">OK</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', dialogHTML);
+
+    // Store current bindings for editing
+    const currentBindings: Record<string, any> = { ...keys };
+    let capturingInput: HTMLInputElement | null = null;
+
+    // Get all key input elements in order
+    const keyInputs = Array.from(document.querySelectorAll('.key-input')) as HTMLInputElement[];
+
+    // Helper to activate capture mode for an input
+    const activateInput = (input: HTMLInputElement) => {
+      capturingInput = input;
+      input.value = '...';
+      input.style.background = '#ffffcc';
+    };
+
+    // Set up key input click handlers
+    keyInputs.forEach(input => {
+      input.addEventListener('click', (e) => {
+        const target = e.target as HTMLInputElement;
+        activateInput(target);
+      });
+    });
+
+    // Capture key press
+    const keyHandler = (e: KeyboardEvent) => {
+      if (!capturingInput) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const binding = capturingInput.getAttribute('data-binding');
+      if (!binding) return;
+
+      currentBindings[binding] = e.code;
+      capturingInput.value = getFriendlyKeyName(e.code);
+      capturingInput.style.background = 'white';
+
+      // Find the next input and automatically activate it
+      const currentIndex = keyInputs.indexOf(capturingInput);
+      const nextIndex = currentIndex + 1;
+
+      if (nextIndex < keyInputs.length) {
+        // Move to next input
+        activateInput(keyInputs[nextIndex]);
+      } else {
+        // No more inputs, clear capture mode
+        capturingInput = null;
+      }
+    };
+
+    document.addEventListener('keydown', keyHandler);
+
+    // Cancel button
+    document.getElementById('key-settings-cancel')?.addEventListener('click', () => {
+      document.removeEventListener('keydown', keyHandler);
+      document.getElementById('key-settings-overlay')?.remove();
+    });
+
+    // OK button
+    document.getElementById('key-settings-ok')?.addEventListener('click', () => {
+      // Get checkbox values
+      currentBindings.autoSlowdown = (document.getElementById('auto-slowdown') as HTMLInputElement)?.checked;
+      currentBindings.autoGunsight = (document.getElementById('auto-gunsight') as HTMLInputElement)?.checked;
+
+      // Save to cookie
+      setCookie('keyBindings', JSON.stringify(currentBindings));
+
+      document.removeEventListener('keydown', keyHandler);
+      document.getElementById('key-settings-overlay')?.remove();
+
+      // If game is active, update the bindings
+      if ((this as any).updateKeyBindings) {
+        (this as any).updateKeyBindings(currentBindings);
+      }
+    });
+  }
+
+  /**
+   * Update key bindings from the settings dialog
+   */
+  updateKeyBindings(newBindings: any): void {
+    this.keyBindings = newBindings;
   }
 
   /**
@@ -592,49 +957,49 @@ export class BoloClientWorld extends ClientWorld {
 
   handleKeydown(e: KeyboardEvent): void {
     if (!this.ws || !this.player) return;
-    switch (e.which) {
-      case 32:
-        this.ws.send(net.START_SHOOTING);
-        break;
-      case 37:
-        this.ws.send(net.START_TURNING_CCW);
-        break;
-      case 38:
-        this.ws.send(net.START_ACCELERATING);
-        break;
-      case 39:
-        this.ws.send(net.START_TURNING_CW);
-        break;
-      case 40:
-        this.ws.send(net.START_BRAKING);
-        break;
-      case 84:
-        this.openChat();
-        break;
-      case 82:
-        this.openChat({ team: true });
-        break;
+    const code = e.code;
+    const kb = (this as any).keyBindings;
+
+    if (code === kb.shoot) {
+      this.ws.send(net.START_SHOOTING);
+    } else if (code === kb.layMine) {
+      this.ws.send(net.START_LAY_MINE);
+    } else if (code === kb.turnLeft) {
+      this.ws.send(net.START_TURNING_CCW);
+    } else if (code === kb.accelerate) {
+      this.ws.send(net.START_ACCELERATING);
+    } else if (code === kb.turnRight) {
+      this.ws.send(net.START_TURNING_CW);
+    } else if (code === kb.decelerate) {
+      this.ws.send(net.START_BRAKING);
+    } else if (code === kb.tankView) {
+      this.switchToTankView();
+    } else if (code === kb.pillboxView) {
+      this.switchToPillboxView();
+    } else if (code === 'KeyT') {
+      this.openChat();
+    } else if (code === 'KeyR') {
+      this.openChat({ team: true });
     }
   }
 
   handleKeyup(e: KeyboardEvent): void {
     if (!this.ws || !this.player) return;
-    switch (e.which) {
-      case 32:
-        this.ws.send(net.STOP_SHOOTING);
-        break;
-      case 37:
-        this.ws.send(net.STOP_TURNING_CCW);
-        break;
-      case 38:
-        this.ws.send(net.STOP_ACCELERATING);
-        break;
-      case 39:
-        this.ws.send(net.STOP_TURNING_CW);
-        break;
-      case 40:
-        this.ws.send(net.STOP_BRAKING);
-        break;
+    const code = e.code;
+    const kb = (this as any).keyBindings;
+
+    if (code === kb.shoot) {
+      this.ws.send(net.STOP_SHOOTING);
+    } else if (code === kb.layMine) {
+      this.ws.send(net.STOP_LAY_MINE);
+    } else if (code === kb.turnLeft) {
+      this.ws.send(net.STOP_TURNING_CCW);
+    } else if (code === kb.accelerate) {
+      this.ws.send(net.STOP_ACCELERATING);
+    } else if (code === kb.turnRight) {
+      this.ws.send(net.STOP_TURNING_CW);
+    } else if (code === kb.decelerate) {
+      this.ws.send(net.STOP_BRAKING);
     }
   }
 
@@ -657,6 +1022,64 @@ export class BoloClientWorld extends ClientWorld {
     if (!this.ws || !this.player) return;
     trees = trees || 0;
     this.ws.send([net.BUILD_ORDER, action, trees, cell.x, cell.y].join(','));
+  }
+
+  /**
+   * Switch to pillbox view mode, cycling through team pillboxes
+   */
+  switchToPillboxView(): void {
+    if (!this.player || !this.map) return;
+
+    // Get all pillboxes owned by the player's team
+    const teamPillboxes = this.map.pills.filter((pill: any) => {
+      return pill && !pill.inTank && !pill.carried && pill.armour > 0 &&
+             pill.team === this.player.team;
+    });
+
+    if (teamPillboxes.length === 0) {
+      // No pillboxes to view, stay in tank view
+      return;
+    }
+
+    // If we're in tank view, start with the first pillbox
+    if (this.viewMode === 'tank') {
+      this.viewMode = 'pillbox';
+      this.currentPillboxIndex = 0;
+    } else {
+      // Cycle to the next pillbox
+      this.currentPillboxIndex = (this.currentPillboxIndex + 1) % teamPillboxes.length;
+    }
+  }
+
+  /**
+   * Switch back to tank view mode
+   */
+  switchToTankView(): void {
+    this.viewMode = 'tank';
+    this.currentPillboxIndex = 0;
+  }
+
+  /**
+   * Get the current view target (tank or pillbox)
+   */
+  getViewTarget(): any {
+    if (this.viewMode === 'tank' || !this.player || !this.map) {
+      return null; // Will use default tank view
+    }
+
+    // Get all pillboxes owned by the player's team
+    const teamPillboxes = this.map.pills.filter((pill: any) => {
+      return pill && !pill.inTank && !pill.carried && pill.armour > 0 &&
+             pill.team === this.player.team;
+    });
+
+    if (teamPillboxes.length === 0 || this.currentPillboxIndex >= teamPillboxes.length) {
+      // No valid pillbox, return to tank view
+      this.viewMode = 'tank';
+      return null;
+    }
+
+    return teamPillboxes[this.currentPillboxIndex];
   }
 
   // Network message handlers
@@ -689,9 +1112,7 @@ export class BoloClientWorld extends ClientWorld {
         this.objectsCreatedInThisPacket.clear();
         while (pos < length) {
           const command = data[pos++];
-          console.log(`[MSG_PARSE] pos=${pos-1}, command=${command} (${String.fromCharCode(command)}), remaining=${length-pos}`);
           const ate = this.handleBinaryCommand(command, data, pos);
-          console.log(`[MSG_PARSE] consumed ${ate} bytes, new pos=${pos + ate}`);
           pos += ate;
         }
         this.processingServerMessages = false;
@@ -751,14 +1172,16 @@ export class BoloClientWorld extends ClientWorld {
       case net.TINY_UPDATE_MESSAGE: {
         const [[idx], bytes] = unpack('H', data, offset);
         const obj = this.objects[idx as number];
-        // TINY_UPDATE for objects created via CREATE_MESSAGE should always use isCreate=true
-        // Otherwise, use isCreate based on sync status
-        const isCreate = (obj && obj._createdViaMessage) || !this._isSynchronized;
+        // Match server behavior: newly created objects always use isCreate=true
+        const isCreate = !this._isSynchronized || (obj && obj._createdViaMessage);
         const additionalBytes = obj && obj.load ? obj.load(data, offset + bytes, isCreate) : 0;
-        // Track objects that received TINY_UPDATE in this packet so UPDATE can skip them
-        if (obj && obj._createdViaMessage) {
+        // Track ALL objects that received TINY_UPDATE in this packet so UPDATE can skip them
+        // This prevents loading the same object twice in one packet
+        if (obj) {
           this.objectsCreatedInThisPacket.add(obj);
-          // Clear the flag so it will be included in UPDATE messages in FUTURE packets
+        }
+        // Clear the flag so it will be included in UPDATE messages in FUTURE packets
+        if (obj && obj._createdViaMessage) {
           delete obj._createdViaMessage;
         }
         return bytes + additionalBytes;

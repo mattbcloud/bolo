@@ -12,7 +12,7 @@ const { min, max, round, ceil, PI, cos, sin } = Math;
 
 export class WorldPillbox extends BoloObject {
   styled: boolean;
-  team: number | null = null;
+  team: number | null = 255;
   owner_idx: number;
   armour: number;
   speed: number;
@@ -33,7 +33,6 @@ export class WorldPillbox extends BoloObject {
 
     this.styled = true;
     this.owner_idx = 255;
-    this.team = 255;  // Initialize to neutral
     this.armour = 0;
     this.speed = 0;
     this.coolDown = 0;
@@ -134,12 +133,17 @@ export class WorldPillbox extends BoloObject {
 
   /**
    * Get the tilemap index to draw. This is the index in styled.png.
+   * Returns [column, row] where row should always be 0 because the renderer
+   * uses prestyled tilemaps to apply team colors.
    */
   getTile(): [number, number] {
+    // Always use row 0 - the renderer applies team colors via prestyling
+    const row = 0;
+
     if (this.armour === 0) {
-      return [18, 0];
+      return [18, row];
     } else {
-      return [16 + this.armour, 0];
+      return [16 + this.armour, row];
     }
   }
 
@@ -197,7 +201,14 @@ export class WorldPillbox extends BoloObject {
     let target: any = null;
     let targetDistance = Infinity;
     for (const tank of this.world.tanks) {
-      if (tank.armour !== 255 && !this.owner?.$.isAlly(tank)) {
+      // Pillbox shoots at tanks that are:
+      // 1. Alive (armour !== 255)
+      // 2. Not on the same team (neutral pillbox shoots at all, team pillbox only shoots enemies)
+      const isEnemy = (this.team === null || this.team === 255)
+        ? true  // Neutral pillbox shoots at everyone
+        : (tank.team !== this.team);  // Team pillbox only shoots enemies
+
+      if (tank.armour !== 255 && isEnemy) {
         const d = distance(this as any, tank);
         if (d <= 2048 && d < targetDistance) {
           target = tank;

@@ -218,6 +218,12 @@ export class BoloServerWorld extends ServerWorld {
             case net.STOP_SHOOTING:
                 tank.shooting = false;
                 break;
+            case net.START_LAY_MINE:
+                tank.layingMine = true;
+                break;
+            case net.STOP_LAY_MINE:
+                tank.layingMine = false;
+                break;
             case net.INC_RANGE:
                 tank.increaseRange();
                 break;

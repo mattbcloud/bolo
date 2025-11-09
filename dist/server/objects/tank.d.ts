@@ -22,6 +22,7 @@ export declare class Tank extends BoloObject {
     trees: number;
     reload: number;
     shooting: boolean;
+    layingMine: boolean;
     firingRange: number;
     kills: number;
     deaths: number;
@@ -84,6 +85,7 @@ export declare class Tank extends BoloObject {
     destroy(): void;
     death(): boolean;
     shootOrReload(): void;
+    layMine(): void;
     turn(): void;
     accelerate(): void;
     fixPosition(): void;

@@ -388,7 +388,7 @@ export class WebglRenderer extends BaseRenderer {
       (cell: any) => {
         const obj = cell.pill || cell.base;
         if (obj) {
-          let style = obj.owner?.$?.team;
+          let style = obj.team;
           if (!TEAM_COLORS[style]) {
             style = 255;
           }

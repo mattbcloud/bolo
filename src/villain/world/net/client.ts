@@ -45,8 +45,6 @@ export class ClientWorld {
       throw new Error(`Unknown object type index: ${typeIdx}`);
     }
 
-    console.log(`[netSpawn] Creating ${ObjectClass.name} at idx=${idx} (typeIdx=${typeIdx})`);
-
     // Create an instance of the object
     const obj = new ObjectClass(this);
     obj._net_type_idx = typeIdx;
@@ -75,7 +73,6 @@ export class ClientWorld {
         this.tanks.push(obj);
       } else {
         // Tank already exists, replace it
-        console.log(`[netSpawn] Tank at idx=${obj.idx} already exists in tanks array, replacing`);
         this.tanks[existingIndex] = obj;
       }
     }
@@ -126,21 +123,12 @@ export class ClientWorld {
     for (let i = 0; i < this.objects.length; i++) {
       const obj = this.objects[i];
       if (obj && obj.load) {
-        // Skip objects created via CREATE message until they receive TINY_UPDATE
-        // The server excludes these from UPDATE packets
-        if (obj._createdViaMessage) {
-          console.log(`[netTick] Skipping obj[${i}] (${obj.constructor.name}) - created via message, waiting for TINY_UPDATE`);
-          continue;
-        }
         // Skip objects that were created in this packet (received TINY_UPDATE in same packet)
         // The server excludes these from UPDATE packets on the same tick
         if (exclude && exclude.has(obj)) {
-          console.log(`[netTick] Skipping obj[${i}] (${obj.constructor.name}) - created in this packet`);
           continue;
         }
-        console.log(`[netTick] Loading obj[${i}] (${obj.constructor.name}) at offset ${offset + bytesRead}, isCreate=${isCreate}`);
         const bytes = obj.load(data, offset + bytesRead, isCreate);
-        console.log(`[netTick] obj[${i}] consumed ${bytes} bytes`);
         bytesRead += bytes;
       }
     }
