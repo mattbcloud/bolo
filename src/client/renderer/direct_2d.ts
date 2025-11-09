@@ -36,7 +36,7 @@ export class Direct2dRenderer extends Common2dRenderer {
           this.drawStyledTile(
             cell.tile[0],
             cell.tile[1],
-            obj.owner?.$?.team,
+            obj.team,
             cell.x * TILE_SIZE_PIXELS,
             cell.y * TILE_SIZE_PIXELS
           );

@@ -93,7 +93,7 @@ class CachedSegment {
       this.renderer.drawStyledTile(
         cell.tile[0],
         cell.tile[1],
-        obj.owner?.$?.team,
+        obj.team,
         cell.x * TILE_SIZE_PIXELS,
         cell.y * TILE_SIZE_PIXELS,
         this.ctx!

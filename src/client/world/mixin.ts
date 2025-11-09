@@ -183,10 +183,42 @@ export const BoloClientWorldMixin = {
     this.decreasingRange = false;
     this.rangeAdjustTimer = 0;
 
+    // Initialize view mode
+    this.viewMode = 'tank';
+    this.currentPillboxIndex = 0;
+
+    // Load key bindings from cookie or use defaults
+    const getCookie = (name: string): string | null => {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop()?.split(';').shift() || null;
+      return null;
+    };
+
+    const defaultKeys = {
+      accelerate: 'ArrowUp',
+      decelerate: 'ArrowDown',
+      turnLeft: 'ArrowLeft',
+      turnRight: 'ArrowRight',
+      increaseRange: 'KeyL',
+      decreaseRange: 'Semicolon',
+      shoot: 'Space',
+      layMine: 'Tab',
+      tankView: 'Enter',
+      pillboxView: 'KeyP',
+      autoSlowdown: true,
+      autoGunsight: true
+    };
+
+    const savedKeys = getCookie('keyBindings');
+    this.keyBindings = savedKeys ? { ...defaultKeys, ...JSON.parse(savedKeys) } : defaultKeys;
+
     this.input = document.createElement('input');
     this.input.id = 'input-dummy';
     this.input.type = 'text';
     this.input.setAttribute('autocomplete', 'off');
+    this.input.setAttribute('readonly', 'true');
+    this.input.style.caretColor = 'transparent'; // Hide the cursor
     document.body.insertBefore(this.input, this.renderer.canvas);
     this.input.focus();
 
@@ -196,37 +228,47 @@ export const BoloClientWorldMixin = {
 
     const handleKeydown = (e: KeyboardEvent) => {
       e.preventDefault();
-      const keyCode = e.which || e.keyCode;
-      switch (keyCode) {
-        case 90:
-          this.increasingRange = true;
-          break;
-        case 88:
-          this.decreasingRange = true;
-          break;
-        default:
-          this.handleKeydown(e);
+      e.stopPropagation();
+      const code = e.code;
+
+      // Check for range adjustment keys
+      if (code === this.keyBindings.increaseRange) {
+        this.increasingRange = true;
+      } else if (code === this.keyBindings.decreaseRange) {
+        this.decreasingRange = true;
+      } else {
+        // Pass to specific implementation (client or local)
+        this.handleKeydown(e);
       }
     };
 
     const handleKeyup = (e: KeyboardEvent) => {
       e.preventDefault();
-      const keyCode = e.which || e.keyCode;
-      switch (keyCode) {
-        case 90:
-          this.increasingRange = false;
-          break;
-        case 88:
-          this.decreasingRange = false;
-          break;
-        default:
-          this.handleKeyup(e);
+      e.stopPropagation();
+      const code = e.code;
+
+      // Check for range adjustment keys
+      if (code === this.keyBindings.increaseRange) {
+        this.increasingRange = false;
+      } else if (code === this.keyBindings.decreaseRange) {
+        this.decreasingRange = false;
+      } else {
+        // Pass to specific implementation (client or local)
+        this.handleKeyup(e);
       }
+    };
+
+    // Also prevent keypress to stop browser accent menu
+    const handleKeypress = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
     };
 
     for (const element of elements) {
       element.addEventListener('keydown', handleKeydown);
       element.addEventListener('keyup', handleKeyup);
+      element.addEventListener('keypress', handleKeypress);
     }
   },
 

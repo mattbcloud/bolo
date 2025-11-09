@@ -109,7 +109,14 @@ export class BaseRenderer {
   draw(): void {
     let x: number | null, y: number | null;
 
-    if (this.world.player) {
+    // Check if we're viewing a pillbox instead of the tank
+    const viewTarget = this.world.getViewTarget ? this.world.getViewTarget() : null;
+
+    if (viewTarget) {
+      // Center on the pillbox
+      ({ x, y } = viewTarget);
+    } else if (this.world.player) {
+      // Center on the player's tank
       ({ x, y } = this.world.player);
       if (this.world.player.fireball) {
         ({ x, y } = this.world.player.fireball.$);
@@ -490,11 +497,6 @@ export class BaseRenderer {
    * Update the HUD elements.
    */
   updateHud(): void {
-    // Log updateHud calls occasionally for debugging
-    if (Math.random() < 0.01) {  // 1% of the time
-      console.log(`[HUD updateHud] Called with ${this.world.map?.bases?.length || 0} bases, ${this.baseIndicators?.length || 0} indicators`);
-    }
-
     // Pillboxes.
     if (this.pillIndicators) {
       for (let i = 0; i < this.pillIndicators.length; i++) {
@@ -532,10 +534,6 @@ export class BaseRenderer {
 
         const statuskey = `${base.armour};${base.team};${base.owner_idx}`;
         // Remove the early continue to always update
-        const didChange = base.hudStatusKey !== statuskey;
-        if (didChange) {
-          console.log(`[HUD] Base idx=${base.idx} arrayIdx=${i} status changed: ${base.hudStatusKey} -> ${statuskey} (team=${base.team}, owner_idx=${base.owner_idx})`);
-        }
         base.hudStatusKey = statuskey;
 
         if (base.armour <= 9) {
@@ -546,7 +544,6 @@ export class BaseRenderer {
         const color = TEAM_COLORS[base.team] || { r: 112, g: 112, b: 112 };
         const newColor = `rgb(${color.r},${color.g},${color.b})`;
         if (node.style.backgroundColor !== newColor) {
-          console.log(`[HUD] Base idx=${base.idx} arrayIdx=${i} color changing from ${node.style.backgroundColor} to ${newColor}`);
           node.style.backgroundColor = newColor;
         }
       }

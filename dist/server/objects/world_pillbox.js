@@ -8,15 +8,24 @@ import * as sounds from '../sounds';
 import Shell from './shell';
 const { min, max, round, ceil, PI, cos, sin } = Math;
 export class WorldPillbox extends BoloObject {
+    get team() {
+        return this._teamValue;
+    }
+    set team(value) {
+        if (value !== this._teamValue && this.idx !== undefined) {
+            console.log(`[PILLBOX ${this.idx}] team: ${this._teamValue} -> ${value}`);
+            console.trace();
+        }
+        this._teamValue = value;
+    }
     /**
      * This is a MapObject; it is constructed differently on the server.
      */
     constructor(world_or_map, x, y, owner_idx, armour, speed) {
         super(arguments.length === 1 ? world_or_map : null);
-        this.team = null;
+        this._teamValue = 255;
         this.styled = true;
         this.owner_idx = 255;
-        this.team = 255; // Initialize to neutral
         this.armour = 0;
         this.speed = 0;
         this.coolDown = 0;
@@ -110,13 +119,19 @@ export class WorldPillbox extends BoloObject {
     }
     /**
      * Get the tilemap index to draw. This is the index in styled.png.
+     * Returns [column, row] where row determines the team color:
+     * - row 0: neutral (yellow)
+     * - row 1: team RED
+     * - row 2: team BLUE
      */
     getTile() {
+        // Determine row based on team: neutral=0, red=1, blue=2, yellow=3, green=4, orange=5, purple=6
+        const row = (this.team === null || this.team === 255) ? 0 : (this.team + 1);
         if (this.armour === 0) {
-            return [18, 0];
+            return [18, row];
         }
         else {
-            return [16 + this.armour, 0];
+            return [16 + this.armour, row];
         }
     }
     /**
@@ -166,7 +181,13 @@ export class WorldPillbox extends BoloObject {
         let target = null;
         let targetDistance = Infinity;
         for (const tank of this.world.tanks) {
-            if (tank.armour !== 255 && !this.owner?.$.isAlly(tank)) {
+            // Pillbox shoots at tanks that are:
+            // 1. Alive (armour !== 255)
+            // 2. Not on the same team (neutral pillbox shoots at all, team pillbox only shoots enemies)
+            const isEnemy = (this.team === null || this.team === 255)
+                ? true // Neutral pillbox shoots at everyone
+                : (tank.team !== this.team); // Team pillbox only shoots enemies
+            if (tank.armour !== 255 && isEnemy) {
                 const d = distance(this, tank);
                 if (d <= 2048 && d < targetDistance) {
                     target = tank;
