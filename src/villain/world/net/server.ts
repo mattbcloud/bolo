@@ -60,6 +60,11 @@ export class ServerWorld {
   }
 
   destroy(obj: any): void {
+    // Call the object's destroy method first (e.g., to drop pillboxes)
+    if (obj.destroy && typeof obj.destroy === 'function') {
+      obj.destroy();
+    }
+
     const idx = obj.idx;
     this.objects[idx] = null;
     this.changes.push(['destroy', obj, idx]);
