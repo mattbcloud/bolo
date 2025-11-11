@@ -83,6 +83,8 @@ export class BoloClientWorld extends ClientWorld {
   increasingRange!: boolean;
   decreasingRange!: boolean;
   rangeAdjustTimer!: number;
+  gunsightVisible: boolean = true;
+  autoSlowdownActive: boolean = false;
   objects!: any[];
   tanks!: any[];
   lobbyRefreshInterval?: number;
@@ -824,13 +826,24 @@ export class BoloClientWorld extends ClientWorld {
   tick(): void {
     super.tick();
 
+    // Keep brakes engaged during auto slowdown - they'll be released when
+    // the player presses Accelerate or manually controls braking
+
     if (this.increasingRange !== this.decreasingRange) {
       if (++this.rangeAdjustTimer === 6) {
         if (this.ws) {
           if (this.increasingRange) {
             this.ws.send(net.INC_RANGE);
+            // Auto hide gunsight when at max range
+            if (this.keyBindings.autoGunsight && this.player && this.player.firingRange === 7) {
+              this.gunsightVisible = false;
+            }
           } else {
             this.ws.send(net.DEC_RANGE);
+            // Auto show gunsight when decreasing range
+            if (this.keyBindings.autoGunsight) {
+              this.gunsightVisible = true;
+            }
           }
         }
         this.rangeAdjustTimer = 0;
@@ -968,10 +981,16 @@ export class BoloClientWorld extends ClientWorld {
       this.ws.send(net.START_TURNING_CCW);
     } else if (code === kb.accelerate) {
       this.ws.send(net.START_ACCELERATING);
+      // Clear auto slowdown if it was active
+      if (this.autoSlowdownActive) {
+        this.ws.send(net.STOP_BRAKING);
+        this.autoSlowdownActive = false;
+      }
     } else if (code === kb.turnRight) {
       this.ws.send(net.START_TURNING_CW);
     } else if (code === kb.decelerate) {
       this.ws.send(net.START_BRAKING);
+      this.autoSlowdownActive = false;
     } else if (code === kb.tankView) {
       this.switchToTankView();
     } else if (code === kb.pillboxView) {
@@ -996,10 +1015,16 @@ export class BoloClientWorld extends ClientWorld {
       this.ws.send(net.STOP_TURNING_CCW);
     } else if (code === kb.accelerate) {
       this.ws.send(net.STOP_ACCELERATING);
+      // Auto slowdown: start braking when accelerate is released
+      if (kb.autoSlowdown) {
+        this.ws.send(net.START_BRAKING);
+        this.autoSlowdownActive = true;
+      }
     } else if (code === kb.turnRight) {
       this.ws.send(net.STOP_TURNING_CW);
     } else if (code === kb.decelerate) {
       this.ws.send(net.STOP_BRAKING);
+      this.autoSlowdownActive = false;
     }
   }
 
