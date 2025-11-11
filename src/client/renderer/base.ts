@@ -139,6 +139,10 @@ export class BaseRenderer {
       for (const obj of this.world.objects) {
         // Skip null objects (destroyed objects remain as null in the array)
         if (!obj) continue;
+
+        // Skip hidden tanks (except for the local player's own tank)
+        if (obj.hidden && obj !== this.world.player) continue;
+
         if (obj.styled != null && obj.x != null && obj.y != null) {
           const [tx, ty] = obj.getTile();
           const ox = mathRound(obj.x / PIXEL_SIZE_WORLD) - TILE_SIZE_PIXELS / 2;

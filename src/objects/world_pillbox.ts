@@ -204,11 +204,12 @@ export class WorldPillbox extends BoloObject {
       // Pillbox shoots at tanks that are:
       // 1. Alive (armour !== 255)
       // 2. Not on the same team (neutral pillbox shoots at all, team pillbox only shoots enemies)
+      // 3. Not hidden in forest
       const isEnemy = (this.team === null || this.team === 255)
         ? true  // Neutral pillbox shoots at everyone
         : (tank.team !== this.team);  // Team pillbox only shoots enemies
 
-      if (tank.armour !== 255 && isEnemy) {
+      if (tank.armour !== 255 && isEnemy && !tank.hidden) {
         const d = distance(this as any, tank);
         if (d <= 2048 && d < targetDistance) {
           target = tank;
