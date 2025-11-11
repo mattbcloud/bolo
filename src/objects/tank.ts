@@ -599,6 +599,9 @@ export class Tank extends BoloObject {
     const pills = this.getCarryingPillboxes();
     if (pills.length === 0) return;
 
+    // Safety check: if tank doesn't have a valid cell, can't drop pillboxes
+    if (!this.cell) return;
+
     let x = this.cell.x;
     const sy = this.cell.y;
     const width = round(sqrt(pills.length));
