@@ -20,6 +20,7 @@ export class Tank extends BoloObject {
         super(world);
         this.styled = true;
         this.team = null;
+        this.hidden = false; // True when surrounded by forest on all 4 sides
         // Movement
         this.speed = 0.0;
         this.slideTicks = 0;
@@ -154,6 +155,7 @@ export class Tank extends BoloObject {
         p('f', 'shooting');
         p('f', 'layingMine');
         p('f', 'onBoat');
+        p('f', 'hidden');
     }
     /**
      * Get the 1/16th direction step.
@@ -178,6 +180,18 @@ export class Tank extends BoloObject {
         const tx = this.getDirection16th();
         const ty = this.onBoat ? 1 : 0;
         return [tx, ty];
+    }
+    /**
+     * Check if tank is hidden in forest (surrounded by forest on all 4 sides).
+     */
+    updateHiddenStatus() {
+        if (!this.cell || !this.world.authority)
+            return;
+        const above = this.world.map.cellAtTile(this.cell.x, this.cell.y - 1).isType('#');
+        const below = this.world.map.cellAtTile(this.cell.x, this.cell.y + 1).isType('#');
+        const left = this.world.map.cellAtTile(this.cell.x - 1, this.cell.y).isType('#');
+        const right = this.world.map.cellAtTile(this.cell.x + 1, this.cell.y).isType('#');
+        this.hidden = above && below && left && right;
     }
     /**
      * Tell whether the other tank is an ally.
@@ -269,6 +283,8 @@ export class Tank extends BoloObject {
         this.accelerate();
         this.fixPosition();
         this.move();
+        // Check hidden status every frame (forest could be destroyed)
+        this.updateHiddenStatus();
     }
     destroy() {
         this.dropPillboxes();
@@ -465,8 +481,9 @@ export class Tank extends BoloObject {
             const oldcell = this.cell;
             this.updateCell();
             // Check our new terrain if we changed cells.
-            if (oldcell !== this.cell)
+            if (oldcell !== this.cell) {
                 this.checkNewCell(oldcell);
+            }
         }
         if (!this.onBoat && this.speed <= 3 && this.cell.isType(' ')) {
             if (++this.waterTimer === 15) {
@@ -555,6 +572,9 @@ export class Tank extends BoloObject {
     dropPillboxes() {
         const pills = this.getCarryingPillboxes();
         if (pills.length === 0)
+            return;
+        // Safety check: if tank doesn't have a valid cell, can't drop pillboxes
+        if (!this.cell)
             return;
         let x = this.cell.x;
         const sy = this.cell.y;

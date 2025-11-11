@@ -34,17 +34,11 @@ export const BoloWorldMixin = {
                 if (obj.owner_idx === removedIdx) {
                     // The owner was the removed tank - clear ownership but preserve team
                     // This allows the base/pillbox to remain claimed by the team even though the specific player left
-                    // IMPORTANT: Preserve team so pillbox remains friendly to teammates
-                    const objType = obj.constructor.name;
-                    console.log(`[REMOVE TANK] ${objType} ${obj.idx}: BEFORE - team=${obj.team}, owner_idx=${obj.owner_idx}`);
                     const preservedTeam = obj.team;
                     obj.owner_idx = 255;
-                    console.log(`[REMOVE TANK] ${objType} ${obj.idx}: After owner_idx=255 - team=${obj.team}`);
                     obj.ref('owner', null);
-                    console.log(`[REMOVE TANK] ${objType} ${obj.idx}: After ref(owner, null) - team=${obj.team}`);
                     // Restore the team - this ensures pillboxes stay on the team even after player leaves
                     obj.team = preservedTeam;
-                    console.log(`[REMOVE TANK] ${objType} ${obj.idx}: After team restore - team=${obj.team}, preservedTeam=${preservedTeam}`);
                 }
                 else if (obj.owner_idx > removedIdx) {
                     // The owner was a tank with higher index - decrement to match renumbered tank
