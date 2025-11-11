@@ -7,6 +7,7 @@ import Shell from './shell';
 export declare class Tank extends BoloObject {
     styled: boolean;
     team: number | null;
+    hidden: boolean;
     speed: number;
     slideTicks: number;
     slideDirection: number;
@@ -63,6 +64,10 @@ export declare class Tank extends BoloObject {
      * Get the tilemap index to draw. This is the index in styled.png.
      */
     getTile(): [number, number];
+    /**
+     * Check if tank is hidden in forest (surrounded by forest on all 4 sides).
+     */
+    updateHiddenStatus(): void;
     /**
      * Tell whether the other tank is an ally.
      */
