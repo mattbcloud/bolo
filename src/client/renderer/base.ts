@@ -291,7 +291,10 @@ export class BaseRenderer {
           this.drawBuilderIndicator(b);
         }
       }
-      this.drawReticle();
+      // Only draw reticle if gunsightVisible is true
+      if (this.world.gunsightVisible) {
+        this.drawReticle();
+      }
     }
     this.drawNames();
     this.drawCursor();
@@ -320,11 +323,13 @@ export class BaseRenderer {
    */
   initHud(): void {
     this.hud = document.createElement('div');
+    this.hud.id = 'hud';
     document.body.appendChild(this.hud);
     this.initHudTankStatus();
     this.initHudPillboxes();
     this.initHudBases();
     this.initHudPlayers();
+    this.initHudStats();
     this.initHudToolSelect();
     this.initHudNotices();
     this.updateHud();
@@ -409,6 +414,47 @@ export class BaseRenderer {
     container.appendChild(deco);
 
     this.playerIndicators = [];
+  }
+
+  /**
+   * Create the stats status indicator (kills/deaths).
+   */
+  initHudStats(): void {
+    const container = document.createElement('div');
+    container.id = 'statsStatus';
+    this.hud!.appendChild(container);
+
+    // Kills line
+    const killsLine = document.createElement('div');
+    killsLine.className = 'stat-line';
+    container.appendChild(killsLine);
+
+    const killsIcon = document.createElement('span');
+    killsIcon.className = 'stat-icon';
+    killsIcon.textContent = '\u2620'; // ☠ skull and crossbones
+    killsLine.appendChild(killsIcon);
+
+    const killsValue = document.createElement('span');
+    killsValue.className = 'stat-value';
+    killsValue.id = 'stat-kills';
+    killsValue.textContent = '0';
+    killsLine.appendChild(killsValue);
+
+    // Deaths line
+    const deathsLine = document.createElement('div');
+    deathsLine.className = 'stat-line';
+    container.appendChild(deathsLine);
+
+    const deathsIcon = document.createElement('span');
+    deathsIcon.className = 'stat-icon';
+    deathsIcon.textContent = '\u2020'; // † dagger
+    deathsLine.appendChild(deathsIcon);
+
+    const deathsValue = document.createElement('span');
+    deathsValue.className = 'stat-value';
+    deathsValue.id = 'stat-deaths';
+    deathsValue.textContent = '0';
+    deathsLine.appendChild(deathsValue);
   }
 
   /**
@@ -599,6 +645,19 @@ export class BaseRenderer {
 
     // Tank.
     const p = this.world.player;
+
+    // Stats (kills/deaths).
+    if (p && p.kills !== undefined && p.deaths !== undefined) {
+      const killsElement = document.getElementById('stat-kills');
+      const deathsElement = document.getElementById('stat-deaths');
+
+      if (killsElement) {
+        killsElement.textContent = p.kills.toString();
+      }
+      if (deathsElement) {
+        deathsElement.textContent = p.deaths.toString();
+      }
+    }
     p.hudLastStatus = p.hudLastStatus || {};
     if (this.tankIndicators) {
       for (const [prop, node] of Object.entries(this.tankIndicators)) {

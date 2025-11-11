@@ -29,6 +29,8 @@ export class BoloLocalWorld extends NetLocalWorld {
   increasingRange!: boolean;
   decreasingRange!: boolean;
   rangeAdjustTimer!: number;
+  gunsightVisible: boolean = true;
+  autoSlowdownActive: boolean = false;
 
   /**
    * Callback after resources have been loaded.
@@ -47,12 +49,25 @@ export class BoloLocalWorld extends NetLocalWorld {
   tick(): void {
     super.tick();
 
+    // Keep brakes engaged during auto slowdown - they'll be released when
+    // the player presses Accelerate or manually controls braking
+
     if (this.increasingRange !== this.decreasingRange) {
       if (++this.rangeAdjustTimer === 6) {
         if (this.increasingRange) {
           this.player.increaseRange();
+          // Auto hide gunsight when at max range
+          const kb = (this as any).keyBindings;
+          if (kb && kb.autoGunsight && this.player.firingRange === 7) {
+            this.gunsightVisible = false;
+          }
         } else {
           this.player.decreaseRange();
+          // Auto show gunsight when decreasing range
+          const kb = (this as any).keyBindings;
+          if (kb && kb.autoGunsight) {
+            this.gunsightVisible = true;
+          }
         }
         this.rangeAdjustTimer = 0;
       }
@@ -82,18 +97,25 @@ export class BoloLocalWorld extends NetLocalWorld {
         break;
       case 38:
         this.player.accelerating = true;
+        // Clear auto slowdown if it was active
+        if (this.autoSlowdownActive) {
+          this.player.braking = false;
+          this.autoSlowdownActive = false;
+        }
         break;
       case 39:
         this.player.turningClockwise = true;
         break;
       case 40:
         this.player.braking = true;
+        this.autoSlowdownActive = false;
         break;
     }
   }
 
   handleKeyup(e: KeyboardEvent): void {
     const keyCode = e.which || e.keyCode;
+    const kb = (this as any).keyBindings;
     switch (keyCode) {
       case 32:
         this.player.shooting = false;
@@ -103,12 +125,18 @@ export class BoloLocalWorld extends NetLocalWorld {
         break;
       case 38:
         this.player.accelerating = false;
+        // Auto slowdown: start braking when accelerate is released
+        if (kb && kb.autoSlowdown) {
+          this.player.braking = true;
+          this.autoSlowdownActive = true;
+        }
         break;
       case 39:
         this.player.turningClockwise = false;
         break;
       case 40:
         this.player.braking = false;
+        this.autoSlowdownActive = false;
         break;
     }
   }
