@@ -252,7 +252,7 @@ canvas {
 
 #statsStatus {
   top: 8px; right: 8px;
-  width: 129px; height: 66px;
+  width: 129px; height: 48px;
   font-family: monospace;
   font-size: 11px;
   color: #c0c0f0;
@@ -260,6 +260,17 @@ canvas {
 
 #statsStatus .stat-line {
   margin: 4px 0 4px 4px;
+  display: flex;
+  align-items: center;
+}
+
+#statsStatus .stat-line:first-child {
+  justify-content: space-between;
+  padding-right: 4px;
+}
+
+#statsStatus .stat-group-left,
+#statsStatus .stat-group-right {
   display: flex;
   align-items: center;
 }

@@ -424,23 +424,45 @@ export class BaseRenderer {
     container.id = 'statsStatus';
     this.hud!.appendChild(container);
 
-    // Kills line
-    const killsLine = document.createElement('div');
-    killsLine.className = 'stat-line';
-    container.appendChild(killsLine);
+    // First line: Kills (left) and Team Score (right)
+    const firstLine = document.createElement('div');
+    firstLine.className = 'stat-line';
+    container.appendChild(firstLine);
+
+    // Kills (left side)
+    const killsGroup = document.createElement('span');
+    killsGroup.className = 'stat-group-left';
+    firstLine.appendChild(killsGroup);
 
     const killsIcon = document.createElement('span');
     killsIcon.className = 'stat-icon';
     killsIcon.textContent = '\u2620'; // ☠ skull and crossbones
-    killsLine.appendChild(killsIcon);
+    killsGroup.appendChild(killsIcon);
 
     const killsValue = document.createElement('span');
     killsValue.className = 'stat-value';
     killsValue.id = 'stat-kills';
     killsValue.textContent = '0';
-    killsLine.appendChild(killsValue);
+    killsGroup.appendChild(killsValue);
 
-    // Deaths line
+    // Team score (right side)
+    const scoreGroup = document.createElement('span');
+    scoreGroup.className = 'stat-group-right';
+    firstLine.appendChild(scoreGroup);
+
+    const scoreIcon = document.createElement('span');
+    scoreIcon.className = 'stat-icon';
+    scoreIcon.id = 'stat-score-icon';
+    scoreIcon.textContent = '\u2605'; // ★ star
+    scoreGroup.appendChild(scoreIcon);
+
+    const scoreValue = document.createElement('span');
+    scoreValue.className = 'stat-value';
+    scoreValue.id = 'stat-score';
+    scoreValue.textContent = '0';
+    scoreGroup.appendChild(scoreValue);
+
+    // Second line: Deaths
     const deathsLine = document.createElement('div');
     deathsLine.className = 'stat-line';
     container.appendChild(deathsLine);
@@ -646,16 +668,42 @@ export class BaseRenderer {
     // Tank.
     const p = this.world.player;
 
-    // Stats (kills/deaths).
+    // Stats (kills/deaths/team score).
     if (p && p.kills !== undefined && p.deaths !== undefined) {
       const killsElement = document.getElementById('stat-kills');
       const deathsElement = document.getElementById('stat-deaths');
+      const scoreElement = document.getElementById('stat-score');
+      const scoreIconElement = document.getElementById('stat-score-icon');
 
       if (killsElement) {
         killsElement.textContent = p.kills.toString();
       }
       if (deathsElement) {
         deathsElement.textContent = p.deaths.toString();
+      }
+      if (scoreElement && p.team !== undefined && p.team >= 0 && p.team <= 5) {
+        // Calculate team ranking
+        const teamScoresWithIndex = this.world.teamScores.map((score: number, index: number) => ({ team: index, score }));
+        // Sort by score descending (highest score = 1st place)
+        teamScoresWithIndex.sort((a: { team: number; score: number }, b: { team: number; score: number }) => b.score - a.score);
+
+        // Find player's team rank
+        const rank = teamScoresWithIndex.findIndex((item: { team: number; score: number }) => item.team === p.team) + 1;
+
+        // Get ordinal suffix
+        const getOrdinal = (n: number): string => {
+          const s = ['th', 'st', 'nd', 'rd'];
+          const v = n % 100;
+          return n + (s[(v - 20) % 10] || s[v] || s[0]);
+        };
+
+        scoreElement.textContent = getOrdinal(rank);
+
+        // Set star icon color to team color
+        if (scoreIconElement) {
+          const color = TEAM_COLORS[p.team] || { r: 192, g: 192, b: 240 };
+          scoreIconElement.style.color = `rgb(${color.r},${color.g},${color.b})`;
+        }
       }
     }
     p.hudLastStatus = p.hudLastStatus || {};

@@ -41,6 +41,7 @@ export class BoloServerWorld extends ServerWorld {
         this.newlyCreated = new Set(); // Track objects created this tick
         this.tanks = [];
         this.emptyStartTime = null; // Track when game became empty
+        this.teamScoresTick = 0; // Counter for sending team scores
         this.map = map;
         this.boloInit();
         this.clients = [];
@@ -64,6 +65,54 @@ export class BoloServerWorld extends ServerWorld {
         for (const client of this.clients) {
             client.end();
         }
+    }
+    /**
+     * Calculate team scores based on bases, pillboxes, and K/D ratio.
+     * Returns an array of scores for each team (0-5).
+     */
+    calculateTeamScores() {
+        const teamScores = [0, 0, 0, 0, 0, 0]; // Scores for teams 0-5
+        // Count bases and pillboxes per team
+        const baseCounts = [0, 0, 0, 0, 0, 0];
+        const pillCounts = [0, 0, 0, 0, 0, 0];
+        // Count total bases and pillboxes (excluding neutral)
+        let totalBases = 0;
+        let totalPills = 0;
+        for (const base of this.map.bases) {
+            if (base.team !== null && base.team !== 255 && base.team >= 0 && base.team <= 5) {
+                baseCounts[base.team]++;
+                totalBases++;
+            }
+        }
+        for (const pill of this.map.pills) {
+            if (pill.team !== null && pill.team !== 255 && pill.team >= 0 && pill.team <= 5) {
+                pillCounts[pill.team]++;
+                totalPills++;
+            }
+        }
+        // Calculate K/D ratio per team
+        const teamKills = [0, 0, 0, 0, 0, 0];
+        const teamDeaths = [0, 0, 0, 0, 0, 0];
+        for (const tank of this.tanks) {
+            if (tank.team >= 0 && tank.team <= 5) {
+                teamKills[tank.team] += tank.kills || 0;
+                teamDeaths[tank.team] += tank.deaths || 0;
+            }
+        }
+        // Calculate final scores for each team
+        for (let team = 0; team < 6; team++) {
+            // Base score: (Team's Bases / Total Bases) × 100
+            const baseScore = totalBases > 0 ? (baseCounts[team] / totalBases) * 100 : 0;
+            // Pillbox score: (Team's Pillboxes / Total Pillboxes) × 100
+            const pillScore = totalPills > 0 ? (pillCounts[team] / totalPills) * 100 : 0;
+            // Combat score: min(Team K/D / 3.0, 1.0) × 100
+            const kd = teamDeaths[team] > 0 ? teamKills[team] / teamDeaths[team] : teamKills[team];
+            const normalizedKD = Math.min(kd / 3.0, 1.0);
+            const combatScore = normalizedKD * 100;
+            // Weighted total: (Base × 0.50) + (Pill × 0.30) + (Combat × 0.20)
+            teamScores[team] = (baseScore * 0.50) + (pillScore * 0.30) + (combatScore * 0.20);
+        }
+        return teamScores;
     }
     // Callbacks
     /**
@@ -395,6 +444,17 @@ export class BoloServerWorld extends ServerWorld {
             this.changes = savedChanges; // Restore changes for existing clients
             newClientPacket = Buffer.from(newClientPacket).toString('base64');
         }
+        // Calculate and send team scores every 25 ticks (once per second)
+        this.teamScoresTick++;
+        let teamScoresPacket = null;
+        if (this.teamScoresTick >= 25) {
+            this.teamScoresTick = 0;
+            const scores = this.calculateTeamScores();
+            // Convert scores to uint16 (multiply by 100 for 2 decimal places precision)
+            const packedScores = pack('HHHHHH', Math.round(scores[0] * 100), Math.round(scores[1] * 100), Math.round(scores[2] * 100), Math.round(scores[3] * 100), Math.round(scores[4] * 100), Math.round(scores[5] * 100));
+            const teamScoresData = [net.TEAMSCORES_MESSAGE].concat(packedScores);
+            teamScoresPacket = Buffer.from(teamScoresData).toString('base64');
+        }
         // Send packets to all clients
         for (const client of this.clients) {
             // Handle initial sync for new clients
@@ -424,6 +484,10 @@ export class BoloServerWorld extends ServerWorld {
             else {
                 client.send(largePacket);
                 client.heartbeatTimer++;
+            }
+            // Send team scores if calculated this tick
+            if (teamScoresPacket) {
+                client.send(teamScoresPacket);
             }
         }
         // Now broadcast nicks for new clients AFTER all packets have been sent

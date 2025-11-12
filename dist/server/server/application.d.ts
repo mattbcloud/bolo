@@ -20,6 +20,7 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     url?: string;
     tanks: any[];
     emptyStartTime: number | null;
+    teamScoresTick: number;
     boloInit: () => void;
     addTank: (tank: any) => void;
     removeTank: (tank: any) => void;
@@ -29,6 +30,11 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     constructor(map: any);
     insert(obj: any): void;
     close(): void;
+    /**
+     * Calculate team scores based on bases, pillboxes, and K/D ratio.
+     * Returns an array of scores for each team (0-5).
+     */
+    calculateTeamScores(): number[];
     /**
      * Update, and then send packets to the client.
      */

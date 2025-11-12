@@ -25,6 +25,7 @@ export const MAPCHANGE_MESSAGE = 'M'.charCodeAt(0);
 export const UPDATE_MESSAGE = 'U'.charCodeAt(0);
 export const TINY_UPDATE_MESSAGE = 'u'.charCodeAt(0);
 export const SOUNDEFFECT_MESSAGE = 'S'.charCodeAt(0);
+export const TEAMSCORES_MESSAGE = 'T'.charCodeAt(0);
 // And these are the client's messages. The client just sends one-character ASCII messages.
 export const START_TURNING_CCW = 'L';
 export const STOP_TURNING_CCW = 'l';
