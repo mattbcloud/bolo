@@ -23,6 +23,7 @@ export declare const MAPCHANGE_MESSAGE: number;
 export declare const UPDATE_MESSAGE: number;
 export declare const TINY_UPDATE_MESSAGE: number;
 export declare const SOUNDEFFECT_MESSAGE: number;
+export declare const TEAMSCORES_MESSAGE: number;
 export declare const START_TURNING_CCW = "L";
 export declare const STOP_TURNING_CCW = "l";
 export declare const START_TURNING_CW = "R";

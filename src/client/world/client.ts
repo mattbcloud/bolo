@@ -91,6 +91,7 @@ export class BoloClientWorld extends ClientWorld {
   keyBindings!: any;
   viewMode!: 'tank' | 'pillbox';
   currentPillboxIndex!: number;
+  teamScores: number[] = [0, 0, 0, 0, 0, 0];  // Scores for teams 0-5
 
   constructor() {
     super();
@@ -1214,6 +1215,13 @@ export class BoloClientWorld extends ClientWorld {
 
       case net.UPDATE_MESSAGE: {
         const bytes = this.netTick(data, offset, this.objectsCreatedInThisPacket);
+        return bytes;
+      }
+
+      case net.TEAMSCORES_MESSAGE: {
+        // Unpack 6 team scores (uint16 values, need to divide by 100)
+        const [scores, bytes] = unpack('HHHHHH', data, offset);
+        this.teamScores = scores.map(score => (score as number) / 100);
         return bytes;
       }
 
