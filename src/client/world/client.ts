@@ -24,115 +24,121 @@ export interface BoloClientWorld extends IBoloClientWorldMixin {}
 
 const JOIN_DIALOG_TEMPLATE = `
     <div id="join-dialog" style="
-      background: #c0c0c0;
-      border: 2px outset #dfdfdf;
-      box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
-      padding: 16px;
+      background: #DDDDDD;
+      border: 2px solid black;
+      border-radius: 8px;
+      box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
+      padding: 0;
       min-width: 320px;
       font-family: 'Chicago', 'Charcoal', sans-serif;
       color: black;
     ">
       <div style="
         background: white;
-        border: 2px inset #808080;
-        padding: 12px;
-        margin-bottom: 16px;
+        border-bottom: 1px solid black;
+        padding: 8px 16px;
         text-align: center;
         font-weight: bold;
+        font-size: 14px;
       ">Join Game</div>
 
-      <div style="margin-bottom: 12px;">
-        <label style="display: block; margin-bottom: 4px; font-weight: bold;">Player Name</label>
-        <input type="text" id="join-nick-field" name="join-nick-field" maxlength="20" style="
-          width: 100%;
-          border: 1px inset #808080;
-          background: white;
-          padding: 4px;
-          font-family: 'Chicago', 'Charcoal', sans-serif;
-          box-sizing: border-box;
-        "></input>
-      </div>
-
-      <div id="join-team" style="margin-bottom: 16px;">
-        <label style="display: block; margin-bottom: 8px; font-weight: bold;">Choose a team</label>
-        <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-          <input type="radio" id="join-team-red" name="join-team" value="red" style="display: none;"></input>
-          <label for="join-team-red" style="cursor: pointer;">
-            <span class="bolo-team bolo-team-red" style="
-              display: inline-block;
-              width: 32px;
-              height: 32px;
-              border: 2px outset #dfdfdf;
-              box-sizing: border-box;
-            "></span>
-          </label>
-
-          <input type="radio" id="join-team-blue" name="join-team" value="blue" style="display: none;"></input>
-          <label for="join-team-blue" style="cursor: pointer;">
-            <span class="bolo-team bolo-team-blue" style="
-              display: inline-block;
-              width: 32px;
-              height: 32px;
-              border: 2px outset #dfdfdf;
-              box-sizing: border-box;
-            "></span>
-          </label>
-
-          <input type="radio" id="join-team-yellow" name="join-team" value="yellow" style="display: none;"></input>
-          <label for="join-team-yellow" style="cursor: pointer;">
-            <span class="bolo-team bolo-team-yellow" style="
-              display: inline-block;
-              width: 32px;
-              height: 32px;
-              border: 2px outset #dfdfdf;
-              box-sizing: border-box;
-            "></span>
-          </label>
-
-          <input type="radio" id="join-team-green" name="join-team" value="green" style="display: none;"></input>
-          <label for="join-team-green" style="cursor: pointer;">
-            <span class="bolo-team bolo-team-green" style="
-              display: inline-block;
-              width: 32px;
-              height: 32px;
-              border: 2px outset #dfdfdf;
-              box-sizing: border-box;
-            "></span>
-          </label>
-
-          <input type="radio" id="join-team-orange" name="join-team" value="orange" style="display: none;"></input>
-          <label for="join-team-orange" style="cursor: pointer;">
-            <span class="bolo-team bolo-team-orange" style="
-              display: inline-block;
-              width: 32px;
-              height: 32px;
-              border: 2px outset #dfdfdf;
-              box-sizing: border-box;
-            "></span>
-          </label>
-
-          <input type="radio" id="join-team-purple" name="join-team" value="purple" style="display: none;"></input>
-          <label for="join-team-purple" style="cursor: pointer;">
-            <span class="bolo-team bolo-team-purple" style="
-              display: inline-block;
-              width: 32px;
-              height: 32px;
-              border: 2px outset #dfdfdf;
-              box-sizing: border-box;
-            "></span>
-          </label>
+      <div style="padding: 16px;">
+        <div style="margin-bottom: 12px;">
+          <label style="display: block; margin-bottom: 4px; font-weight: bold; font-size: 12px;">Player Name</label>
+          <input type="text" id="join-nick-field" name="join-nick-field" maxlength="20" style="
+            width: 100%;
+            border: 1px solid black;
+            background: white;
+            padding: 4px;
+            font-family: 'Chicago', 'Charcoal', sans-serif;
+            font-size: 12px;
+            box-sizing: border-box;
+          "></input>
         </div>
-      </div>
 
-      <div style="text-align: center;">
-        <button type="button" id="join-submit" style="
-          padding: 8px 24px;
-          border: 2px outset #dfdfdf;
-          background: #c0c0c0;
-          cursor: pointer;
-          font-family: 'Chicago', 'Charcoal', sans-serif;
-          font-weight: bold;
-        ">Join Game</button>
+        <div id="join-team" style="margin-bottom: 16px;">
+          <label style="display: block; margin-bottom: 8px; font-weight: bold; font-size: 12px;">Choose a team</label>
+          <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+            <input type="radio" id="join-team-red" name="join-team" value="red" style="display: none;"></input>
+            <label for="join-team-red" style="cursor: pointer;">
+              <span class="bolo-team bolo-team-red" style="
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 2px solid black;
+                box-sizing: border-box;
+              "></span>
+            </label>
+
+            <input type="radio" id="join-team-blue" name="join-team" value="blue" style="display: none;"></input>
+            <label for="join-team-blue" style="cursor: pointer;">
+              <span class="bolo-team bolo-team-blue" style="
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 2px solid black;
+                box-sizing: border-box;
+              "></span>
+            </label>
+
+            <input type="radio" id="join-team-yellow" name="join-team" value="yellow" style="display: none;"></input>
+            <label for="join-team-yellow" style="cursor: pointer;">
+              <span class="bolo-team bolo-team-yellow" style="
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 2px solid black;
+                box-sizing: border-box;
+              "></span>
+            </label>
+
+            <input type="radio" id="join-team-green" name="join-team" value="green" style="display: none;"></input>
+            <label for="join-team-green" style="cursor: pointer;">
+              <span class="bolo-team bolo-team-green" style="
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 2px solid black;
+                box-sizing: border-box;
+              "></span>
+            </label>
+
+            <input type="radio" id="join-team-orange" name="join-team" value="orange" style="display: none;"></input>
+            <label for="join-team-orange" style="cursor: pointer;">
+              <span class="bolo-team bolo-team-orange" style="
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 2px solid black;
+                box-sizing: border-box;
+              "></span>
+            </label>
+
+            <input type="radio" id="join-team-purple" name="join-team" value="purple" style="display: none;"></input>
+            <label for="join-team-purple" style="cursor: pointer;">
+              <span class="bolo-team bolo-team-purple" style="
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 2px solid black;
+                box-sizing: border-box;
+              "></span>
+            </label>
+          </div>
+        </div>
+
+        <div style="text-align: center;">
+          <button type="button" id="join-submit" style="
+            padding: 6px 24px;
+            border: 2px solid black;
+            border-radius: 8px;
+            background: white;
+            cursor: pointer;
+            font-family: 'Chicago', 'Charcoal', sans-serif;
+            font-weight: bold;
+            font-size: 12px;
+          ">Join Game</button>
+        </div>
       </div>
     </div>
   `;
@@ -222,40 +228,86 @@ export class BoloClientWorld extends ClientWorld {
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        background: rgba(0, 0, 0, 0.9);
-        color: white;
-        padding: 30px;
-        border: 2px solid #c0c0f0;
+        background: #DDDDDD;
+        color: black;
+        padding: 0;
+        border: 2px solid black;
+        border-radius: 8px;
         min-width: 600px;
         max-width: 800px;
         max-height: 80vh;
-        overflow-y: auto;
-        font-family: sans-serif;
+        overflow: hidden;
+        font-family: 'Chicago', 'Charcoal', sans-serif;
         z-index: 10000;
+        box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
       ">
-        <h1 style="margin: 0 0 20px 0; text-align: center;">Bolo Multiplayer Lobby</h1>
+        <div style="
+          background: white;
+          border-bottom: 1px solid black;
+          padding: 8px 16px;
+          text-align: center;
+          font-weight: bold;
+        ">Bolo Multiplayer Lobby</div>
+        <div style="padding: 20px; overflow-y: auto; max-height: calc(80vh - 60px);">
 
         <div id="active-games-section">
-          <h2 style="margin: 20px 0 10px 0;">Active Games</h2>
-          <div id="active-games-list" style="margin-bottom: 20px;">
+          <h2 style="margin: 0 0 10px 0; font-size: 14px;">Active Games</h2>
+          <div id="active-games-list" style="margin-bottom: 20px; font-size: 12px;">
             Loading...
           </div>
         </div>
 
         <div id="create-game-section">
-          <h2 style="margin: 20px 0 10px 0;">Create New Game</h2>
-          <div style="margin-bottom: 10px;">
+          <h2 style="margin: 20px 0 10px 0; font-size: 14px;">Create New Game</h2>
+          <div style="margin-bottom: 10px; font-size: 12px;">
             <label for="map-select">Select Map:</label>
-            <select id="map-select" style="margin-left: 10px; padding: 5px; width: 300px;">
+            <select id="map-select" style="
+              margin-left: 10px;
+              padding: 4px 8px;
+              width: 300px;
+              border: 1px solid black;
+              background: white;
+              font-family: 'Chicago', 'Charcoal', sans-serif;
+              font-size: 12px;
+            ">
               <option value="">Loading maps...</option>
             </select>
           </div>
-          <button id="create-game-btn" style="padding: 10px 20px; cursor: pointer;" disabled>Create Game</button>
+          <button id="create-game-btn" style="
+            padding: 6px 16px;
+            cursor: pointer;
+            border: 2px solid black;
+            border-radius: 8px;
+            background: white;
+            font-family: 'Chicago', 'Charcoal', sans-serif;
+            font-weight: bold;
+            font-size: 12px;
+          " disabled>Create Game</button>
         </div>
 
-        <div style="margin-top: 30px; text-align: center; border-top: 1px solid #666; padding-top: 20px;">
-          <button id="how-to-play-btn" style="padding: 10px 20px; cursor: pointer; margin-right: 10px;">How to Play</button>
-          <button id="key-settings-btn" style="padding: 10px 20px; cursor: pointer;">Key Settings</button>
+        <div style="margin-top: 30px; text-align: center; border-top: 1px solid black; padding-top: 20px;">
+          <button id="how-to-play-btn" style="
+            padding: 6px 16px;
+            cursor: pointer;
+            border: 2px solid black;
+            border-radius: 8px;
+            background: white;
+            font-family: 'Chicago', 'Charcoal', sans-serif;
+            font-weight: bold;
+            font-size: 12px;
+            margin-right: 10px;
+          ">How to Play</button>
+          <button id="key-settings-btn" style="
+            padding: 6px 16px;
+            cursor: pointer;
+            border: 2px solid black;
+            border-radius: 8px;
+            background: white;
+            font-family: 'Chicago', 'Charcoal', sans-serif;
+            font-weight: bold;
+            font-size: 12px;
+          ">Key Settings</button>
+        </div>
         </div>
       </div>
     `;
@@ -435,22 +487,24 @@ export class BoloClientWorld extends ClientWorld {
         justify-content: center;
       ">
         <div id="key-settings-dialog" style="
-          background: #c0c0c0;
-          border: 2px outset #dfdfdf;
-          box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
-          padding: 16px;
+          background: #DDDDDD;
+          border: 2px solid black;
+          border-radius: 8px;
+          box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
+          padding: 0;
           min-width: 400px;
           font-family: 'Chicago', 'Charcoal', sans-serif;
           color: black;
         ">
           <div style="
             background: white;
-            border: 2px inset #808080;
-            padding: 12px;
-            margin-bottom: 16px;
+            border-bottom: 1px solid black;
+            padding: 8px 16px;
             text-align: center;
             font-weight: bold;
+            font-size: 14px;
           ">Key Settings</div>
+          <div style="padding: 16px;">
 
           <div style="margin-bottom: 16px;">
             <div style="font-weight: bold; margin-bottom: 8px;">Drive tank</div>
@@ -460,12 +514,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.accelerate)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
             <div style="display: flex; gap: 8px; margin-bottom: 8px;">
@@ -474,12 +529,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.decelerate)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
 
@@ -490,12 +546,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.turnLeft)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
             <div style="display: flex; gap: 8px; margin-bottom: 8px;">
@@ -504,12 +561,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.turnRight)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
 
@@ -520,12 +578,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.increaseRange)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
             <div style="display: flex; gap: 8px; margin-bottom: 8px;">
@@ -534,12 +593,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.decreaseRange)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
 
@@ -550,12 +610,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.shoot)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
             <div style="display: flex; gap: 8px; margin-bottom: 8px;">
@@ -564,12 +625,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.layMine)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
 
@@ -580,12 +642,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.tankView)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
             <div style="display: flex; gap: 8px; margin-bottom: 8px;">
@@ -594,12 +657,13 @@ export class BoloClientWorld extends ClientWorld {
                 value="${getFriendlyKeyName(keys.pillboxView)}"
                 style="
                   width: 80px;
-                  border: 1px inset #808080;
+                  border: 1px solid black;
                   background: white;
-                  padding: 2px 4px;
+                  padding: 4px;
                   text-align: center;
                   cursor: pointer;
-                  font-family: monospace;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
                 ">
             </div>
 
@@ -621,19 +685,28 @@ export class BoloClientWorld extends ClientWorld {
 
           <div style="text-align: center; display: flex; gap: 8px; justify-content: center;">
             <button id="key-settings-cancel" style="
-              padding: 4px 16px;
-              border: 2px outset #dfdfdf;
-              background: #c0c0c0;
+              padding: 6px 16px;
+              border: 2px solid black;
+              border-radius: 8px;
+              background: white;
               cursor: pointer;
               min-width: 80px;
+              font-family: 'Chicago', 'Charcoal', sans-serif;
+              font-weight: bold;
+              font-size: 12px;
             ">Cancel</button>
             <button id="key-settings-ok" style="
-              padding: 4px 16px;
-              border: 2px outset #dfdfdf;
-              background: #c0c0c0;
+              padding: 6px 16px;
+              border: 2px solid black;
+              border-radius: 8px;
+              background: white;
               cursor: pointer;
               min-width: 80px;
+              font-family: 'Chicago', 'Charcoal', sans-serif;
+              font-weight: bold;
+              font-size: 12px;
             ">OK</button>
+          </div>
           </div>
         </div>
       </div>
@@ -732,25 +805,26 @@ export class BoloClientWorld extends ClientWorld {
         justify-content: center;
       ">
         <div id="how-to-play-dialog" style="
-          background: #c0c0c0;
-          border: 2px outset #dfdfdf;
-          box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
-          padding: 16px;
+          background: #DDDDDD;
+          border: 2px solid black;
+          border-radius: 8px;
+          box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
+          padding: 0;
           max-width: 700px;
           max-height: 85vh;
-          overflow-y: auto;
+          overflow: hidden;
           font-family: 'Chicago', 'Charcoal', sans-serif;
           color: black;
         ">
           <div style="
             background: white;
-            border: 2px inset #808080;
-            padding: 12px;
-            margin-bottom: 16px;
+            border-bottom: 1px solid black;
+            padding: 8px 16px;
             text-align: center;
             font-weight: bold;
-            font-size: 16px;
+            font-size: 14px;
           ">How to Play Bolo</div>
+          <div style="padding: 16px; overflow-y: auto; max-height: calc(85vh - 80px);">
 
           <div style="padding: 0 8px;">
             <!-- OBJECTIVE -->
@@ -862,14 +936,17 @@ export class BoloClientWorld extends ClientWorld {
 
             <div style="text-align: center; margin-top: 20px;">
               <button id="how-to-play-close" style="
-                padding: 8px 32px;
-                border: 2px outset #dfdfdf;
-                background: #c0c0c0;
+                padding: 6px 24px;
+                border: 2px solid black;
+                border-radius: 8px;
+                background: white;
                 cursor: pointer;
                 font-family: 'Chicago', 'Charcoal', sans-serif;
                 font-weight: bold;
+                font-size: 12px;
               ">Close</button>
             </div>
+          </div>
           </div>
         </div>
       </div>
@@ -1015,7 +1092,7 @@ export class BoloClientWorld extends ClientWorld {
       teamRadio.checked = true;
       const label = dialog.querySelector(`label[for="join-team-${disadvantaged}"] span`) as HTMLElement;
       if (label) {
-        label.style.border = '2px inset #808080';
+        label.style.borderWidth = '3px';
       }
     }
 
@@ -1026,12 +1103,12 @@ export class BoloClientWorld extends ClientWorld {
         const target = e.target as HTMLInputElement;
         // Reset all borders
         dialog.querySelectorAll('#join-team label span').forEach((span) => {
-          (span as HTMLElement).style.border = '2px outset #dfdfdf';
+          (span as HTMLElement).style.borderWidth = '2px';
         });
         // Highlight selected team
         const selectedLabel = dialog.querySelector(`label[for="${target.id}"] span`) as HTMLElement;
         if (selectedLabel) {
-          selectedLabel.style.border = '2px inset #808080';
+          selectedLabel.style.borderWidth = '3px';
         }
       });
     });
