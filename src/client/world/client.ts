@@ -168,6 +168,7 @@ export class BoloClientWorld extends ClientWorld {
         </div>
 
         <div style="margin-top: 30px; text-align: center; border-top: 1px solid #666; padding-top: 20px;">
+          <button id="how-to-play-btn" style="padding: 10px 20px; cursor: pointer; margin-right: 10px;">How to Play</button>
           <button id="key-settings-btn" style="padding: 10px 20px; cursor: pointer;">Key Settings</button>
         </div>
       </div>
@@ -187,6 +188,11 @@ export class BoloClientWorld extends ClientWorld {
     // Set up create game button
     document.getElementById('create-game-btn')?.addEventListener('click', () => {
       this.createGame();
+    });
+
+    // Set up how to play button
+    document.getElementById('how-to-play-btn')?.addEventListener('click', () => {
+      this.showHowToPlay();
     });
 
     // Set up key settings button
@@ -621,6 +627,179 @@ export class BoloClientWorld extends ClientWorld {
       // If game is active, update the bindings
       if ((this as any).updateKeyBindings) {
         (this as any).updateKeyBindings(currentBindings);
+      }
+    });
+  }
+
+  /**
+   * Show the "How to Play" guide
+   */
+  showHowToPlay(): void {
+    const guideHTML = `
+      <div id="how-to-play-overlay" style="
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 20000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">
+        <div id="how-to-play-dialog" style="
+          background: #c0c0c0;
+          border: 2px outset #dfdfdf;
+          box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
+          padding: 16px;
+          max-width: 700px;
+          max-height: 85vh;
+          overflow-y: auto;
+          font-family: 'Chicago', 'Charcoal', sans-serif;
+          color: black;
+        ">
+          <div style="
+            background: white;
+            border: 2px inset #808080;
+            padding: 12px;
+            margin-bottom: 16px;
+            text-align: center;
+            font-weight: bold;
+            font-size: 16px;
+          ">How to Play Bolo</div>
+
+          <div style="padding: 0 8px;">
+            <!-- OBJECTIVE -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🎯 How to Win</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                Capture ALL bases on the map. Work with teammates on your color team to control territory, build defenses, and eliminate enemy bases.
+              </div>
+            </div>
+
+            <!-- UNDERSTANDING THE SCREEN -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">📺 Understanding the Screen</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>Bottom Right (Tank Status):</strong> Four yellow bars show your Shells, Mines, Armor (health), and Trees (building materials). Max 40 each.<br>
+                <strong>Bottom Left:</strong> Three status panels show all Pillboxes (defense turrets), Bases (refuel stations), and Players. Checkerboard pattern = neutral/uncaptured.<br>
+                <strong>Top Right (Stats):</strong> Your kills ☠, deaths †, and team rank ★<br>
+                <strong>Top Center (Build Tools):</strong> Five tools: Forest (gather trees), Road, Building, Pillbox, Mine. Click to select, click map to build.<br>
+                <strong>Targeting Reticle:</strong> Circular crosshair shows where your shots will land
+              </div>
+            </div>
+
+            <!-- BASIC CONTROLS -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">⌨️ Controls</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>Arrow Keys:</strong> Move and turn your tank<br>
+                <strong>Space:</strong> Shoot (hold for auto-fire)<br>
+                <strong>Tab:</strong> Drop mine behind tank<br>
+                <strong>L/; (semicolon):</strong> Adjust gun range (1-7 tiles)<br>
+                <strong>Enter/P:</strong> Switch camera views<br>
+                <strong>T/R:</strong> Chat (all players / team only)<br>
+                <strong>Mouse Click:</strong> Build selected item at location
+              </div>
+              <div style="font-size: 10px; margin-top: 3px; font-style: italic;">
+                Customize controls in "Key Settings" (lobby)
+              </div>
+            </div>
+
+            <!-- GETTING STARTED -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🚀 Getting Started</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>1. Gather Resources:</strong> Drive into forests (#) to collect trees. Select the Forest tool, click on trees to send your builder (little man) to chop them.<br>
+                <strong>2. Capture Bases:</strong> Drive your tank onto checkerboard bases to capture them. They'll turn your team color and refuel your tank automatically.<br>
+                <strong>3. Refuel:</strong> Park on your team's bases. They slowly transfer armor (health), shells, and mines to fill your tank.
+              </div>
+            </div>
+
+            <!-- THE BUILDER SYSTEM -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🔨 Building System</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>How it works:</strong> Select a tool at top, click map location. A little man exits your tank, walks there, builds, and returns.<br>
+                <strong>Forest tool:</strong> Chop trees, gain 4 trees<br>
+                <strong>Road (0.5 trees):</strong> Build fast-travel paths<br>
+                <strong>Building (0.5 trees):</strong> Build walls for defense<br>
+                <strong>Pillbox (1 tree):</strong> Place defense turret (must be carrying one)<br>
+                <strong>Mine (uses 1 mine):</strong> Lay explosive trap<br>
+                <strong>Warning:</strong> Your builder can be killed! Protect him.
+              </div>
+            </div>
+
+            <!-- BASES -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🏰 Bases (Refuel Stations)</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>Capture:</strong> Drive onto checkerboard bases<br>
+                <strong>Refuel:</strong> Park on your bases to restore armor, shells, and mines<br>
+                <strong>Attack:</strong> Shoot enemy bases to damage them (5 armor per hit)<br>
+                <strong>Regeneration:</strong> Bases slowly refill their supplies over time<br>
+                <strong>Win Condition:</strong> Control all bases on the map
+              </div>
+            </div>
+
+            <!-- PILLBOXES -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🛡️ Pillboxes (Defense Turrets)</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>Auto-Defense:</strong> Pillboxes automatically shoot enemy tanks in range<br>
+                <strong>Capturing:</strong> Shoot enemy pillboxes until disabled (0 armor), drive over to pick up, then rebuild using builder + 1 tree<br>
+                <strong>Team Defense:</strong> Your team's pillboxes won't shoot teammates<br>
+                <strong>Status:</strong> Check bottom-left panel—gray with X means disabled/dead
+              </div>
+            </div>
+
+            <!-- COMBAT -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">⚔️ Combat Tips</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>•</strong> Adjust range (L/;) to hit targets accurately<br>
+                <strong>•</strong> Watch your armor bar—when it hits 0, you die<br>
+                <strong>•</strong> Respawn takes ~5 seconds after death<br>
+                <strong>•</strong> Forest (#) hides you from enemy pillboxes if completely surrounded<br>
+                <strong>•</strong> Mines damage any tank that drives over them (10 damage)<br>
+                <strong>•</strong> Work with teammates—use team chat (R key)
+              </div>
+            </div>
+
+            <!-- TEAM COLORS -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🎨 Team Colors</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>Six teams:</strong> Red, Blue, Yellow, Green, Orange, Purple<br>
+                <strong>Your team's color:</strong> Shows on bases, pillboxes, and team rank star<br>
+                <strong>Checkerboard pattern:</strong> Neutral/uncaptured bases
+              </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 20px;">
+              <button id="how-to-play-close" style="
+                padding: 8px 32px;
+                border: 2px outset #dfdfdf;
+                background: #c0c0c0;
+                cursor: pointer;
+                font-family: 'Chicago', 'Charcoal', sans-serif;
+                font-weight: bold;
+              ">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', guideHTML);
+
+    // Close button handler
+    document.getElementById('how-to-play-close')?.addEventListener('click', () => {
+      document.getElementById('how-to-play-overlay')?.remove();
+    });
+
+    // Close on overlay click
+    document.getElementById('how-to-play-overlay')?.addEventListener('click', (e) => {
+      if (e.target === document.getElementById('how-to-play-overlay')) {
+        document.getElementById('how-to-play-overlay')?.remove();
       }
     });
   }
