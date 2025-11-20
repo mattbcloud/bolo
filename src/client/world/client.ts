@@ -23,30 +23,116 @@ const allObjects = allObjectsModule;
 export interface BoloClientWorld extends IBoloClientWorldMixin {}
 
 const JOIN_DIALOG_TEMPLATE = `
-    <div id="join-dialog">
-      <div>
-        <p>What is your name?</p>
-        <p><input type="text" id="join-nick-field" name="join-nick-field" maxlength="20"></input></p>
+    <div id="join-dialog" style="
+      background: #c0c0c0;
+      border: 2px outset #dfdfdf;
+      box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
+      padding: 16px;
+      min-width: 320px;
+      font-family: 'Chicago', 'Charcoal', sans-serif;
+      color: black;
+    ">
+      <div style="
+        background: white;
+        border: 2px inset #808080;
+        padding: 12px;
+        margin-bottom: 16px;
+        text-align: center;
+        font-weight: bold;
+      ">Join Game</div>
+
+      <div style="margin-bottom: 12px;">
+        <label style="display: block; margin-bottom: 4px; font-weight: bold;">Player Name</label>
+        <input type="text" id="join-nick-field" name="join-nick-field" maxlength="20" style="
+          width: 100%;
+          border: 1px inset #808080;
+          background: white;
+          padding: 4px;
+          font-family: 'Chicago', 'Charcoal', sans-serif;
+          box-sizing: border-box;
+        "></input>
       </div>
-      <div id="join-team">
-        <p>Choose a side:</p>
-        <p>
-          <input type="radio" id="join-team-red" name="join-team" value="red"></input>
-          <label for="join-team-red"><span class="bolo-team bolo-team-red"></span></label>
-          <input type="radio" id="join-team-blue" name="join-team" value="blue"></input>
-          <label for="join-team-blue"><span class="bolo-team bolo-team-blue"></span></label>
-          <input type="radio" id="join-team-yellow" name="join-team" value="yellow"></input>
-          <label for="join-team-yellow"><span class="bolo-team bolo-team-yellow"></span></label>
-          <input type="radio" id="join-team-green" name="join-team" value="green"></input>
-          <label for="join-team-green"><span class="bolo-team bolo-team-green"></span></label>
-          <input type="radio" id="join-team-orange" name="join-team" value="orange"></input>
-          <label for="join-team-orange"><span class="bolo-team bolo-team-orange"></span></label>
-          <input type="radio" id="join-team-purple" name="join-team" value="purple"></input>
-          <label for="join-team-purple"><span class="bolo-team bolo-team-purple"></span></label>
-        </p>
+
+      <div id="join-team" style="margin-bottom: 16px;">
+        <label style="display: block; margin-bottom: 8px; font-weight: bold;">Choose a team</label>
+        <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+          <input type="radio" id="join-team-red" name="join-team" value="red" style="display: none;"></input>
+          <label for="join-team-red" style="cursor: pointer;">
+            <span class="bolo-team bolo-team-red" style="
+              display: inline-block;
+              width: 32px;
+              height: 32px;
+              border: 2px outset #dfdfdf;
+              box-sizing: border-box;
+            "></span>
+          </label>
+
+          <input type="radio" id="join-team-blue" name="join-team" value="blue" style="display: none;"></input>
+          <label for="join-team-blue" style="cursor: pointer;">
+            <span class="bolo-team bolo-team-blue" style="
+              display: inline-block;
+              width: 32px;
+              height: 32px;
+              border: 2px outset #dfdfdf;
+              box-sizing: border-box;
+            "></span>
+          </label>
+
+          <input type="radio" id="join-team-yellow" name="join-team" value="yellow" style="display: none;"></input>
+          <label for="join-team-yellow" style="cursor: pointer;">
+            <span class="bolo-team bolo-team-yellow" style="
+              display: inline-block;
+              width: 32px;
+              height: 32px;
+              border: 2px outset #dfdfdf;
+              box-sizing: border-box;
+            "></span>
+          </label>
+
+          <input type="radio" id="join-team-green" name="join-team" value="green" style="display: none;"></input>
+          <label for="join-team-green" style="cursor: pointer;">
+            <span class="bolo-team bolo-team-green" style="
+              display: inline-block;
+              width: 32px;
+              height: 32px;
+              border: 2px outset #dfdfdf;
+              box-sizing: border-box;
+            "></span>
+          </label>
+
+          <input type="radio" id="join-team-orange" name="join-team" value="orange" style="display: none;"></input>
+          <label for="join-team-orange" style="cursor: pointer;">
+            <span class="bolo-team bolo-team-orange" style="
+              display: inline-block;
+              width: 32px;
+              height: 32px;
+              border: 2px outset #dfdfdf;
+              box-sizing: border-box;
+            "></span>
+          </label>
+
+          <input type="radio" id="join-team-purple" name="join-team" value="purple" style="display: none;"></input>
+          <label for="join-team-purple" style="cursor: pointer;">
+            <span class="bolo-team bolo-team-purple" style="
+              display: inline-block;
+              width: 32px;
+              height: 32px;
+              border: 2px outset #dfdfdf;
+              box-sizing: border-box;
+            "></span>
+          </label>
+        </div>
       </div>
-      <div>
-        <p><input type="button" name="join-submit" id="join-submit" value="Join game"></input></p>
+
+      <div style="text-align: center;">
+        <button type="button" id="join-submit" style="
+          padding: 8px 24px;
+          border: 2px outset #dfdfdf;
+          background: #c0c0c0;
+          cursor: pointer;
+          font-family: 'Chicago', 'Charcoal', sans-serif;
+          font-weight: bold;
+        ">Join Game</button>
       </div>
     </div>
   `;
@@ -895,16 +981,12 @@ export class BoloClientWorld extends ClientWorld {
     const dialogContainer = document.createElement('div');
     dialogContainer.innerHTML = JOIN_DIALOG_TEMPLATE;
     const dialog = dialogContainer.firstElementChild as HTMLElement;
-    dialog.style.cssText = `
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: white;
-      padding: 20px;
-      border: 2px solid #333;
-      z-index: 10000;
-    `;
+    dialog.style.position = 'fixed';
+    dialog.style.top = '50%';
+    dialog.style.left = '50%';
+    dialog.style.transform = 'translate(-50%, -50%)';
+    dialog.style.zIndex = '10000';
+
     const overlay = document.createElement('div');
     overlay.style.cssText = `
       position: fixed;
@@ -931,7 +1013,28 @@ export class BoloClientWorld extends ClientWorld {
     const teamRadio = dialog.querySelector(`#join-team-${disadvantaged}`) as HTMLInputElement;
     if (teamRadio) {
       teamRadio.checked = true;
+      const label = dialog.querySelector(`label[for="join-team-${disadvantaged}"] span`) as HTMLElement;
+      if (label) {
+        label.style.border = '2px inset #808080';
+      }
     }
+
+    // Add visual feedback for team selection
+    const teamRadios = dialog.querySelectorAll('#join-team input[type="radio"]');
+    teamRadios.forEach((radio) => {
+      radio.addEventListener('change', (e) => {
+        const target = e.target as HTMLInputElement;
+        // Reset all borders
+        dialog.querySelectorAll('#join-team label span').forEach((span) => {
+          (span as HTMLElement).style.border = '2px outset #dfdfdf';
+        });
+        // Highlight selected team
+        const selectedLabel = dialog.querySelector(`label[for="${target.id}"] span`) as HTMLElement;
+        if (selectedLabel) {
+          selectedLabel.style.border = '2px inset #808080';
+        }
+      });
+    });
 
     const submitButton = dialog.querySelector('#join-submit') as HTMLButtonElement;
     if (submitButton) {
