@@ -1080,7 +1080,7 @@ export class BoloClientWorld extends ClientWorld {
 
     const nickField = dialog.querySelector('#join-nick-field') as HTMLInputElement;
     if (nickField) {
-      nickField.value = getCookie('nick') || '';
+      nickField.value = '';
       nickField.focus();
       nickField.addEventListener('keydown', (e: KeyboardEvent) => {
         if (e.which === 13) this.join();
