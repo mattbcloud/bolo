@@ -25,24 +25,80 @@ export interface BoloClientWorld extends IBoloClientWorldMixin {}
 const JOIN_DIALOG_TEMPLATE = `
     <div id="join-dialog" style="
       background: #DDDDDD;
-      border: 2px solid black;
-      border-radius: 8px;
-      box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
+      border: 1px solid black;
+      box-shadow: 2px 2px 0px rgba(0, 0, 0, 0.5);
       padding: 0;
-      min-width: 320px;
+      width: 350px;
       font-family: 'Chicago', 'Charcoal', sans-serif;
       color: black;
+      display: flex;
+      flex-direction: column;
     ">
-      <div style="
+      <div id="join-titlebar" style="
         background: white;
         border-bottom: 1px solid black;
-        padding: 8px 16px;
-        text-align: center;
-        font-weight: bold;
-        font-size: 14px;
-      ">Join Game</div>
+        padding: 0;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: move;
+        user-select: none;
+        position: relative;
+      ">
+        <div style="
+          position: absolute;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          width: 30%;
+          background-image: repeating-linear-gradient(
+            0deg,
+            black,
+            black 1px,
+            white 1px,
+            white 2px
+          );
+        "></div>
+        <div id="join-close" style="
+          width: 13px;
+          height: 13px;
+          border: 1px solid black;
+          background: white;
+          margin-left: 4px;
+          cursor: pointer;
+          position: relative;
+          z-index: 1;
+        "></div>
+        <div style="
+          position: absolute;
+          left: 50%;
+          transform: translateX(-50%);
+          font-weight: bold;
+          font-size: 12px;
+          color: black;
+          background: white;
+          padding: 0 8px;
+          z-index: 1;
+        ">Join Game</div>
+        <div style="
+          position: absolute;
+          right: 0;
+          top: 0;
+          bottom: 0;
+          width: 30%;
+          background-image: repeating-linear-gradient(
+            0deg,
+            black,
+            black 1px,
+            white 1px,
+            white 2px
+          );
+        "></div>
+        <div style="width: 13px;"></div>
+      </div>
 
-      <div style="padding: 16px;">
+      <div style="padding: 16px; position: relative;">
         <div style="margin-bottom: 12px;">
           <label style="display: block; margin-bottom: 4px; font-weight: bold; font-size: 12px;">Player Name</label>
           <input type="text" id="join-nick-field" name="join-nick-field" maxlength="20" style="
@@ -221,34 +277,28 @@ export class BoloClientWorld extends ClientWorld {
       this.vignette.message('');
     }
 
+    this.addSystemCSSStyles();
+
     // Create lobby UI
     const lobbyHTML = `
-      <div id="lobby-dialog" style="
+      <div id="lobby-dialog" class="window" style="
         position: fixed;
         top: 50%;
         left: 50%;
         transform: translate(-50%, -50%);
-        background: #DDDDDD;
-        color: black;
-        padding: 0;
-        border: 2px solid black;
-        border-radius: 8px;
-        min-width: 600px;
-        max-width: 800px;
-        max-height: 80vh;
-        overflow: hidden;
-        font-family: 'Chicago', 'Charcoal', sans-serif;
+        width: 650px;
+        min-height: 300px;
+        max-height: 600px;
         z-index: 10000;
-        box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
+        display: flex;
+        flex-direction: column;
       ">
-        <div style="
-          background: white;
-          border-bottom: 1px solid black;
-          padding: 8px 16px;
-          text-align: center;
-          font-weight: bold;
-        ">Bolo Multiplayer Lobby</div>
-        <div style="padding: 20px; overflow-y: auto; max-height: calc(80vh - 60px);">
+        <div id="lobby-titlebar" class="title-bar" style="cursor: move; user-select: none;">
+          <button class="close" id="lobby-close" aria-label="Close"></button>
+          <h1 class="title">Bolo Multiplayer Lobby</h1>
+        </div>
+        <div class="separator" style="flex-shrink: 0;"></div>
+        <div class="window-pane" id="lobby-content" style="flex: 1 1 auto; overflow-y: auto; min-height: 0;">
 
         <div id="active-games-section">
           <h2 style="margin: 0 0 10px 0; font-size: 14px;">Active Games</h2>
@@ -273,46 +323,22 @@ export class BoloClientWorld extends ClientWorld {
               <option value="">Loading maps...</option>
             </select>
           </div>
-          <button id="create-game-btn" style="
-            padding: 6px 16px;
-            cursor: pointer;
-            border: 2px solid black;
-            border-radius: 8px;
-            background: white;
-            font-family: 'Chicago', 'Charcoal', sans-serif;
-            font-weight: bold;
-            font-size: 12px;
-          " disabled>Create Game</button>
+          <button id="create-game-btn" class="btn" disabled>Create Game</button>
         </div>
 
         <div style="margin-top: 30px; text-align: center; border-top: 1px solid black; padding-top: 20px;">
-          <button id="how-to-play-btn" style="
-            padding: 6px 16px;
-            cursor: pointer;
-            border: 2px solid black;
-            border-radius: 8px;
-            background: white;
-            font-family: 'Chicago', 'Charcoal', sans-serif;
-            font-weight: bold;
-            font-size: 12px;
-            margin-right: 10px;
-          ">How to Play</button>
-          <button id="key-settings-btn" style="
-            padding: 6px 16px;
-            cursor: pointer;
-            border: 2px solid black;
-            border-radius: 8px;
-            background: white;
-            font-family: 'Chicago', 'Charcoal', sans-serif;
-            font-weight: bold;
-            font-size: 12px;
-          ">Key Settings</button>
+          <button id="how-to-play-btn" class="btn" style="margin-right: 10px;">How to Play</button>
+          <button id="key-settings-btn" class="btn">Key Settings</button>
         </div>
         </div>
       </div>
     `;
 
     document.body.insertAdjacentHTML('beforeend', lobbyHTML);
+
+    const lobbyDialog = document.getElementById('lobby-dialog') as HTMLElement;
+    const lobbyTitlebar = document.getElementById('lobby-titlebar') as HTMLElement;
+    const lobbyCloseBtn = document.getElementById('lobby-close') as HTMLElement;
 
     // Load maps and games
     this.loadMaps();
@@ -340,6 +366,49 @@ export class BoloClientWorld extends ClientWorld {
 
     // Expose join function globally for the Join buttons
     (window as any).boloJoinGame = (gid: string) => this.connectToGame(gid);
+
+    // Close button handler
+    lobbyCloseBtn?.addEventListener('click', () => {
+      if (this.lobbyRefreshInterval) {
+        clearInterval(this.lobbyRefreshInterval);
+        this.lobbyRefreshInterval = undefined;
+      }
+      document.getElementById('lobby-dialog')?.remove();
+    });
+
+    // Make draggable
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dialogStartX = 0;
+    let dialogStartY = 0;
+
+    lobbyTitlebar?.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.target === lobbyCloseBtn) return;
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = lobbyDialog.getBoundingClientRect();
+      dialogStartX = rect.left;
+      dialogStartY = rect.top;
+    });
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        const deltaX = e.clientX - dragStartX;
+        const deltaY = e.clientY - dragStartY;
+        lobbyDialog.style.left = `${dialogStartX + deltaX}px`;
+        lobbyDialog.style.top = `${dialogStartY + deltaY}px`;
+        lobbyDialog.style.transform = 'none';
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDragging = false;
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
   }
 
   /**
@@ -476,6 +545,8 @@ export class BoloClientWorld extends ClientWorld {
       return code;
     };
 
+    this.addSystemCSSStyles();
+
     const dialogHTML = `
       <div id="key-settings-overlay" style="
         position: fixed;
@@ -486,25 +557,23 @@ export class BoloClientWorld extends ClientWorld {
         align-items: center;
         justify-content: center;
       ">
-        <div id="key-settings-dialog" style="
-          background: #DDDDDD;
-          border: 2px solid black;
-          border-radius: 8px;
-          box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
-          padding: 0;
-          min-width: 400px;
-          font-family: 'Chicago', 'Charcoal', sans-serif;
-          color: black;
+        <div id="key-settings-dialog" class="window" style="
+          position: fixed;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: 500px;
+          min-height: 400px;
+          max-height: 600px;
+          display: flex;
+          flex-direction: column;
         ">
-          <div style="
-            background: white;
-            border-bottom: 1px solid black;
-            padding: 8px 16px;
-            text-align: center;
-            font-weight: bold;
-            font-size: 14px;
-          ">Key Settings</div>
-          <div style="padding: 16px;">
+          <div id="key-settings-titlebar" class="title-bar" style="cursor: move; user-select: none;">
+            <button class="close" id="key-settings-close" aria-label="Close"></button>
+            <h1 class="title">Key Settings</h1>
+          </div>
+          <div class="separator" style="flex-shrink: 0;"></div>
+          <div class="window-pane" id="key-settings-content" style="flex: 1 1 auto; overflow-y: auto; min-height: 0;">
 
           <div style="margin-bottom: 16px;">
             <div style="font-weight: bold; margin-bottom: 8px;">Drive tank</div>
@@ -668,44 +737,20 @@ export class BoloClientWorld extends ClientWorld {
             </div>
 
             <div style="margin-top: 12px;">
-              <div style="margin-bottom: 4px;">
-                <label style="cursor: pointer;">
-                  <input type="checkbox" id="auto-slowdown" ${keys.autoSlowdown ? 'checked' : ''}>
-                  Auto Slowdown
-                </label>
+              <div class="field-row" style="margin-bottom: 8px;">
+                <input type="checkbox" id="auto-slowdown" ${keys.autoSlowdown ? 'checked' : ''}>
+                <label for="auto-slowdown">Auto Slowdown</label>
               </div>
-              <div>
-                <label style="cursor: pointer;">
-                  <input type="checkbox" id="auto-gunsight" ${keys.autoGunsight ? 'checked' : ''}>
-                  Enable automatic show &amp; hide of gunsight
-                </label>
+              <div class="field-row">
+                <input type="checkbox" id="auto-gunsight" ${keys.autoGunsight ? 'checked' : ''}>
+                <label for="auto-gunsight">Enable automatic show &amp; hide of gunsight</label>
               </div>
             </div>
           </div>
 
-          <div style="text-align: center; display: flex; gap: 8px; justify-content: center;">
-            <button id="key-settings-cancel" style="
-              padding: 6px 16px;
-              border: 2px solid black;
-              border-radius: 8px;
-              background: white;
-              cursor: pointer;
-              min-width: 80px;
-              font-family: 'Chicago', 'Charcoal', sans-serif;
-              font-weight: bold;
-              font-size: 12px;
-            ">Cancel</button>
-            <button id="key-settings-ok" style="
-              padding: 6px 16px;
-              border: 2px solid black;
-              border-radius: 8px;
-              background: white;
-              cursor: pointer;
-              min-width: 80px;
-              font-family: 'Chicago', 'Charcoal', sans-serif;
-              font-weight: bold;
-              font-size: 12px;
-            ">OK</button>
+          <div style="text-align: center; display: flex; gap: 8px; justify-content: center; padding: 8px 0;">
+            <button id="key-settings-cancel" class="btn">Cancel</button>
+            <button id="key-settings-ok" class="btn btn-default">OK</button>
           </div>
           </div>
         </div>
@@ -713,6 +758,10 @@ export class BoloClientWorld extends ClientWorld {
     `;
 
     document.body.insertAdjacentHTML('beforeend', dialogHTML);
+
+    const dialog = document.getElementById('key-settings-dialog') as HTMLElement;
+    const titlebar = document.getElementById('key-settings-titlebar') as HTMLElement;
+    const closeBtn = document.getElementById('key-settings-close') as HTMLElement;
 
     // Store current bindings for editing
     const currentBindings: Record<string, any> = { ...keys };
@@ -765,6 +814,46 @@ export class BoloClientWorld extends ClientWorld {
 
     document.addEventListener('keydown', keyHandler);
 
+    // Close button handler
+    closeBtn?.addEventListener('click', () => {
+      document.removeEventListener('keydown', keyHandler);
+      document.getElementById('key-settings-overlay')?.remove();
+    });
+
+    // Make draggable
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dialogStartX = 0;
+    let dialogStartY = 0;
+
+    titlebar?.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.target === closeBtn) return;
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = dialog.getBoundingClientRect();
+      dialogStartX = rect.left;
+      dialogStartY = rect.top;
+    });
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        const deltaX = e.clientX - dragStartX;
+        const deltaY = e.clientY - dragStartY;
+        dialog.style.left = `${dialogStartX + deltaX}px`;
+        dialog.style.top = `${dialogStartY + deltaY}px`;
+        dialog.style.transform = 'none';
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDragging = false;
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
     // Cancel button
     document.getElementById('key-settings-cancel')?.addEventListener('click', () => {
       document.removeEventListener('keydown', keyHandler);
@@ -791,9 +880,259 @@ export class BoloClientWorld extends ClientWorld {
   }
 
   /**
+   * Add system.css base styles (call once)
+   */
+  addSystemCSSStyles(): void {
+    if (document.getElementById('system-css-styles')) return; // Already added
+
+    const style = document.createElement('style');
+    style.id = 'system-css-styles';
+    style.textContent = `
+      :root {
+        --primary: #FFFFFF;
+        --secondary: #000000;
+        --tertiary: #A5A5A5;
+      }
+
+      .window {
+        display: flex;
+        flex-direction: column;
+        min-width: 320px;
+        overflow: hidden;
+        background-color: var(--primary);
+        border: 2px solid var(--secondary);
+        font-family: 'Chicago', 'Charcoal', sans-serif;
+        box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
+      }
+
+      .title-bar {
+        flex: none;
+        display: flex;
+        align-items: center;
+        height: 19px;
+        margin: 2px 2px;
+        padding: 2px 1px;
+        background: linear-gradient(var(--secondary) 50%, transparent 50%);
+        background-size: 6.67% 13.33%;
+        background-clip: content-box;
+      }
+
+      .title-bar .title {
+        padding: 0 8px;
+        margin: 0 auto;
+        font-size: 12px;
+        font-weight: bold;
+        line-height: 1.1;
+        text-align: center;
+        background: var(--primary);
+        cursor: default;
+      }
+
+      .title-bar button {
+        position: relative;
+        display: block;
+        width: 13px;
+        height: 13px;
+        margin: 0 2px;
+        border: 1px solid var(--secondary);
+        background-color: var(--primary);
+        cursor: pointer;
+        padding: 0;
+      }
+
+      .title-bar button.close::before,
+      .title-bar button.close::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        opacity: 0;
+      }
+
+      .title-bar button.close:active::before,
+      .title-bar button.close:active::after {
+        opacity: 1;
+      }
+
+      .separator {
+        height: 1px;
+        background: var(--secondary);
+        margin: 0;
+      }
+
+      .window-pane {
+        overflow-y: scroll;
+        overflow-x: hidden;
+        height: 100%;
+        padding: 16px;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      .window-pane::-webkit-scrollbar {
+        width: 22px;
+        background-color: var(--primary);
+      }
+
+      .window-pane::-webkit-scrollbar-track {
+        background: linear-gradient(45deg, var(--secondary) 25%, transparent 25%,
+          transparent 75%, var(--secondary) 75%, var(--secondary)),
+          linear-gradient(45deg, var(--secondary) 25%, transparent 25%,
+          transparent 75%, var(--secondary) 75%, var(--secondary));
+        background-color: var(--primary);
+        background-size: 4px 4px;
+        background-position: 0 0, 2px 2px;
+        width: 10px;
+        border-left: 3px solid var(--secondary);
+      }
+
+      .window-pane::-webkit-scrollbar-thumb {
+        width: 20px;
+        box-sizing: content-box;
+        background-color: var(--primary);
+        border: 2px solid var(--secondary);
+        border-right: none;
+      }
+
+      .window-pane::-webkit-scrollbar-button:horizontal:start:decrement,
+      .window-pane::-webkit-scrollbar-button:horizontal:end:increment,
+      .window-pane::-webkit-scrollbar-button:vertical:start:decrement,
+      .window-pane::-webkit-scrollbar-button:vertical:end:increment {
+        display: block;
+      }
+
+      .window-pane::-webkit-scrollbar-button:vertical:start {
+        background-repeat: no-repeat;
+        height: 23.38px;
+        background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg width='22' height='24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%23fff' stroke='%23000' d='M.5.5h21v22.375H.5z'/%3E%3Cpath fill='%23000' d='M1 23h20v-2H1zM1.375 12.375h5.5V11h-5.5zM6.875 17.875h6.875V16.5H6.875zM6.875 17.875v-5.5H5.5v5.5zM9.625 5.5V4.125H8.25V5.5zM11 4.125V2.75H9.625v1.375zM19.25 12.375V11h-1.375v1.375zM17.875 11V9.625H16.5V11zM16.5 9.625V8.25h-1.375v1.375zM15.125 8.25V6.875H13.75V8.25zM13.75 6.875V5.5h-1.375v1.375zM12.375 5.5V4.125H11V5.5zM8.25 6.875V5.5H6.875v1.375zM6.875 8.25V6.875H5.5V8.25zM5.5 9.625V8.25H4.125v1.375zM4.125 11V9.625H2.75V11z'/%3E%3Cpath fill='%23000' d='M2.75 12.375V11H1.375v1.375zM15.125 17.875v-5.5H13.75v5.5zM13.75 12.375h5.5V11h-5.5z'/%3E%3C/svg%3E");
+      }
+
+      .window-pane::-webkit-scrollbar-button:vertical:start:active {
+        background-repeat: no-repeat;
+        height: 23.38px;
+        background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg width='22' height='24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%23fff' stroke='%23000' d='M.5.5h21v22.38H.5z'/%3E%3Cpath fill='%23000' d='M1 23.005h20v-2H1zM1.375 12.378h5.5v-1.375h-5.5zM6.875 17.879h6.875V6.877H6.875zM6.875 17.879v-5.501H5.5v5.5zM9.625 5.501V4.126H8.25v1.375zM11 4.126V2.75H9.625v1.375zM19.25 12.378v-1.375h-1.375v1.375zM17.875 11.002V9.627H13.75v1.375zM16.5 9.627V8.252h-2.75v1.375zM15.125 8.252V6.877H13.75v1.375zM13.75 6.876V5.501h-1.375v1.375zM12.375 5.501V4.126h-2.75v1.375zM12.375 6.876V5.501h-5.5v1.375zM6.875 8.252V6.877H5.5v1.375zM6.875 9.627V8.252h-2.75v1.375zM6.875 11.002V9.627H2.75v1.375z'/%3E%3Cpath fill='%23000' d='M2.75 12.378v-1.375H1.375v1.375zM15.125 17.879v-5.501H13.75v5.5zM13.75 12.378h5.5v-1.375h-5.5z'/%3E%3C/svg%3E");
+      }
+
+      .window-pane::-webkit-scrollbar-button:vertical:end {
+        height: 23.38px;
+        background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg width='22' height='24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%23fff' stroke='%23000' d='M.5 22.875h21V.5H.5z'/%3E%3Cpath fill='%23000' d='M1 .375h20v2H1zM1.375 11h5.5v1.375h-5.5zM6.875 5.5h6.875v1.375H6.875zM6.875 5.5V11H5.5V5.5zM9.625 17.875v1.375H8.25v-1.375zM11 19.25v1.375H9.625V19.25zM19.25 11v1.375h-1.375V11zM17.875 12.375v1.375H16.5v-1.375zM16.5 13.75v1.375h-1.375V13.75zM15.125 15.125V16.5H13.75v-1.375zM13.75 16.5v1.375h-1.375V16.5zM12.375 17.875v1.375H11v-1.375zM8.25 16.5v1.375H6.875V16.5zM6.875 15.125V16.5H5.5v-1.375zM5.5 13.75v1.375H4.125V13.75zM4.125 12.375v1.375H2.75v-1.375z'/%3E%3Cpath fill='%23000' d='M2.75 11v1.375H1.375V11zM15.125 5.5V11H13.75V5.5zM13.75 11h5.5v1.375h-5.5z'/%3E%3C/svg%3E");
+      }
+
+      .window-pane::-webkit-scrollbar-button:vertical:end:active {
+        background-repeat: no-repeat;
+        height: 23.38px;
+        background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg width='22' height='24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%23fff' stroke='%23000' d='M.5 22.88h21V.5H.5z'/%3E%3Cpath fill='%23000' d='M1 .375h20v2H1zM1.375 11.002h5.5v1.375h-5.5zM6.875 5.501h6.875v11.002H6.875zM6.875 5.501v5.501H5.5v-5.5zM9.625 17.879v1.375H8.25v-1.375zM11 19.254v1.375H9.625v-1.375zM19.25 11.002v1.375h-1.375v-1.375zM17.875 12.378v1.375H13.75v-1.375zM16.5 13.753v1.375h-2.75v-1.375zM15.125 15.128v1.375H13.75v-1.375zM13.75 16.503v1.375h-1.375v-1.375zM12.375 17.879v1.375h-2.75v-1.375zM12.375 16.503v1.375h-5.5v-1.375zM6.875 15.128v1.375H5.5v-1.375zM6.875 13.753v1.375h-2.75v-1.375zM6.875 12.378v1.375H2.75v-1.375z'/%3E%3Cpath fill='%23000' d='M2.75 11.002v1.375H1.375v-1.375zM15.125 5.501v5.501H13.75v-5.5zM13.75 11.002h5.5v1.375h-5.5z'/%3E%3C/svg%3E");
+      }
+
+      .btn {
+        min-width: 59px;
+        height: 20px;
+        padding: 0 12px;
+        border: 2px solid var(--secondary);
+        border-radius: 8px;
+        background: var(--primary);
+        font-family: 'Chicago', 'Charcoal', sans-serif;
+        font-size: 12px;
+        font-weight: bold;
+        cursor: pointer;
+        text-align: center;
+      }
+
+      .btn:active {
+        background: var(--secondary);
+        color: var(--primary);
+      }
+
+      .btn-default {
+        border-width: 3px;
+      }
+
+      .field-row {
+        align-items: center;
+        display: flex;
+        font-size: 12px;
+        overflow: visible;
+        margin-left: 20px;
+      }
+
+      .field-row + .field-row {
+        margin-top: 6px;
+      }
+
+      .field-row > * + * {
+        margin-left: 6px;
+      }
+
+      input[type="checkbox"] {
+        appearance: none;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        background: transparent;
+        border: none;
+        margin: 0;
+        opacity: 0;
+        position: fixed;
+      }
+
+      input[type="checkbox"] + label {
+        position: relative;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        line-height: 13px;
+        padding-left: 19px;
+      }
+
+      input[type="checkbox"] + label:before {
+        content: "";
+        display: block;
+        height: 13px;
+        width: 13px;
+        position: absolute;
+        left: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        border: 1.5px solid var(--secondary);
+        background: var(--primary);
+        box-sizing: border-box;
+      }
+
+      input[type="checkbox"]:focus-visible + label:before {
+        outline: 1px solid var(--secondary);
+      }
+
+      input[type="checkbox"]:hover + label:before {
+        outline: 1px solid var(--secondary);
+      }
+
+      input[type="checkbox"]:checked + label:after {
+        content: "";
+        display: block;
+        height: 12px;
+        width: 12px;
+        left: 0.5px;
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg width='12' height='12' viewBox='0 0 12 12' fill='black' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='0' y='0' width='1' height='1'/%3E%3Crect x='1' y='1' width='1' height='1'/%3E%3Crect x='2' y='2' width='1' height='1'/%3E%3Crect x='3' y='3' width='1' height='1'/%3E%3Crect x='4' y='4' width='1' height='1'/%3E%3Crect x='5' y='5' width='1' height='1'/%3E%3Crect x='6' y='6' width='1' height='1'/%3E%3Crect x='7' y='7' width='1' height='1'/%3E%3Crect x='8' y='8' width='1' height='1'/%3E%3Crect x='9' y='9' width='1' height='1'/%3E%3Crect x='10' y='10' width='1' height='1'/%3E%3Crect x='11' y='11' width='1' height='1'/%3E%3Crect x='11' y='0' width='1' height='1'/%3E%3Crect x='10' y='1' width='1' height='1'/%3E%3Crect x='9' y='2' width='1' height='1'/%3E%3Crect x='8' y='3' width='1' height='1'/%3E%3Crect x='7' y='4' width='1' height='1'/%3E%3Crect x='6' y='5' width='1' height='1'/%3E%3Crect x='5' y='6' width='1' height='1'/%3E%3Crect x='4' y='7' width='1' height='1'/%3E%3Crect x='3' y='8' width='1' height='1'/%3E%3Crect x='2' y='9' width='1' height='1'/%3E%3Crect x='1' y='10' width='1' height='1'/%3E%3Crect x='0' y='11' width='1' height='1'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+      }
+
+      input[type="checkbox"][disabled] + label:before {
+        background: var(--tertiary);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /**
    * Show the "How to Play" guide
    */
   showHowToPlay(): void {
+    this.addSystemCSSStyles();
+
     const guideHTML = `
       <div id="how-to-play-overlay" style="
         position: fixed;
@@ -804,27 +1143,20 @@ export class BoloClientWorld extends ClientWorld {
         align-items: center;
         justify-content: center;
       ">
-        <div id="how-to-play-dialog" style="
-          background: #DDDDDD;
-          border: 2px solid black;
-          border-radius: 8px;
-          box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.3);
-          padding: 0;
-          max-width: 700px;
-          max-height: 85vh;
-          overflow: hidden;
-          font-family: 'Chicago', 'Charcoal', sans-serif;
-          color: black;
+        <div id="how-to-play-dialog" class="window" style="
+          position: fixed;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: 650px;
+          height: 500px;
         ">
-          <div style="
-            background: white;
-            border-bottom: 1px solid black;
-            padding: 8px 16px;
-            text-align: center;
-            font-weight: bold;
-            font-size: 14px;
-          ">How to Play Bolo</div>
-          <div style="padding: 16px; overflow-y: auto; max-height: calc(85vh - 80px);">
+          <div id="how-to-play-titlebar" class="title-bar" style="cursor: move; user-select: none;">
+            <button class="close" id="how-to-play-close" aria-label="Close"></button>
+            <h1 class="title">How to Play Bolo</h1>
+          </div>
+          <div class="separator"></div>
+          <div class="window-pane" id="how-to-play-content">
 
           <div style="padding: 0 8px;">
             <!-- OBJECTIVE -->
@@ -840,27 +1172,10 @@ export class BoloClientWorld extends ClientWorld {
               <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">📺 Understanding the Screen</div>
               <div style="font-size: 11px; line-height: 1.4;">
                 <strong>Bottom Right (Tank Status):</strong> Four yellow bars show your Shells, Mines, Armor (health), and Trees (building materials). Max 40 each.<br>
-                <strong>Bottom Left:</strong> Three status panels show all Pillboxes (defense turrets), Bases (refuel stations), and Players. Checkerboard pattern = neutral/uncaptured.<br>
+                <strong>Bottom Left:</strong> Three status panels show all Pillboxes (defense turrets), Bases (refuel stations), and Players.<br>
                 <strong>Top Right (Stats):</strong> Your kills ☠, deaths †, and team rank ★<br>
                 <strong>Top Center (Build Tools):</strong> Five tools: Forest (gather trees), Road, Building, Pillbox, Mine. Click to select, click map to build.<br>
                 <strong>Targeting Reticle:</strong> Circular crosshair shows where your shots will land
-              </div>
-            </div>
-
-            <!-- BASIC CONTROLS -->
-            <div style="margin-bottom: 14px;">
-              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">⌨️ Controls</div>
-              <div style="font-size: 11px; line-height: 1.4;">
-                <strong>Arrow Keys:</strong> Move and turn your tank<br>
-                <strong>Space:</strong> Shoot (hold for auto-fire)<br>
-                <strong>Tab:</strong> Drop mine behind tank<br>
-                <strong>L/; (semicolon):</strong> Adjust gun range (1-7 tiles)<br>
-                <strong>Enter/P:</strong> Switch camera views<br>
-                <strong>T/R:</strong> Chat (all players / team only)<br>
-                <strong>Mouse Click:</strong> Build selected item at location
-              </div>
-              <div style="font-size: 10px; margin-top: 3px; font-style: italic;">
-                Customize controls in "Key Settings" (lobby)
               </div>
             </div>
 
@@ -934,18 +1249,23 @@ export class BoloClientWorld extends ClientWorld {
               </div>
             </div>
 
-            <div style="text-align: center; margin-top: 20px;">
-              <button id="how-to-play-close" style="
-                padding: 6px 24px;
-                border: 2px solid black;
-                border-radius: 8px;
-                background: white;
-                cursor: pointer;
-                font-family: 'Chicago', 'Charcoal', sans-serif;
-                font-weight: bold;
-                font-size: 12px;
-              ">Close</button>
+            <!-- BASIC CONTROLS -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">⌨️ Controls</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                <strong>Arrow Keys:</strong> Move and turn your tank<br>
+                <strong>Space:</strong> Shoot (hold for auto-fire)<br>
+                <strong>Tab:</strong> Drop mine behind tank<br>
+                <strong>L/; (semicolon):</strong> Adjust gun range (1-7 tiles)<br>
+                <strong>Enter/P:</strong> Switch camera views<br>
+                <strong>T/R:</strong> Chat (all players / team only)<br>
+                <strong>Mouse Click:</strong> Build selected item at location
+              </div>
+              <div style="font-size: 10px; margin-top: 3px; font-style: italic;">
+                Customize controls in "Key Settings" (lobby)
+              </div>
             </div>
+
           </div>
           </div>
         </div>
@@ -954,10 +1274,48 @@ export class BoloClientWorld extends ClientWorld {
 
     document.body.insertAdjacentHTML('beforeend', guideHTML);
 
+    const dialog = document.getElementById('how-to-play-dialog') as HTMLElement;
+    const titlebar = document.getElementById('how-to-play-titlebar') as HTMLElement;
+    const closeBtn = document.getElementById('how-to-play-close') as HTMLElement;
+
     // Close button handler
-    document.getElementById('how-to-play-close')?.addEventListener('click', () => {
+    closeBtn?.addEventListener('click', () => {
       document.getElementById('how-to-play-overlay')?.remove();
     });
+
+    // Make draggable
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dialogStartX = 0;
+    let dialogStartY = 0;
+
+    titlebar?.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.target === closeBtn) return;
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = dialog.getBoundingClientRect();
+      dialogStartX = rect.left;
+      dialogStartY = rect.top;
+    });
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        const deltaX = e.clientX - dragStartX;
+        const deltaY = e.clientY - dragStartY;
+        dialog.style.left = `${dialogStartX + deltaX}px`;
+        dialog.style.top = `${dialogStartY + deltaY}px`;
+        dialog.style.transform = 'none';
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDragging = false;
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
 
     // Close on overlay click
     document.getElementById('how-to-play-overlay')?.addEventListener('click', (e) => {
@@ -1119,6 +1477,52 @@ export class BoloClientWorld extends ClientWorld {
         this.join();
       });
     }
+
+    // Get dialog elements for window functionality
+    const joinTitlebar = dialog.querySelector('#join-titlebar') as HTMLElement;
+    const joinCloseBox = dialog.querySelector('#join-close') as HTMLElement;
+
+    // Close box handler
+    joinCloseBox?.addEventListener('click', () => {
+      const parent = dialog.parentElement;
+      const overlay = parent?.querySelector('div[style*="z-index: 9999"]');
+      if (overlay) overlay.remove();
+      dialog.remove();
+      this.joinDialog = null;
+    });
+
+    // Make draggable
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dialogStartX = 0;
+    let dialogStartY = 0;
+
+    joinTitlebar?.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.target === joinCloseBox || joinCloseBox?.contains(e.target as Node)) return;
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = dialog.getBoundingClientRect();
+      dialogStartX = rect.left;
+      dialogStartY = rect.top;
+    });
+
+    const joinMouseMoveHandler = (e: MouseEvent) => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - dragStartX;
+      const deltaY = e.clientY - dragStartY;
+      dialog.style.left = `${dialogStartX + deltaX}px`;
+      dialog.style.top = `${dialogStartY + deltaY}px`;
+      dialog.style.transform = 'none';
+    };
+
+    const joinMouseUpHandler = () => {
+      isDragging = false;
+    };
+
+    document.addEventListener('mousemove', joinMouseMoveHandler);
+    document.addEventListener('mouseup', joinMouseUpHandler);
   }
 
   join(): void {
