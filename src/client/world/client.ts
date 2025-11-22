@@ -22,6 +22,38 @@ const allObjects = allObjectsModule;
 
 export interface BoloClientWorld extends IBoloClientWorldMixin {}
 
+// Function to generate randomized team color HTML
+function generateRandomizedTeamColors(): string {
+  const teams = [
+    { value: 'red', class: 'bolo-team-red' },
+    { value: 'blue', class: 'bolo-team-blue' },
+    { value: 'yellow', class: 'bolo-team-yellow' },
+    { value: 'green', class: 'bolo-team-green' },
+    { value: 'orange', class: 'bolo-team-orange' },
+    { value: 'purple', class: 'bolo-team-purple' }
+  ];
+
+  // Fisher-Yates shuffle algorithm
+  for (let i = teams.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [teams[i], teams[j]] = [teams[j], teams[i]];
+  }
+
+  // Generate HTML for shuffled teams
+  return teams.map(team => `
+            <input type="radio" id="join-team-${team.value}" name="join-team" value="${team.value}" style="display: none;"></input>
+            <label for="join-team-${team.value}" style="cursor: pointer;">
+              <span class="bolo-team ${team.class}" style="
+                display: inline-block;
+                width: 32px;
+                height: 32px;
+                border: 2px solid black;
+                box-sizing: border-box;
+              "></span>
+            </label>
+  `).join('');
+}
+
 const JOIN_DIALOG_TEMPLATE = `
     <div id="join-dialog" style="
       background: #DDDDDD;
@@ -114,72 +146,8 @@ const JOIN_DIALOG_TEMPLATE = `
 
         <div id="join-team" style="margin-bottom: 16px;">
           <label style="display: block; margin-bottom: 8px; font-weight: bold; font-size: 12px;">Choose a team</label>
-          <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-            <input type="radio" id="join-team-red" name="join-team" value="red" style="display: none;"></input>
-            <label for="join-team-red" style="cursor: pointer;">
-              <span class="bolo-team bolo-team-red" style="
-                display: inline-block;
-                width: 32px;
-                height: 32px;
-                border: 2px solid black;
-                box-sizing: border-box;
-              "></span>
-            </label>
-
-            <input type="radio" id="join-team-blue" name="join-team" value="blue" style="display: none;"></input>
-            <label for="join-team-blue" style="cursor: pointer;">
-              <span class="bolo-team bolo-team-blue" style="
-                display: inline-block;
-                width: 32px;
-                height: 32px;
-                border: 2px solid black;
-                box-sizing: border-box;
-              "></span>
-            </label>
-
-            <input type="radio" id="join-team-yellow" name="join-team" value="yellow" style="display: none;"></input>
-            <label for="join-team-yellow" style="cursor: pointer;">
-              <span class="bolo-team bolo-team-yellow" style="
-                display: inline-block;
-                width: 32px;
-                height: 32px;
-                border: 2px solid black;
-                box-sizing: border-box;
-              "></span>
-            </label>
-
-            <input type="radio" id="join-team-green" name="join-team" value="green" style="display: none;"></input>
-            <label for="join-team-green" style="cursor: pointer;">
-              <span class="bolo-team bolo-team-green" style="
-                display: inline-block;
-                width: 32px;
-                height: 32px;
-                border: 2px solid black;
-                box-sizing: border-box;
-              "></span>
-            </label>
-
-            <input type="radio" id="join-team-orange" name="join-team" value="orange" style="display: none;"></input>
-            <label for="join-team-orange" style="cursor: pointer;">
-              <span class="bolo-team bolo-team-orange" style="
-                display: inline-block;
-                width: 32px;
-                height: 32px;
-                border: 2px solid black;
-                box-sizing: border-box;
-              "></span>
-            </label>
-
-            <input type="radio" id="join-team-purple" name="join-team" value="purple" style="display: none;"></input>
-            <label for="join-team-purple" style="cursor: pointer;">
-              <span class="bolo-team bolo-team-purple" style="
-                display: inline-block;
-                width: 32px;
-                height: 32px;
-                border: 2px solid black;
-                box-sizing: border-box;
-              "></span>
-            </label>
+          <div id="team-colors-container" style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+            ${generateRandomizedTeamColors()}
           </div>
         </div>
 
