@@ -19,6 +19,8 @@ import { Tank } from '../objects/tank';
 import WorldMap from '../world_map';
 import * as net from '../net';
 import { TICK_LENGTH_MS } from '../constants';
+import { firebaseService } from './firebase.js';
+import { statsService } from './stats-service.js';
 import { createLoop } from '../villain/loop';
 import { ServerWorld } from '../villain/world/net/server';
 import { pack } from '../struct';
@@ -521,6 +523,13 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     if (this.teamScoresTick >= 25) {
       this.teamScoresTick = 0;
       const scores = this.calculateTeamScores();
+
+      // Record team scores to Firebase for stats
+      statsService.recordTeamScores(scores).catch((error) => {
+        // Silent fail - don't crash the game if stats recording fails
+        console.error('Failed to record team scores:', error);
+      });
+
       // Convert scores to uint16 (multiply by 100 for 2 decimal places precision)
       const packedScores = pack('HHHHHH',
         Math.round(scores[0] * 100),
@@ -818,6 +827,32 @@ export class Application {
       }
     });
 
+    // API endpoint for team ranking stats (real Firebase data)
+    this.connectServer.use('/api/stats/rankings', async (req: any, res: any) => {
+      try {
+        const urlParts = url.parse(req.url, true);
+        const period = urlParts.query.period || 'day';
+
+        res.setHeader('Content-Type', 'application/json');
+
+        // Validate period parameter
+        if (!['hour', 'day', 'week', 'month', 'year'].includes(period as string)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'Invalid period. Use: hour, day, week, month, or year' }));
+          return;
+        }
+
+        // Fetch data from Firebase
+        const data = await firebaseService.getStatsForPeriod(period as 'hour' | 'day' | 'week' | 'month' | 'year');
+
+        res.end(JSON.stringify({ period, data }));
+      } catch (error) {
+        console.error('[API ERROR] /api/stats/rankings failed:', error);
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: 'Internal server error', message: String(error) }));
+      }
+    });
+
     // Serve built client files (index.html and assets)
     this.connectServer.use('/', serveStatic(path.join(webroot, 'dist/client')));
     // Serve static assets (images, sounds, css, maps) from root
@@ -1014,6 +1049,32 @@ function redirector(base: string) {
  * start. I believe it's untidy to have timer loops start after a simple require().
  */
 function createBoloApp(options: ServerConfig): Application {
+  // Initialize Firebase for team stats (if configured)
+  const initializeFirebase = async () => {
+    try {
+      // Determine hostname (localhost for dev, production domain for prod)
+      const hostname = options.web?.hostname || 'localhost';
+
+      // Firebase service account path (optional - uses GOOGLE_APPLICATION_CREDENTIALS if not provided)
+      const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT || './firebase-service-account.json';
+
+      // Try to initialize Firebase
+      await firebaseService.initialize(hostname, serviceAccountPath);
+
+      // Start aggregation jobs
+      statsService.startAllJobs();
+
+      console.log('Firebase Team Stats system initialized successfully');
+    } catch (error) {
+      // Firebase not configured - continue without stats
+      console.log('Firebase not configured - Team Stats will use mock data only');
+      console.log('To enable real stats, set up Firebase and provide credentials');
+    }
+  };
+
+  // Initialize Firebase async (don't block server startup)
+  initializeFirebase();
+
   return new Application(options);
 }
 
