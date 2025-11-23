@@ -5,7 +5,7 @@
 
 import admin from 'firebase-admin';
 import { getDatabase, Database, Reference } from 'firebase-admin/database';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
 
 interface TeamRanking {
@@ -85,8 +85,22 @@ class FirebaseService {
       console.log(`Database prefix: ${this.dbPrefix}`);
 
       // Initialize Firebase Admin
-      if (serviceAccountPath) {
-        // Production: use service account file
+      // Try multiple credential methods in order of preference:
+      // 1. Service account from environment variable (FIREBASE_SERVICE_ACCOUNT_JSON)
+      // 2. Service account from file path (if provided and exists)
+      // 3. Application default credentials
+
+      if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+        // Use credentials from environment variable (Railway, etc.)
+        console.log('Using Firebase credentials from FIREBASE_SERVICE_ACCOUNT_JSON environment variable');
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+        this.app = admin.initializeApp({
+          credential: admin.credential.cert(serviceAccount),
+          databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://your-project.firebaseio.com'
+        });
+      } else if (serviceAccountPath && existsSync(resolve(process.cwd(), serviceAccountPath))) {
+        // Use service account file if it exists
+        console.log(`Using Firebase credentials from file: ${serviceAccountPath}`);
         const absolutePath = resolve(process.cwd(), serviceAccountPath);
         const serviceAccountJSON = readFileSync(absolutePath, 'utf8');
         const serviceAccount = JSON.parse(serviceAccountJSON);
@@ -95,7 +109,8 @@ class FirebaseService {
           databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://your-project.firebaseio.com'
         });
       } else {
-        // Development: use application default credentials or environment variables
+        // Fall back to application default credentials
+        console.log('Using Firebase application default credentials');
         this.app = admin.initializeApp({
           credential: admin.credential.applicationDefault(),
           databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://your-project.firebaseio.com'
