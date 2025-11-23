@@ -296,7 +296,8 @@ export class BoloClientWorld extends ClientWorld {
 
         <div style="margin-top: 30px; text-align: center; border-top: 1px solid black; padding-top: 20px;">
           <button id="how-to-play-btn" class="btn" style="margin-right: 10px;">How to Play</button>
-          <button id="key-settings-btn" class="btn">Key Settings</button>
+          <button id="key-settings-btn" class="btn" style="margin-right: 10px;">Key Settings</button>
+          <button id="team-stats-btn" class="btn">Team Stats</button>
         </div>
         </div>
       </div>
@@ -330,6 +331,11 @@ export class BoloClientWorld extends ClientWorld {
     // Set up key settings button
     document.getElementById('key-settings-btn')?.addEventListener('click', () => {
       this.showKeySettings();
+    });
+
+    // Set up team stats button
+    document.getElementById('team-stats-btn')?.addEventListener('click', () => {
+      this.showTeamStats();
     });
 
     // Expose join function globally for the Join buttons
@@ -1289,6 +1295,330 @@ export class BoloClientWorld extends ClientWorld {
     document.getElementById('how-to-play-overlay')?.addEventListener('click', (e) => {
       if (e.target === document.getElementById('how-to-play-overlay')) {
         document.getElementById('how-to-play-overlay')?.remove();
+      }
+    });
+  }
+
+  /**
+   * Show the Team Stats modal with ranking graphs
+   */
+  showTeamStats(): void {
+    this.addSystemCSSStyles();
+
+    const statsHTML = `
+      <div id="stats-overlay" style="
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 10001;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">
+        <div id="stats-dialog" class="window" style="
+          position: fixed;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: 800px;
+          min-height: 500px;
+          max-height: 600px;
+          display: flex;
+          flex-direction: column;
+        ">
+          <div id="stats-titlebar" class="title-bar" style="cursor: move; user-select: none;">
+            <button class="close" id="stats-close" aria-label="Close"></button>
+            <h1 class="title">Team Stats</h1>
+          </div>
+          <div class="separator" style="flex-shrink: 0;"></div>
+          <div class="window-pane" id="stats-content" style="flex: 1 1 auto; overflow-y: auto; min-height: 0; padding: 16px;">
+
+            <!-- Time Period Selector -->
+            <div style="margin-bottom: 16px; font-size: 12px;">
+              <select id="period-select" style="
+                padding: 4px 8px;
+                width: 150px;
+                border: 1px solid black;
+                background: white;
+                font-family: 'Chicago', 'Charcoal', sans-serif;
+                font-size: 12px;
+              ">
+                <option value="hour">Hour</option>
+                <option value="day">Day</option>
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+                <option value="year">Year</option>
+              </select>
+            </div>
+
+            <!-- Graph Container -->
+            <div style="position: relative; height: 400px; background: white; border: 2px solid black; padding: 8px;">
+              <canvas id="rankings-chart"></canvas>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', statsHTML);
+
+    const dialog = document.getElementById('stats-dialog') as HTMLElement;
+    const titlebar = document.getElementById('stats-titlebar') as HTMLElement;
+    const closeBox = document.getElementById('stats-close') as HTMLElement;
+
+    // Close box handler
+    closeBox?.addEventListener('click', () => {
+      document.getElementById('stats-overlay')?.remove();
+    });
+
+    // Make dialog draggable
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dialogStartX = 0;
+    let dialogStartY = 0;
+
+    titlebar.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = dialog.getBoundingClientRect();
+      dialogStartX = rect.left;
+      dialogStartY = rect.top;
+    });
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        const deltaX = e.clientX - dragStartX;
+        const deltaY = e.clientY - dragStartY;
+        dialog.style.left = `${dialogStartX + deltaX}px`;
+        dialog.style.top = `${dialogStartY + deltaY}px`;
+        dialog.style.transform = 'none';
+      }
+    };
+
+    const handleMouseUp = () => {
+      isDragging = false;
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    // Close on overlay click
+    document.getElementById('stats-overlay')?.addEventListener('click', (e) => {
+      if (e.target === document.getElementById('stats-overlay')) {
+        document.getElementById('stats-overlay')?.remove();
+      }
+    });
+
+    // Period dropdown change handler
+    const periodSelect = document.getElementById('period-select') as HTMLSelectElement;
+    periodSelect?.addEventListener('change', (e) => {
+      const period = (e.target as HTMLSelectElement).value;
+      this.initializeStatsChart(period);
+    });
+
+    // Load Chart.js and initialize the graph with the selected period
+    const initialPeriod = periodSelect?.value || 'hour';
+    this.initializeStatsChart(initialPeriod);
+  }
+
+  /**
+   * Initialize the Chart.js rankings chart
+   */
+  async initializeStatsChart(period: string): Promise<void> {
+    // Dynamically import Chart.js
+    const { Chart, registerables } = await import('chart.js');
+    Chart.register(...registerables);
+
+    const canvas = document.getElementById('rankings-chart') as HTMLCanvasElement;
+    if (!canvas) return;
+
+    // Destroy existing chart if any
+    const existingChart = Chart.getChart(canvas);
+    if (existingChart) {
+      existingChart.destroy();
+    }
+
+    // Fetch mock data from API
+    const response = await fetch(`/api/stats/rankings?period=${period}`);
+    const { data } = await response.json();
+
+    // Prepare chart data based on period
+    let labels: string[] = [];
+    let datasets: any[] = [];
+
+    const teamColors = {
+      red: '#FF0000',
+      blue: '#0000FF',
+      yellow: '#FFFF00',
+      green: '#00FF00',
+      orange: '#FFA500',
+      purple: '#800080'
+    };
+
+    if (period === 'hour') {
+      // Hour view: last hour with 5-minute intervals
+      labels = data.map((d: any) => {
+        const date = new Date(d.timestamp);
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        return `${hours}:${minutes}`;
+      });
+
+      Object.keys(teamColors).forEach(team => {
+        datasets.push({
+          label: team.charAt(0).toUpperCase() + team.slice(1),
+          data: data.map((d: any) => d.rankings[team]),
+          borderColor: teamColors[team as keyof typeof teamColors],
+          backgroundColor: teamColors[team as keyof typeof teamColors],
+          borderWidth: 2,
+          pointRadius: 3,
+          tension: 0.1
+        });
+      });
+    } else if (period === 'day') {
+      // Day view: minute-by-minute data (sample every hour for readability)
+      labels = data.filter((_: any, i: number) => i % 60 === 0).map((_: any, i: number) => {
+        const hour = Math.floor((i * 60) / 60);
+        const minute = (i * 60) % 60;
+        return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+      });
+
+      Object.keys(teamColors).forEach(team => {
+        datasets.push({
+          label: team.charAt(0).toUpperCase() + team.slice(1),
+          data: data.filter((_: any, i: number) => i % 60 === 0).map((d: any) => d.rankings[team]),
+          borderColor: teamColors[team as keyof typeof teamColors],
+          backgroundColor: teamColors[team as keyof typeof teamColors],
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.1
+        });
+      });
+    } else if (period === 'week') {
+      // Week view: rolling 7 days
+      const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      labels = data.map((d: any) => {
+        const date = new Date(d.date);
+        return dayNames[date.getDay()];
+      });
+
+      Object.keys(teamColors).forEach(team => {
+        datasets.push({
+          label: team.charAt(0).toUpperCase() + team.slice(1),
+          data: data.map((d: any) => d.averageRanks[team]),
+          borderColor: teamColors[team as keyof typeof teamColors],
+          backgroundColor: teamColors[team as keyof typeof teamColors],
+          borderWidth: 2,
+          pointRadius: 3,
+          tension: 0.1
+        });
+      });
+    } else if (period === 'month') {
+      // Month view: daily data
+      labels = data.map((d: any) => {
+        const date = new Date(d.date);
+        return `${date.getMonth() + 1}/${date.getDate()}`;
+      });
+
+      Object.keys(teamColors).forEach(team => {
+        datasets.push({
+          label: team.charAt(0).toUpperCase() + team.slice(1),
+          data: data.map((d: any) => d.averageRanks[team]),
+          borderColor: teamColors[team as keyof typeof teamColors],
+          backgroundColor: teamColors[team as keyof typeof teamColors],
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.1
+        });
+      });
+    } else if (period === 'year') {
+      // Year view: rolling 12 months
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      labels = data.map((d: any) => {
+        // Parse YYYY-MM format
+        const [year, month] = d.month.split('-');
+        const monthIndex = parseInt(month) - 1;
+        return monthNames[monthIndex];
+      });
+
+      Object.keys(teamColors).forEach(team => {
+        datasets.push({
+          label: team.charAt(0).toUpperCase() + team.slice(1),
+          data: data.map((d: any) => d.averageRanks[team]),
+          borderColor: teamColors[team as keyof typeof teamColors],
+          backgroundColor: teamColors[team as keyof typeof teamColors],
+          borderWidth: 2,
+          pointRadius: 3,
+          tension: 0.1
+        });
+      });
+    }
+
+    // Create chart with inverted Y-axis (rank 1 at top)
+    new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            display: false
+          },
+          title: {
+            display: false
+          }
+        },
+        scales: {
+          y: {
+            reverse: true, // Inverted: rank 1 at top
+            min: 0.5,
+            max: 6.5,
+            ticks: {
+              stepSize: 1,
+              autoSkip: false,
+              callback: (value) => {
+                const ordinals = ['', '1st', '2nd', '3rd', '4th', '5th', '6th'];
+                const intValue = Math.round(value as number);
+                // Only show labels for integer ranks
+                if (intValue >= 1 && intValue <= 6 && Math.abs(value as number - intValue) < 0.01) {
+                  return ordinals[intValue];
+                }
+                return '';
+              },
+              font: {
+                family: 'Chicago, Charcoal, sans-serif',
+                size: 11
+              }
+            },
+            afterBuildTicks: (axis: any) => {
+              // Force ticks at 1, 2, 3, 4, 5, 6
+              axis.ticks = [1, 2, 3, 4, 5, 6].map(v => ({ value: v }));
+            },
+            title: {
+              display: false
+            }
+          },
+          x: {
+            ticks: {
+              font: {
+                family: 'Chicago, Charcoal, sans-serif',
+                size: 10
+              },
+              maxRotation: 45,
+              minRotation: 45
+            }
+          }
+        }
       }
     });
   }

@@ -7,3 +7,12 @@
 !/package.json
 !/tsconfig*.json
 !/config.railway.json
+
+# Firebase credentials - NEVER commit these!
+firebase-service-account.json
+*-firebase-adminsdk-*.json
+
+# Environment variables
+.env
+.env.local
+.env.production
