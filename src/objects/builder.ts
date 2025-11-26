@@ -199,6 +199,11 @@ export class Builder extends BoloObject {
   }
 
   move(target: any, targetRadius: number, boatRadius: number): void {
+    // Safety check: if we don't have a valid cell, we can't move
+    if (!this.cell) {
+      return;
+    }
+
     // Get our speed, and keep in mind special places a builder can move to.
     let speed = this.cell.getManSpeed(this);
     let onBoat = false;
