@@ -301,10 +301,10 @@ class FirebaseService {
                     const date = new Date(now);
                     date.setDate(date.getDate() - daysAgo);
                     const hourlyData = await this.getHourlyData(date);
-                    hourlyData.forEach(d => {
+                    hourlyData.forEach((d) => {
                         results.push({
                             timestamp: d.timestamp,
-                            rankings: d.rankings
+                            rankings: d.averageRanks || d.rankings // Handle both field names
                         });
                     });
                 }
