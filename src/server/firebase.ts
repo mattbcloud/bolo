@@ -377,16 +377,27 @@ class FirebaseService {
       }
 
       case 'week': {
-        // Get last 7 days of daily data
-        const endDate = new Date(now);
-        const startDate = new Date(now);
-        startDate.setDate(startDate.getDate() - 6);
+        // Get last 7 days of hourly data (168 hours)
+        // Using hourly data instead of daily because daily aggregation
+        // only runs once per day at midnight, so early servers won't have enough data
+        const results: any[] = [];
+        const currentDate = new Date(now);
 
-        const data = await this.getDailyData(startDate, endDate);
-        return data.map(d => ({
-          timestamp: new Date(d.date).getTime(),
-          rankings: d.averageRanks
-        }));
+        // Go back 7 days
+        for (let daysAgo = 6; daysAgo >= 0; daysAgo--) {
+          const date = new Date(now);
+          date.setDate(date.getDate() - daysAgo);
+
+          const hourlyData = await this.getHourlyData(date);
+          hourlyData.forEach(d => {
+            results.push({
+              timestamp: d.timestamp,
+              rankings: d.rankings
+            });
+          });
+        }
+
+        return results;
       }
 
       case 'month': {
