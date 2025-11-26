@@ -389,10 +389,10 @@ class FirebaseService {
           date.setDate(date.getDate() - daysAgo);
 
           const hourlyData = await this.getHourlyData(date);
-          hourlyData.forEach(d => {
+          hourlyData.forEach((d: any) => {
             results.push({
               timestamp: d.timestamp,
-              rankings: d.rankings
+              rankings: d.averageRanks || d.rankings  // Handle both field names
             });
           });
         }
