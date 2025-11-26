@@ -1501,21 +1501,24 @@ export class BoloClientWorld extends ClientWorld {
         });
       });
     } else if (period === 'week') {
-      // Week view: rolling 7 days
+      // Week view: hourly data over 7 days
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       labels = data.map((d: any) => {
-        const date = new Date(d.date);
-        return dayNames[date.getDay()];
+        const date = new Date(d.timestamp);
+        const hours = date.getHours();
+        const dayName = dayNames[date.getDay()];
+        // Show day name for midnight, otherwise show hour
+        return hours === 0 ? dayName : `${hours}:00`;
       });
 
       Object.keys(teamColors).forEach(team => {
         datasets.push({
           label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.map((d: any) => d.averageRanks[team]),
+          data: data.map((d: any) => d.rankings[team]),
           borderColor: teamColors[team as keyof typeof teamColors],
           backgroundColor: teamColors[team as keyof typeof teamColors],
           borderWidth: 2,
-          pointRadius: 3,
+          pointRadius: 0,  // No points for hourly data (too many)
           tension: 0.1
         });
       });
