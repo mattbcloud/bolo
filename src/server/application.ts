@@ -688,6 +688,7 @@ interface ServerConfig {
   web: {
     port: number;
     log?: boolean;
+    hostname?: string;
   };
   general: {
     base: string;

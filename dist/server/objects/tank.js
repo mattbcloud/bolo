@@ -145,8 +145,8 @@ export class Tank extends BoloObject {
             rx: (v) => v / 2,
         });
         p('B', 'waterTimer');
-        p('B', 'kills');
-        p('B', 'deaths');
+        p('H', 'kills');
+        p('H', 'deaths');
         // Group bit fields.
         p('f', 'accelerating');
         p('f', 'braking');

@@ -3,6 +3,9 @@
  *
  * Entry point for running the Bolo server from the command line.
  */
+// Load environment variables from .env file
+import dotenv from 'dotenv';
+dotenv.config();
 import * as fs from 'fs';
 import * as path from 'path';
 import createBoloApp from './application';
