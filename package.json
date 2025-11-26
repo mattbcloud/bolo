@@ -21,7 +21,7 @@
     "build:client": "tsc -p tsconfig.client.json && vite build",
     "build:server": "tsc -p tsconfig.server.json",
     "dev": "vite",
-    "dev:server": "tsx watch src/server/command.ts",
+    "dev:server": "tsx watch src/server/command.ts config.json",
     "start": "tsx src/server/command.ts config.railway.json",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist"

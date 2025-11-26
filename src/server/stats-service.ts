@@ -120,12 +120,12 @@ class StatsService {
     const count = rankings.length;
 
     return {
-      red: Math.round(totals.red / count),
-      blue: Math.round(totals.blue / count),
-      yellow: Math.round(totals.yellow / count),
-      green: Math.round(totals.green / count),
-      orange: Math.round(totals.orange / count),
-      purple: Math.round(totals.purple / count),
+      red: totals.red / count,
+      blue: totals.blue / count,
+      yellow: totals.yellow / count,
+      green: totals.green / count,
+      orange: totals.orange / count,
+      purple: totals.purple / count,
     };
   }
 

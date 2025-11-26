@@ -6,12 +6,12 @@
 interface RankingData {
   timestamp: number;
   rankings: {
-    red: number;
-    blue: number;
-    yellow: number;
-    green: number;
-    orange: number;
-    purple: number;
+    red: number | null;
+    blue: number | null;
+    yellow: number | null;
+    green: number | null;
+    orange: number | null;
+    purple: number | null;
   };
 }
 
