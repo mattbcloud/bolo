@@ -180,7 +180,10 @@ class FirebaseService {
     }
 
     const data = snapshot.val();
-    return Object.values(data);
+    const dataArray: TeamRanking[] = Object.values(data);
+
+    // Sort by timestamp to ensure chronological order
+    return dataArray.sort((a, b) => a.timestamp - b.timestamp);
   }
 
   /**
@@ -220,7 +223,10 @@ class FirebaseService {
     }
 
     const data = snapshot.val();
-    return Object.values(data);
+    const dataArray: TeamRanking[] = Object.values(data);
+
+    // Sort by timestamp to ensure chronological order
+    return dataArray.sort((a, b) => a.timestamp - b.timestamp);
   }
 
   /**

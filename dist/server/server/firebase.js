@@ -128,7 +128,9 @@ class FirebaseService {
             return [];
         }
         const data = snapshot.val();
-        return Object.values(data);
+        const dataArray = Object.values(data);
+        // Sort by timestamp to ensure chronological order
+        return dataArray.sort((a, b) => a.timestamp - b.timestamp);
     }
     /**
      * Record hourly aggregated data
@@ -161,7 +163,9 @@ class FirebaseService {
             return [];
         }
         const data = snapshot.val();
-        return Object.values(data);
+        const dataArray = Object.values(data);
+        // Sort by timestamp to ensure chronological order
+        return dataArray.sort((a, b) => a.timestamp - b.timestamp);
     }
     /**
      * Record daily aggregated data
