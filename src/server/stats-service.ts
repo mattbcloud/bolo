@@ -16,7 +16,7 @@ interface TeamRankings {
 
 class StatsService {
   private lastRecordTime: number = 0;
-  private minuteDataBuffer: Array<{ timestamp: number; rankings: TeamRankings }> = [];
+  private lastRecordedRankings: TeamRankings | null = null;
   private hourlyAggregationTimer: NodeJS.Timeout | null = null;
   private dailyAggregationTimer: NodeJS.Timeout | null = null;
   private monthlyAggregationTimer: NodeJS.Timeout | null = null;
@@ -51,7 +51,7 @@ class StatsService {
   /**
    * Record team rankings from team scores
    * Called every second when team scores are calculated
-   * Records to Firebase every minute
+   * Records actual rankings to Firebase every minute (no averaging)
    *
    * @param scores - Array of 6 team scores [red, blue, yellow, green, orange, purple]
    */
@@ -67,24 +67,17 @@ class StatsService {
     // Convert scores to rankings
     const rankings = this.scorestoRankings(scores);
 
-    // Add to buffer for averaging
-    this.minuteDataBuffer.push({ timestamp: now, rankings });
+    // Store the latest rankings
+    this.lastRecordedRankings = rankings;
 
     // Record to Firebase every minute (when we cross into a new minute)
     if (currentMinute > this.lastRecordTime) {
-      if (this.minuteDataBuffer.length > 0) {
-        // Calculate average rankings for the minute
-        const avgRankings = this.averageRankings(this.minuteDataBuffer.map(d => d.rankings));
-
-        try {
-          await firebaseService.recordMinuteData(currentMinute, avgRankings);
-          console.log(`Recorded minute data at ${new Date(currentMinute).toISOString()}`);
-        } catch (error) {
-          console.error('Failed to record minute data:', error);
-        }
-
-        // Clear buffer
-        this.minuteDataBuffer = [];
+      // Record the actual rankings at the top of the minute (no averaging)
+      try {
+        await firebaseService.recordMinuteData(currentMinute, rankings);
+        console.log(`Recorded minute data at ${new Date(currentMinute).toISOString()}`);
+      } catch (error) {
+        console.error('Failed to record minute data:', error);
       }
 
       this.lastRecordTime = currentMinute;
@@ -92,41 +85,25 @@ class StatsService {
   }
 
   /**
-   * Calculate average rankings from multiple data points
+   * Get the last data point from an array of rankings
+   * Used for snapshot-based aggregation instead of averaging
    */
-  private averageRankings(rankings: TeamRankings[]): TeamRankings {
-    if (rankings.length === 0) {
-      return { red: 0, blue: 0, yellow: 0, green: 0, orange: 0, purple: 0 };
+  private getLastSnapshot(data: any[]): TeamRankings | null {
+    if (data.length === 0) {
+      return null;
     }
 
-    const totals = {
-      red: 0,
-      blue: 0,
-      yellow: 0,
-      green: 0,
-      orange: 0,
-      purple: 0,
-    };
+    // Get the last data point
+    const lastPoint = data[data.length - 1];
 
-    rankings.forEach(r => {
-      totals.red += r.red;
-      totals.blue += r.blue;
-      totals.yellow += r.yellow;
-      totals.green += r.green;
-      totals.orange += r.orange;
-      totals.purple += r.purple;
-    });
+    // Handle both direct rankings and nested averageRanks/rankings
+    if (lastPoint.rankings) {
+      return lastPoint.rankings;
+    } else if (lastPoint.averageRanks) {
+      return lastPoint.averageRanks;
+    }
 
-    const count = rankings.length;
-
-    return {
-      red: totals.red / count,
-      blue: totals.blue / count,
-      yellow: totals.yellow / count,
-      green: totals.green / count,
-      orange: totals.orange / count,
-      purple: totals.purple / count,
-    };
+    return null;
   }
 
   /**
@@ -152,6 +129,7 @@ class StatsService {
 
   /**
    * Run hourly aggregation
+   * Takes a snapshot at the top of the hour instead of averaging
    */
   private async runHourlyAggregation(): Promise<void> {
     if (!firebaseService.isInitialized()) {
@@ -172,11 +150,16 @@ class StatsService {
         return;
       }
 
-      // Calculate average rankings
-      const avgRankings = this.averageRankings(minuteData.map(d => d.rankings));
+      // Take a snapshot from the last minute of the hour (no averaging)
+      const snapshot = this.getLastSnapshot(minuteData);
 
-      // Record hourly data
-      await firebaseService.recordHourlyData(lastHour.getTime(), avgRankings);
+      if (!snapshot) {
+        console.log('No valid snapshot found');
+        return;
+      }
+
+      // Record hourly data as a snapshot
+      await firebaseService.recordHourlyData(lastHour.getTime(), snapshot);
 
       console.log(`Hourly aggregation complete for ${lastHour.toISOString()}`);
     } catch (error) {
@@ -208,6 +191,7 @@ class StatsService {
 
   /**
    * Run daily aggregation
+   * Takes a snapshot at midnight instead of averaging
    */
   private async runDailyAggregation(): Promise<void> {
     if (!firebaseService.isInitialized()) {
@@ -228,12 +212,17 @@ class StatsService {
         return;
       }
 
-      // Calculate average rankings
-      const avgRankings = this.averageRankings(hourlyData.map(d => d.rankings));
+      // Take a snapshot from the last hour of the day (no averaging)
+      const snapshot = this.getLastSnapshot(hourlyData);
 
-      // Record daily data
+      if (!snapshot) {
+        console.log('No valid snapshot found');
+        return;
+      }
+
+      // Record daily data as a snapshot
       const dateStr = yesterday.toISOString().split('T')[0];
-      await firebaseService.recordDailyData(dateStr, avgRankings);
+      await firebaseService.recordDailyData(dateStr, snapshot);
 
       console.log(`Daily aggregation complete for ${dateStr}`);
     } catch (error) {
@@ -270,6 +259,7 @@ class StatsService {
 
   /**
    * Run monthly aggregation
+   * Takes a snapshot at the end of the month instead of averaging
    */
   private async runMonthlyAggregation(): Promise<void> {
     if (!firebaseService.isInitialized()) {
@@ -293,11 +283,16 @@ class StatsService {
         return;
       }
 
-      // Calculate average rankings
-      const avgRankings = this.averageRankings(dailyData.map(d => d.averageRanks));
+      // Take a snapshot from the last day of the month (no averaging)
+      const snapshot = this.getLastSnapshot(dailyData);
 
-      // Record monthly data
-      await firebaseService.recordMonthlyData(monthStr, avgRankings);
+      if (!snapshot) {
+        console.log('No valid snapshot found');
+        return;
+      }
+
+      // Record monthly data as a snapshot
+      await firebaseService.recordMonthlyData(monthStr, snapshot);
 
       console.log(`Monthly aggregation complete for ${monthStr}`);
     } catch (error) {

@@ -4,7 +4,7 @@
  */
 declare class StatsService {
     private lastRecordTime;
-    private minuteDataBuffer;
+    private lastRecordedRankings;
     private hourlyAggregationTimer;
     private dailyAggregationTimer;
     private monthlyAggregationTimer;
@@ -18,15 +18,16 @@ declare class StatsService {
     /**
      * Record team rankings from team scores
      * Called every second when team scores are calculated
-     * Records to Firebase every minute
+     * Records actual rankings to Firebase every minute (no averaging)
      *
      * @param scores - Array of 6 team scores [red, blue, yellow, green, orange, purple]
      */
     recordTeamScores(scores: number[]): Promise<void>;
     /**
-     * Calculate average rankings from multiple data points
+     * Get the last data point from an array of rankings
+     * Used for snapshot-based aggregation instead of averaging
      */
-    private averageRankings;
+    private getLastSnapshot;
     /**
      * Start hourly aggregation job
      * Runs every hour to aggregate the previous hour's minute data
@@ -34,6 +35,7 @@ declare class StatsService {
     startHourlyAggregation(): void;
     /**
      * Run hourly aggregation
+     * Takes a snapshot at the top of the hour instead of averaging
      */
     private runHourlyAggregation;
     /**
@@ -43,6 +45,7 @@ declare class StatsService {
     startDailyAggregation(): void;
     /**
      * Run daily aggregation
+     * Takes a snapshot at midnight instead of averaging
      */
     private runDailyAggregation;
     /**
@@ -52,6 +55,7 @@ declare class StatsService {
     startMonthlyAggregation(): void;
     /**
      * Run monthly aggregation
+     * Takes a snapshot at the end of the month instead of averaging
      */
     private runMonthlyAggregation;
     /**
