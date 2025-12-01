@@ -49,6 +49,16 @@ class StatsService {
         }
         const now = Date.now();
         const currentMinute = Math.floor(now / 60000) * 60000; // Round down to minute
+        // Check if all scores are zero (no game activity)
+        // If so, skip recording to preserve last known rankings on graph
+        if (scores.every(score => score === 0)) {
+            // Update lastRecordTime so we don't spam this check
+            if (currentMinute > this.lastRecordTime) {
+                console.log(`Skipping minute data recording - no game activity (all scores are 0)`);
+                this.lastRecordTime = currentMinute;
+            }
+            return;
+        }
         // Convert scores to rankings
         const rankings = this.scorestoRankings(scores);
         // Store the latest rankings
