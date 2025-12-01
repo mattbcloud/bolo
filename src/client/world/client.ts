@@ -1523,16 +1523,16 @@ export class BoloClientWorld extends ClientWorld {
         });
       });
     } else if (period === 'month') {
-      // Month view: daily data
-      labels = data.map((d: any) => {
-        const date = new Date(d.date);
+      // Month view: hourly data over 30 days (sample every 24 hours for readability)
+      labels = data.filter((_: any, i: number) => i % 24 === 0).map((d: any) => {
+        const date = new Date(d.timestamp);
         return `${date.getMonth() + 1}/${date.getDate()}`;
       });
 
       Object.keys(teamColors).forEach(team => {
         datasets.push({
           label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.map((d: any) => d.averageRanks[team]),
+          data: data.filter((_: any, i: number) => i % 24 === 0).map((d: any) => d.rankings[team]),
           borderColor: teamColors[team as keyof typeof teamColors],
           backgroundColor: teamColors[team as keyof typeof teamColors],
           borderWidth: 2,
@@ -1541,19 +1541,17 @@ export class BoloClientWorld extends ClientWorld {
         });
       });
     } else if (period === 'year') {
-      // Year view: rolling 12 months
+      // Year view: hourly data over 365 days (already sampled every 24 hours by server)
       const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       labels = data.map((d: any) => {
-        // Parse YYYY-MM format
-        const [year, month] = d.month.split('-');
-        const monthIndex = parseInt(month) - 1;
-        return monthNames[monthIndex];
+        const date = new Date(d.timestamp);
+        return monthNames[date.getMonth()];
       });
 
       Object.keys(teamColors).forEach(team => {
         datasets.push({
           label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.map((d: any) => d.averageRanks[team]),
+          data: data.map((d: any) => d.rankings[team]),
           borderColor: teamColors[team as keyof typeof teamColors],
           backgroundColor: teamColors[team as keyof typeof teamColors],
           borderWidth: 2,
