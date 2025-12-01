@@ -59,6 +59,8 @@ class StatsService {
             try {
                 await firebaseService.recordMinuteData(currentMinute, rankings);
                 console.log(`Recorded minute data at ${new Date(currentMinute).toISOString()}`);
+                console.log(`  Scores: R=${scores[0].toFixed(1)} B=${scores[1].toFixed(1)} Y=${scores[2].toFixed(1)} G=${scores[3].toFixed(1)} O=${scores[4].toFixed(1)} P=${scores[5].toFixed(1)}`);
+                console.log(`  Rankings: R=${rankings.red} B=${rankings.blue} Y=${rankings.yellow} G=${rankings.green} O=${rankings.orange} P=${rankings.purple}`);
             }
             catch (error) {
                 console.error('Failed to record minute data:', error);
