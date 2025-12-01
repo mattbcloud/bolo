@@ -289,12 +289,10 @@ class FirebaseService {
                 else {
                     allData = await this.getMinuteData(now);
                 }
-                // Filter to only last 60 minutes and sample every 5 minutes
+                // Filter to only last 60 minutes
                 const lastHourData = allData.filter(d => d.timestamp >= oneHourAgo);
-                // Sample every 5 minutes (every 5th data point)
-                return lastHourData
-                    .filter((_, i) => i % 5 === 0)
-                    .map(d => ({
+                // Return all data points (we only record during active gameplay now)
+                return lastHourData.map(d => ({
                     timestamp: d.timestamp,
                     rankings: d.rankings
                 }));
