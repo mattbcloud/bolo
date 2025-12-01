@@ -274,10 +274,23 @@ class FirebaseService {
         switch (period) {
             case 'hour': {
                 // Get last hour of minute-level data, sampled every 5 minutes
-                const data = await this.getMinuteData(now);
-                // Filter to only last 60 minutes and sample every 5 minutes
+                // Need to fetch from both today and yesterday in case we cross midnight
                 const oneHourAgo = now.getTime() - (60 * 60 * 1000);
-                const lastHourData = data.filter(d => d.timestamp >= oneHourAgo);
+                const oneHourAgoDate = new Date(oneHourAgo);
+                let allData = [];
+                // If the hour spans two different days, fetch from both
+                if (oneHourAgoDate.getDate() !== now.getDate() ||
+                    oneHourAgoDate.getMonth() !== now.getMonth() ||
+                    oneHourAgoDate.getFullYear() !== now.getFullYear()) {
+                    const yesterdayData = await this.getMinuteData(oneHourAgoDate);
+                    const todayData = await this.getMinuteData(now);
+                    allData = [...yesterdayData, ...todayData];
+                }
+                else {
+                    allData = await this.getMinuteData(now);
+                }
+                // Filter to only last 60 minutes and sample every 5 minutes
+                const lastHourData = allData.filter(d => d.timestamp >= oneHourAgo);
                 // Sample every 5 minutes (every 5th data point)
                 return lastHourData
                     .filter((_, i) => i % 5 === 0)
@@ -287,9 +300,24 @@ class FirebaseService {
                 }));
             }
             case 'day': {
-                // Get today's minute-level data
-                const data = await this.getMinuteData(now);
-                return data.map(d => ({
+                // Get last 24 hours of minute-level data
+                const twentyFourHoursAgo = now.getTime() - (24 * 60 * 60 * 1000);
+                const twentyFourHoursAgoDate = new Date(twentyFourHoursAgo);
+                let allData = [];
+                // If the 24 hours spans two different days, fetch from both
+                if (twentyFourHoursAgoDate.getDate() !== now.getDate() ||
+                    twentyFourHoursAgoDate.getMonth() !== now.getMonth() ||
+                    twentyFourHoursAgoDate.getFullYear() !== now.getFullYear()) {
+                    const yesterdayData = await this.getMinuteData(twentyFourHoursAgoDate);
+                    const todayData = await this.getMinuteData(now);
+                    allData = [...yesterdayData, ...todayData];
+                }
+                else {
+                    allData = await this.getMinuteData(now);
+                }
+                // Filter to only last 24 hours
+                const last24Hours = allData.filter(d => d.timestamp >= twentyFourHoursAgo);
+                return last24Hours.map(d => ({
                     timestamp: d.timestamp,
                     rankings: d.rankings
                 }));
