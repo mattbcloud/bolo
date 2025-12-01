@@ -1523,7 +1523,7 @@ export class BoloClientWorld extends ClientWorld {
           backgroundColor: teamColors[team as keyof typeof teamColors],
           borderWidth: 2,
           pointRadius: 0,  // No points for hourly data (too many)
-          tension: 0.1
+          tension: 0  // Straight lines for sparse data
         });
       });
     } else if (period === 'month') {
