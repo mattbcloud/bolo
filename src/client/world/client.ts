@@ -1507,8 +1507,12 @@ export class BoloClientWorld extends ClientWorld {
         const date = new Date(d.timestamp);
         const hours = date.getHours();
         const dayName = dayNames[date.getDay()];
-        // Show day name for midnight, otherwise show hour
-        return hours === 0 ? dayName : `${hours}:00`;
+        // Show day name at noon and midnight for clarity
+        if (hours === 0 || hours === 12) {
+          return `${dayName} ${hours === 0 ? '12am' : '12pm'}`;
+        }
+        // For other hours, show empty string to reduce clutter
+        return '';
       });
 
       Object.keys(teamColors).forEach(team => {
