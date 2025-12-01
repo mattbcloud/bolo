@@ -323,24 +323,27 @@ class FirebaseService {
                 }));
             }
             case 'week': {
-                // Get last 7 days of hourly data (168 hours)
-                // Using hourly data instead of daily because daily aggregation
-                // only runs once per day at midnight, so early servers won't have enough data
+                // Get last 168 hours (7 days) of hourly data - rolling window
+                const oneWeekAgo = now.getTime() - (7 * 24 * 60 * 60 * 1000);
+                const oneWeekAgoDate = new Date(oneWeekAgo);
                 const results = [];
-                const currentDate = new Date(now);
-                // Go back 7 days
-                for (let daysAgo = 6; daysAgo >= 0; daysAgo--) {
-                    const date = new Date(now);
-                    date.setDate(date.getDate() - daysAgo);
-                    const hourlyData = await this.getHourlyData(date);
+                // Fetch hourly data from all days in the range (up to 8 days to cover full range)
+                const currentDate = new Date(oneWeekAgoDate);
+                const endDate = new Date(now);
+                // Loop through each day and fetch hourly data
+                while (currentDate <= endDate) {
+                    const hourlyData = await this.getHourlyData(new Date(currentDate));
                     hourlyData.forEach((d) => {
                         results.push({
                             timestamp: d.timestamp,
                             rankings: d.averageRanks || d.rankings // Handle both field names
                         });
                     });
+                    // Move to next day
+                    currentDate.setDate(currentDate.getDate() + 1);
                 }
-                return results;
+                // Filter to only last 168 hours
+                return results.filter(d => d.timestamp >= oneWeekAgo);
             }
             case 'month': {
                 // Get last 30 days of daily data
