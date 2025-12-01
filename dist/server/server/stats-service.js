@@ -8,8 +8,6 @@ class StatsService {
         this.lastRecordTime = 0;
         this.lastRecordedRankings = null;
         this.hourlyAggregationTimer = null;
-        this.dailyAggregationTimer = null;
-        this.monthlyAggregationTimer = null;
         this.cleanupTimer = null;
     }
     /**
@@ -147,111 +145,6 @@ class StatsService {
         }
     }
     /**
-     * Start daily aggregation job
-     * Runs once per day at midnight to aggregate the previous day's hourly data
-     */
-    startDailyAggregation() {
-        // Run at midnight
-        const now = new Date();
-        const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
-        setTimeout(() => {
-            this.runDailyAggregation();
-            // Then run every day
-            this.dailyAggregationTimer = setInterval(() => {
-                this.runDailyAggregation();
-            }, 24 * 60 * 60 * 1000); // Every 24 hours
-        }, msUntilMidnight);
-        console.log(`Daily aggregation will start in ${Math.round(msUntilMidnight / 1000 / 60 / 60)} hours`);
-    }
-    /**
-     * Run daily aggregation
-     * Takes a snapshot at midnight instead of averaging
-     */
-    async runDailyAggregation() {
-        if (!firebaseService.isInitialized()) {
-            return;
-        }
-        try {
-            const now = new Date();
-            const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-            console.log(`Running daily aggregation for ${yesterday.toISOString().split('T')[0]}`);
-            // Get hourly data for yesterday
-            const hourlyData = await firebaseService.getHourlyData(yesterday);
-            if (hourlyData.length === 0) {
-                console.log('No hourly data to aggregate');
-                return;
-            }
-            // Take a snapshot from the last hour of the day (no averaging)
-            const snapshot = this.getLastSnapshot(hourlyData);
-            if (!snapshot) {
-                console.log('No valid snapshot found');
-                return;
-            }
-            // Record daily data as a snapshot
-            const dateStr = yesterday.toISOString().split('T')[0];
-            await firebaseService.recordDailyData(dateStr, snapshot);
-            console.log(`Daily aggregation complete for ${dateStr}`);
-        }
-        catch (error) {
-            console.error('Failed to run daily aggregation:', error);
-        }
-    }
-    /**
-     * Start monthly aggregation job
-     * Runs on the 1st of each month to aggregate the previous month's daily data
-     */
-    startMonthlyAggregation() {
-        // Run on the 1st of next month
-        const now = new Date();
-        const firstOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-        const msUntilFirstOfMonth = firstOfNextMonth.getTime() - now.getTime();
-        setTimeout(() => {
-            this.runMonthlyAggregation();
-            // Then run every month (check daily if it's the 1st)
-            this.monthlyAggregationTimer = setInterval(() => {
-                const today = new Date();
-                if (today.getDate() === 1) {
-                    this.runMonthlyAggregation();
-                }
-            }, 24 * 60 * 60 * 1000); // Check daily
-        }, msUntilFirstOfMonth);
-        console.log(`Monthly aggregation will start in ${Math.round(msUntilFirstOfMonth / 1000 / 60 / 60 / 24)} days`);
-    }
-    /**
-     * Run monthly aggregation
-     * Takes a snapshot at the end of the month instead of averaging
-     */
-    async runMonthlyAggregation() {
-        if (!firebaseService.isInitialized()) {
-            return;
-        }
-        try {
-            const now = new Date();
-            const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-            const lastDayOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
-            const monthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, '0')}`;
-            console.log(`Running monthly aggregation for ${monthStr}`);
-            // Get daily data for last month
-            const dailyData = await firebaseService.getDailyData(lastMonth, lastDayOfLastMonth);
-            if (dailyData.length === 0) {
-                console.log('No daily data to aggregate');
-                return;
-            }
-            // Take a snapshot from the last day of the month (no averaging)
-            const snapshot = this.getLastSnapshot(dailyData);
-            if (!snapshot) {
-                console.log('No valid snapshot found');
-                return;
-            }
-            // Record monthly data as a snapshot
-            await firebaseService.recordMonthlyData(monthStr, snapshot);
-            console.log(`Monthly aggregation complete for ${monthStr}`);
-        }
-        catch (error) {
-            console.error('Failed to run monthly aggregation:', error);
-        }
-    }
-    /**
      * Start cleanup job to remove old minute-level data
      * Runs daily to clean up data older than 7 days
      */
@@ -293,8 +186,6 @@ class StatsService {
      */
     startAllJobs() {
         this.startHourlyAggregation();
-        this.startDailyAggregation();
-        this.startMonthlyAggregation();
         this.startCleanupJob();
         console.log('All stats aggregation jobs started');
     }
@@ -305,14 +196,6 @@ class StatsService {
         if (this.hourlyAggregationTimer) {
             clearInterval(this.hourlyAggregationTimer);
             this.hourlyAggregationTimer = null;
-        }
-        if (this.dailyAggregationTimer) {
-            clearInterval(this.dailyAggregationTimer);
-            this.dailyAggregationTimer = null;
-        }
-        if (this.monthlyAggregationTimer) {
-            clearInterval(this.monthlyAggregationTimer);
-            this.monthlyAggregationTimer = null;
         }
         if (this.cleanupTimer) {
             clearInterval(this.cleanupTimer);

@@ -444,38 +444,62 @@ class FirebaseService {
       }
 
       case 'month': {
-        // Get last 30 days of daily data
-        const endDate = new Date(now);
-        const startDate = new Date(now);
-        startDate.setDate(startDate.getDate() - 29);
+        // Get last 30 days of hourly data (720 hours)
+        const oneMonthAgo = now.getTime() - (30 * 24 * 60 * 60 * 1000);
+        const oneMonthAgoDate = new Date(oneMonthAgo);
 
-        const data = await this.getDailyData(startDate, endDate);
-        return data.map(d => ({
-          timestamp: new Date(d.date).getTime(),
-          rankings: d.averageRanks
-        }));
+        const results: any[] = [];
+
+        // Fetch hourly data from all days in the range
+        const currentDate = new Date(oneMonthAgoDate);
+        const endDate = new Date(now);
+
+        // Loop through each day and fetch hourly data
+        while (currentDate <= endDate) {
+          const hourlyData = await this.getHourlyData(new Date(currentDate));
+          hourlyData.forEach((d: any) => {
+            results.push({
+              timestamp: d.timestamp,
+              rankings: d.averageRanks || d.rankings  // Handle both field names
+            });
+          });
+
+          // Move to next day
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+
+        // Filter to only last 30 days
+        return results.filter(d => d.timestamp >= oneMonthAgo);
       }
 
       case 'year': {
-        // Get last 12 months of monthly data
-        const currentYear = now.getFullYear();
-        const currentMonth = now.getMonth() + 1;
+        // Get last 365 days of hourly data, sampled daily (every 24th hour)
+        const oneYearAgo = now.getTime() - (365 * 24 * 60 * 60 * 1000);
+        const oneYearAgoDate = new Date(oneYearAgo);
 
-        let startYear = currentYear;
-        let startMonth = currentMonth - 11;
-        if (startMonth <= 0) {
-          startMonth += 12;
-          startYear -= 1;
+        const results: any[] = [];
+
+        // Fetch hourly data from all days in the range
+        const currentDate = new Date(oneYearAgoDate);
+        const endDate = new Date(now);
+
+        // Loop through each day and fetch hourly data
+        while (currentDate <= endDate) {
+          const hourlyData = await this.getHourlyData(new Date(currentDate));
+          hourlyData.forEach((d: any) => {
+            results.push({
+              timestamp: d.timestamp,
+              rankings: d.averageRanks || d.rankings  // Handle both field names
+            });
+          });
+
+          // Move to next day
+          currentDate.setDate(currentDate.getDate() + 1);
         }
 
-        const startMonthStr = `${startYear}-${String(startMonth).padStart(2, '0')}`;
-        const endMonthStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}`;
-
-        const data = await this.getMonthlyData(startMonthStr, endMonthStr);
-        return data.map(d => ({
-          timestamp: new Date(d.month + '-01').getTime(),
-          rankings: d.averageRanks
-        }));
+        // Filter to last 365 days and sample every 24 hours (one per day)
+        const filtered = results.filter(d => d.timestamp >= oneYearAgo);
+        return filtered.filter((_: any, i: number) => i % 24 === 0);
       }
 
       default:
