@@ -1615,6 +1615,7 @@ export class BoloClientWorld extends ClientWorld {
           },
           x: {
             ticks: {
+              autoSkip: false,  // Show all labels (empty strings won't display)
               font: {
                 family: 'Chicago, Charcoal, sans-serif',
                 size: 10
