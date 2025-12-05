@@ -1503,14 +1503,19 @@ export class BoloClientWorld extends ClientWorld {
     } else if (period === 'week') {
       // Week view: hourly data over 7 days
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      let lastDay = -1;
       labels = data.map((d: any) => {
         const date = new Date(d.timestamp);
+        const currentDay = date.getDay();
+        const dayName = dayNames[currentDay];
         const hours = date.getHours();
-        const dayName = dayNames[date.getDay()];
-        // Show day name at noon and midnight for clarity
-        if (hours === 0 || hours === 12) {
-          return `${dayName} ${hours === 0 ? '12am' : '12pm'}`;
+
+        // Show day label when the day changes (first point of each day)
+        if (currentDay !== lastDay) {
+          lastDay = currentDay;
+          return `${dayName}`;
         }
+
         // For other hours, show empty string to reduce clutter
         return '';
       });
