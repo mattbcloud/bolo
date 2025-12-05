@@ -1878,7 +1878,7 @@ export class BoloClientWorld extends ClientWorld {
     this.joinDialog.remove();
     this.joinDialog = null;
 
-    if (this.ws) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ command: 'join', nick, team }));
     }
     this.input.focus();
@@ -1904,7 +1904,7 @@ export class BoloClientWorld extends ClientWorld {
 
     if (this.increasingRange !== this.decreasingRange) {
       if (++this.rangeAdjustTimer === 6) {
-        if (this.ws) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           if (this.increasingRange) {
             this.ws.send(net.INC_RANGE);
             // Auto hide gunsight when at max range
@@ -1927,7 +1927,7 @@ export class BoloClientWorld extends ClientWorld {
 
     if (++this.heartbeatTimer === 10) {
       this.heartbeatTimer = 0;
-      if (this.ws) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send('');
       }
     }
@@ -2012,7 +2012,7 @@ export class BoloClientWorld extends ClientWorld {
   }
 
   commitChat(): void {
-    if (this.ws) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(
         JSON.stringify({
           command: this.chatInput.team ? 'teamMsg' : 'msg',
@@ -2042,7 +2042,7 @@ export class BoloClientWorld extends ClientWorld {
   // Input handlers
 
   handleKeydown(e: KeyboardEvent): void {
-    if (!this.ws || !this.player) return;
+    if (!this.ws || !this.player || this.ws.readyState !== WebSocket.OPEN) return;
     const code = e.code;
     const kb = (this as any).keyBindings;
 
@@ -2076,7 +2076,7 @@ export class BoloClientWorld extends ClientWorld {
   }
 
   handleKeyup(e: KeyboardEvent): void {
-    if (!this.ws || !this.player) return;
+    if (!this.ws || !this.player || this.ws.readyState !== WebSocket.OPEN) return;
     const code = e.code;
     const kb = (this as any).keyBindings;
 
