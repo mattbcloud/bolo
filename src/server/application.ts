@@ -53,6 +53,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   tanks: any[] = [];
   emptyStartTime: number | null = null;  // Track when game became empty
   teamScoresTick: number = 0;  // Counter for sending team scores
+  tournamentMode: boolean = false;  // Tournament mode: full ammo only on first spawn
 
   // Methods from BoloWorldMixin (applied via helpers.extend at the bottom of the file)
   boloInit!: () => void;
@@ -784,7 +785,7 @@ export class Application {
         req.on('data', (chunk: any) => body += chunk);
         req.on('end', () => {
           try {
-            const { mapName } = JSON.parse(body);
+            const { mapName, tournamentMode } = JSON.parse(body);
             const mapDescriptor = this.maps.get(mapName);
 
             if (!mapDescriptor) {
@@ -806,7 +807,7 @@ export class Application {
                 return;
               }
 
-              const game = this.createGame(data);
+              const game = this.createGame(data, tournamentMode);
               game.map.name = mapName; // Store map name for reference
 
               res.setHeader('Content-Type', 'application/json');
@@ -902,7 +903,7 @@ export class Application {
     return gid;
   }
 
-  createGame(mapData: Buffer): any {
+  createGame(mapData: Buffer, tournamentMode: boolean = false): any {
     const map = WorldMap.load(mapData);
 
     const gid = this.createGameId();
@@ -910,7 +911,8 @@ export class Application {
     this.games[gid] = game;
     game.gid = gid;
     game.url = `${this.options.general.base}/match/${gid}`;
-    console.log(`Created game '${gid}'`);
+    game.tournamentMode = tournamentMode;
+    console.log(`Created game '${gid}' (tournament mode: ${tournamentMode})`);
     this.startLoop();
 
     return game;

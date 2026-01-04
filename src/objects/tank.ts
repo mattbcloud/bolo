@@ -58,6 +58,7 @@ export class Tank extends BoloObject {
   fireball?: any;
   builder?: any;
   cell: any = null;
+  spawnCount: number = 0;  // Track number of times this tank has spawned
 
   /**
    * Tanks are only ever spawned and destroyed on the server.
@@ -111,9 +112,17 @@ export class Tank extends BoloObject {
     this.turningCounterClockwise = false;
     this.turnSpeedup = 0;
 
-    // FIXME: gametype dependant.
-    this.shells = 40;
-    this.mines = 0;
+    // Increment spawn count
+    this.spawnCount++;
+
+    // In tournament mode, only give full ammo on first spawn
+    if (this.world.tournamentMode && this.spawnCount > 1) {
+      this.shells = 0;
+      this.mines = 0;
+    } else {
+      this.shells = 40;
+      this.mines = 0;
+    }
     this.armour = 40;
     this.trees = 0;
 

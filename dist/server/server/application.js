@@ -45,6 +45,7 @@ export class BoloServerWorld extends ServerWorld {
         this.tanks = [];
         this.emptyStartTime = null; // Track when game became empty
         this.teamScoresTick = 0; // Counter for sending team scores
+        this.tournamentMode = false; // Tournament mode: full ammo only on first spawn
         this.map = map;
         this.boloInit();
         this.clients = [];
@@ -665,7 +666,7 @@ export class Application {
                 req.on('data', (chunk) => body += chunk);
                 req.on('end', () => {
                     try {
-                        const { mapName } = JSON.parse(body);
+                        const { mapName, tournamentMode } = JSON.parse(body);
                         const mapDescriptor = this.maps.get(mapName);
                         if (!mapDescriptor) {
                             res.statusCode = 404;
@@ -683,7 +684,7 @@ export class Application {
                                 res.end(JSON.stringify({ error: 'Failed to load map' }));
                                 return;
                             }
-                            const game = this.createGame(data);
+                            const game = this.createGame(data, tournamentMode);
                             game.map.name = mapName; // Store map name for reference
                             res.setHeader('Content-Type', 'application/json');
                             res.end(JSON.stringify({
@@ -771,14 +772,15 @@ export class Application {
         }
         return gid;
     }
-    createGame(mapData) {
+    createGame(mapData, tournamentMode = false) {
         const map = WorldMap.load(mapData);
         const gid = this.createGameId();
         const game = new BoloServerWorld(map);
         this.games[gid] = game;
         game.gid = gid;
         game.url = `${this.options.general.base}/match/${gid}`;
-        console.log(`Created game '${gid}'`);
+        game.tournamentMode = tournamentMode;
+        console.log(`Created game '${gid}' (tournament mode: ${tournamentMode})`);
         this.startLoop();
         return game;
     }

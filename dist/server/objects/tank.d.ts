@@ -33,6 +33,7 @@ export declare class Tank extends BoloObject {
     fireball?: any;
     builder?: any;
     cell: any;
+    spawnCount: number;
     /**
      * Tanks are only ever spawned and destroyed on the server.
      */

@@ -291,6 +291,10 @@ export class BoloClientWorld extends ClientWorld {
               <option value="">Loading maps...</option>
             </select>
           </div>
+          <div class="field-row" style="margin-bottom: 10px; margin-left: 0;">
+            <input type="checkbox" id="tournament-mode">
+            <label for="tournament-mode">Tournament Mode (full ammo only on first spawn)</label>
+          </div>
           <button id="create-game-btn" class="btn" disabled>Create Game</button>
         </div>
 
@@ -444,12 +448,13 @@ export class BoloClientWorld extends ClientWorld {
     if (!select || !select.value) return;
 
     const mapName = select.value;
+    const tournamentMode = (document.getElementById('tournament-mode') as HTMLInputElement)?.checked || false;
 
     try {
       const response = await fetch('/api/games', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mapName })
+        body: JSON.stringify({ mapName, tournamentMode })
       });
 
       const game = await response.json();

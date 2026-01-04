@@ -49,6 +49,7 @@ export class Tank extends BoloObject {
         this.waterTimer = 0;
         this.onBoat = true;
         this.cell = null;
+        this.spawnCount = 0; // Track number of times this tank has spawned
         // Track position updates.
         this.on('netUpdate', (changes) => {
             if (changes.hasOwnProperty('x') || changes.hasOwnProperty('y') || changes.armour === 255) {
@@ -91,9 +92,17 @@ export class Tank extends BoloObject {
         this.turningClockwise = false;
         this.turningCounterClockwise = false;
         this.turnSpeedup = 0;
-        // FIXME: gametype dependant.
-        this.shells = 40;
-        this.mines = 0;
+        // Increment spawn count
+        this.spawnCount++;
+        // In tournament mode, only give full ammo on first spawn
+        if (this.world.tournamentMode && this.spawnCount > 1) {
+            this.shells = 0;
+            this.mines = 0;
+        }
+        else {
+            this.shells = 40;
+            this.mines = 0;
+        }
         this.armour = 40;
         this.trees = 0;
         this.reload = 0;

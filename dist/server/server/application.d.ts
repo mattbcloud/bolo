@@ -21,6 +21,7 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     tanks: any[];
     emptyStartTime: number | null;
     teamScoresTick: number;
+    tournamentMode: boolean;
     boloInit: () => void;
     addTank: (tank: any) => void;
     removeTank: (tank: any) => void;
@@ -107,7 +108,7 @@ export declare class Application {
     resetDemo(cb?: (err: string | null) => void): void;
     haveOpenSlots(): boolean;
     createGameId(): string;
-    createGame(mapData: Buffer): any;
+    createGame(mapData: Buffer, tournamentMode?: boolean): any;
     closeGame(game: any): void;
     registerIrcClient(irc: any): void;
     listen(...args: any[]): void;
