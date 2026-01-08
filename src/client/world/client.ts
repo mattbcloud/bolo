@@ -1310,6 +1310,12 @@ export class BoloClientWorld extends ClientWorld {
   showTeamStats(): void {
     this.addSystemCSSStyles();
 
+    // Load uPlot CSS
+    const uplotCSS = document.createElement('link');
+    uplotCSS.rel = 'stylesheet';
+    uplotCSS.href = 'https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css';
+    document.head.appendChild(uplotCSS);
+
     const statsHTML = `
       <div id="stats-overlay" style="
         position: fixed;
@@ -1361,7 +1367,7 @@ export class BoloClientWorld extends ClientWorld {
 
             <!-- Graph Container -->
             <div style="position: relative; height: 400px; background: white; border: 2px solid black; padding: 8px;">
-              <canvas id="rankings-chart"></canvas>
+              <div id="rankings-chart" style="width: 100%; height: 100%;"></div>
             </div>
 
           </div>
@@ -1427,35 +1433,30 @@ export class BoloClientWorld extends ClientWorld {
       this.initializeStatsChart(period);
     });
 
-    // Load Chart.js and initialize the graph with the selected period
+    // Load uPlot and initialize the graph with the selected period
     const initialPeriod = periodSelect?.value || 'hour';
     this.initializeStatsChart(initialPeriod);
   }
 
   /**
-   * Initialize the Chart.js rankings chart
+   * Initialize the uPlot rankings chart
    */
   async initializeStatsChart(period: string): Promise<void> {
-    // Dynamically import Chart.js
-    const { Chart, registerables } = await import('chart.js');
-    Chart.register(...registerables);
+    // Dynamically import uPlot
+    const uPlot = (await import('uplot')).default;
 
-    const canvas = document.getElementById('rankings-chart') as HTMLCanvasElement;
-    if (!canvas) return;
+    const container = document.getElementById('rankings-chart') as HTMLDivElement;
+    if (!container) return;
 
     // Destroy existing chart if any
-    const existingChart = Chart.getChart(canvas);
-    if (existingChart) {
-      existingChart.destroy();
+    if ((this as any).currentChart) {
+      (this as any).currentChart.destroy();
+      (this as any).currentChart = null;
     }
 
-    // Fetch mock data from API
+    // Fetch data from API
     const response = await fetch(`/api/stats/rankings?period=${period}`);
     const { data } = await response.json();
-
-    // Prepare chart data based on period
-    let labels: string[] = [];
-    let datasets: any[] = [];
 
     const teamColors = {
       red: '#FF0000',
@@ -1466,177 +1467,131 @@ export class BoloClientWorld extends ClientWorld {
       purple: '#800080'
     };
 
+    const teamNames = ['red', 'blue', 'yellow', 'green', 'orange', 'purple'];
+
+    // Prepare data based on period
+    let timestamps: number[] = [];
+    let filteredData: any[] = data;
+    let xAxisFormatter: (u: any, splits: number[]) => string[];
+
     if (period === 'hour') {
-      // Hour view: last hour with 5-minute intervals
-      labels = data.map((d: any) => {
-        const date = new Date(d.timestamp);
-        const hours = date.getHours().toString().padStart(2, '0');
-        const minutes = date.getMinutes().toString().padStart(2, '0');
-        return `${hours}:${minutes}`;
-      });
-
-      Object.keys(teamColors).forEach(team => {
-        datasets.push({
-          label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.map((d: any) => d.rankings[team]),
-          borderColor: teamColors[team as keyof typeof teamColors],
-          backgroundColor: teamColors[team as keyof typeof teamColors],
-          borderWidth: 2,
-          pointRadius: 3,
-          tension: 0.1
+      // Hour view: 5-minute intervals
+      timestamps = data.map((d: any) => new Date(d.timestamp).getTime() / 1000);
+      xAxisFormatter = (u: any, splits: number[]) => {
+        return splits.map((s: number) => {
+          const date = new Date(s * 1000);
+          return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
         });
-      });
+      };
     } else if (period === 'day') {
-      // Day view: minute-by-minute data (sample every hour for readability)
-      labels = data.filter((_: any, i: number) => i % 60 === 0).map((_: any, i: number) => {
-        const hour = Math.floor((i * 60) / 60);
-        const minute = (i * 60) % 60;
-        return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-      });
-
-      Object.keys(teamColors).forEach(team => {
-        datasets.push({
-          label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.filter((_: any, i: number) => i % 60 === 0).map((d: any) => d.rankings[team]),
-          borderColor: teamColors[team as keyof typeof teamColors],
-          backgroundColor: teamColors[team as keyof typeof teamColors],
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.1
+      // Day view: sample every hour
+      filteredData = data.filter((_: any, i: number) => i % 60 === 0);
+      timestamps = filteredData.map((d: any) => new Date(d.timestamp).getTime() / 1000);
+      xAxisFormatter = (u: any, splits: number[]) => {
+        return splits.map((s: number) => {
+          const date = new Date(s * 1000);
+          return `${date.getHours().toString().padStart(2, '0')}:00`;
         });
-      });
+      };
     } else if (period === 'week') {
-      // Week view: hourly data over 7 days
+      // Week view: hourly data
+      timestamps = data.map((d: any) => new Date(d.timestamp).getTime() / 1000);
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-      let lastDay = -1;
-      labels = data.map((d: any) => {
-        const date = new Date(d.timestamp);
-        const currentDay = date.getDay();
-        const dayName = dayNames[currentDay];
-        const hours = date.getHours();
-
-        // Show day label when the day changes (first point of each day)
-        if (currentDay !== lastDay) {
-          lastDay = currentDay;
-          return `${dayName}`;
-        }
-
-        // For other hours, show empty string to reduce clutter
-        return '';
-      });
-
-      Object.keys(teamColors).forEach(team => {
-        datasets.push({
-          label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.map((d: any) => d.rankings[team]),
-          borderColor: teamColors[team as keyof typeof teamColors],
-          backgroundColor: teamColors[team as keyof typeof teamColors],
-          borderWidth: 2,
-          pointRadius: 0,  // No points for hourly data (too many)
-          tension: 0  // Straight lines for sparse data
+      xAxisFormatter = (u: any, splits: number[]) => {
+        return splits.map((s: number) => {
+          const date = new Date(s * 1000);
+          return dayNames[date.getDay()];
         });
-      });
+      };
     } else if (period === 'month') {
-      // Month view: hourly data over 30 days (sample every 24 hours for readability)
-      labels = data.filter((_: any, i: number) => i % 24 === 0).map((d: any) => {
-        const date = new Date(d.timestamp);
-        return `${date.getMonth() + 1}/${date.getDate()}`;
-      });
-
-      Object.keys(teamColors).forEach(team => {
-        datasets.push({
-          label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.filter((_: any, i: number) => i % 24 === 0).map((d: any) => d.rankings[team]),
-          borderColor: teamColors[team as keyof typeof teamColors],
-          backgroundColor: teamColors[team as keyof typeof teamColors],
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.1
+      // Month view: sample every 24 hours
+      filteredData = data.filter((_: any, i: number) => i % 24 === 0);
+      timestamps = filteredData.map((d: any) => new Date(d.timestamp).getTime() / 1000);
+      xAxisFormatter = (u: any, splits: number[]) => {
+        return splits.map((s: number) => {
+          const date = new Date(s * 1000);
+          return `${date.getMonth() + 1}/${date.getDate()}`;
         });
-      });
-    } else if (period === 'year') {
-      // Year view: hourly data over 365 days (already sampled every 24 hours by server)
+      };
+    } else {
+      // Year view: daily data
+      timestamps = data.map((d: any) => new Date(d.timestamp).getTime() / 1000);
       const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      labels = data.map((d: any) => {
-        const date = new Date(d.timestamp);
-        return monthNames[date.getMonth()];
-      });
-
-      Object.keys(teamColors).forEach(team => {
-        datasets.push({
-          label: team.charAt(0).toUpperCase() + team.slice(1),
-          data: data.map((d: any) => d.rankings[team]),
-          borderColor: teamColors[team as keyof typeof teamColors],
-          backgroundColor: teamColors[team as keyof typeof teamColors],
-          borderWidth: 2,
-          pointRadius: 3,
-          tension: 0.1
+      xAxisFormatter = (u: any, splits: number[]) => {
+        return splits.map((s: number) => {
+          const date = new Date(s * 1000);
+          return monthNames[date.getMonth()];
         });
-      });
+      };
     }
 
-    // Create chart with inverted Y-axis (rank 1 at top)
-    new Chart(canvas, {
-      type: 'line',
-      data: {
-        labels,
-        datasets
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {
-            display: false
-          },
-          title: {
-            display: false
-          }
+    // Build uPlot data structure: [timestamps, red[], blue[], yellow[], green[], orange[], purple[]]
+    const plotData: any[] = [timestamps];
+    teamNames.forEach(team => {
+      plotData.push(filteredData.map((d: any) => d.rankings[team]));
+    });
+
+    // Build series configuration
+    const series: any[] = [{}]; // First entry is for X-axis
+    teamNames.forEach(team => {
+      series.push({
+        label: team.charAt(0).toUpperCase() + team.slice(1),
+        stroke: teamColors[team as keyof typeof teamColors],
+        width: 2,
+        points: {
+          show: period === 'hour' || period === 'year', // Show points only for hour and year
+          size: 3
+        }
+      });
+    });
+
+    // Create uPlot options
+    const opts: any = {
+      width: container.clientWidth,
+      height: container.clientHeight,
+      series: series,
+      scales: {
+        x: {
+          time: false
         },
-        scales: {
-          y: {
-            reverse: true, // Inverted: rank 1 at top
-            min: 0.5,
-            max: 6.5,
-            ticks: {
-              stepSize: 1,
-              autoSkip: false,
-              callback: (value) => {
-                const ordinals = ['', '1st', '2nd', '3rd', '4th', '5th', '6th'];
-                const intValue = Math.round(value as number);
-                // Only show labels for integer ranks
-                if (intValue >= 1 && intValue <= 6 && Math.abs(value as number - intValue) < 0.01) {
-                  return ordinals[intValue];
-                }
-                return '';
-              },
-              font: {
-                family: 'Chicago, Charcoal, sans-serif',
-                size: 11
-              }
-            },
-            afterBuildTicks: (axis: any) => {
-              // Force ticks at 1, 2, 3, 4, 5, 6
-              axis.ticks = [1, 2, 3, 4, 5, 6].map(v => ({ value: v }));
-            },
-            title: {
-              display: false
-            }
-          },
-          x: {
-            ticks: {
-              autoSkip: false,  // Show all labels (empty strings won't display)
-              font: {
-                family: 'Chicago, Charcoal, sans-serif',
-                size: 10
-              },
-              maxRotation: 45,
-              minRotation: 45
-            }
+        y: {
+          dir: -1, // Inverted Y-axis (1st place at top)
+          range: [0.5, 6.5]
+        }
+      },
+      axes: [
+        {
+          space: 60,
+          values: xAxisFormatter,
+          font: '10px Chicago, Charcoal, sans-serif',
+          rotate: -45
+        },
+        {
+          space: 40,
+          values: [1, 2, 3, 4, 5, 6],
+          splits: [1, 2, 3, 4, 5, 6],
+          font: '11px Chicago, Charcoal, sans-serif',
+          filter: (u: any, splits: number[]) => splits,
+          value: (u: any, v: number) => {
+            const ordinals = ['', '1st', '2nd', '3rd', '4th', '5th', '6th'];
+            const intValue = Math.round(v);
+            return intValue >= 1 && intValue <= 6 ? ordinals[intValue] : '';
           }
         }
+      ],
+      legend: {
+        show: false
+      },
+      cursor: {
+        points: {
+          show: true
+        }
       }
-    });
+    };
+
+    // Create and store the chart
+    const chart = new uPlot(opts, plotData, container);
+    (this as any).currentChart = chart;
   }
 
   /**
