@@ -807,16 +807,22 @@ export class Application {
                 return;
               }
 
-              const game = this.createGame(data, tournamentMode);
-              game.map.name = mapName; // Store map name for reference
+              try {
+                const game = this.createGame(data, tournamentMode);
+                game.map.name = mapName; // Store map name for reference
 
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({
-                gid: game.gid,
-                url: game.url,
-                mapName,
-                playerCount: 0
-              }));
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({
+                  gid: game.gid,
+                  url: game.url,
+                  mapName,
+                  playerCount: 0
+                }));
+              } catch (mapError: any) {
+                console.error(`[MAP ERROR] Failed to parse map '${mapName}':`, mapError.message);
+                res.statusCode = 400;
+                res.end(JSON.stringify({ error: `Map parsing failed: ${mapError.message}` }));
+              }
             });
           } catch (e) {
             res.statusCode = 400;

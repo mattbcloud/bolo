@@ -400,7 +400,10 @@ export class BoloClientWorld extends ClientWorld {
       const select = document.getElementById('map-select') as HTMLSelectElement;
       if (!select) return;
 
-      select.innerHTML = maps.map((map: any) =>
+      // Sort maps alphabetically by name
+      const sortedMaps = maps.sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+      select.innerHTML = sortedMaps.map((map: any) =>
         `<option value="${map.name}">${map.name}</option>`
       ).join('');
 
