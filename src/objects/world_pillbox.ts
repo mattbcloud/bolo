@@ -211,7 +211,10 @@ export class WorldPillbox extends BoloObject {
 
       if (tank.armour !== 255 && isEnemy && !tank.hidden) {
         const d = distance(this as any, tank);
-        if (d <= 2048 && d < targetDistance) {
+        // Pillbox range limited to effective shell range
+        // Shell travels 1792 units (56 moves * 32), hits within collision radius of 127
+        // Effective range = 1792 + 127 = 1919 world units (center-to-center)
+        if (d <= 1919 && d < targetDistance) {
           target = tank;
           targetDistance = d;
         }
