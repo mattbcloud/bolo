@@ -1141,7 +1141,12 @@ export class Map {
             startsData.push(readBytes(3, 'Incomplete player start data'));
         }
         // Read map data.
+        let rowCount = 0;
+        const maxRows = 300; // Bolo maps are 256x256, so 300 rows is a generous safety limit
         while (true) {
+            if (++rowCount > maxRows) {
+                throw new Error(`Map parsing error: exceeded maximum row count (${maxRows}). Map may be corrupted.`);
+            }
             const [dataLen, y, sx, ex] = readBytes(4, 'Incomplete map data');
             const actualDataLen = dataLen - 4;
             if (actualDataLen === 0 && y === 0xff && sx === 0xff && ex === 0xff)
@@ -1155,16 +1160,32 @@ export class Map {
                 return nibble;
             };
             let x = sx;
+            let iterationCount = 0;
+            const maxIterations = 100; // Safety limit to prevent infinite loops
             while (x < ex) {
+                // Safety check: prevent infinite loops from malformed map data
+                if (++iterationCount > maxIterations) {
+                    throw new Error(`Map parsing error at row ${y}: infinite loop detected (sx=${sx}, ex=${ex}, x=${x})`);
+                }
+                // Safety check: ensure we haven't consumed all nibbles
+                if (runPos >= run.length) {
+                    throw new Error(`Map parsing error at row ${y}: ran out of data (x=${x}, ex=${ex})`);
+                }
                 const seqLen = takeNibble();
                 if (seqLen < 8) {
                     for (let i = 1; i <= seqLen + 1; i++) {
+                        if (x >= ex) {
+                            throw new Error(`Map parsing error at row ${y}: x exceeded ex (x=${x}, ex=${ex})`);
+                        }
                         map.cellAtTile(x++, y).setType(takeNibble(), undefined, -1);
                     }
                 }
                 else {
                     const type = takeNibble();
                     for (let i = 1; i <= seqLen - 6; i++) {
+                        if (x >= ex) {
+                            throw new Error(`Map parsing error at row ${y}: x exceeded ex (x=${x}, ex=${ex})`);
+                        }
                         map.cellAtTile(x++, y).setType(type, undefined, -1);
                     }
                 }

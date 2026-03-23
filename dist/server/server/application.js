@@ -443,6 +443,12 @@ export class BoloServerWorld extends ServerWorld {
                     // Use obj.idx (not array index) to match the server's object index
                     this.changes.push(['create', obj, obj.idx]);
                 }
+                else {
+                    // Send DESTROY for null slots so the client clears any ghost objects
+                    // that were captured in the initial onConnect sync but have since been
+                    // destroyed (e.g. shells/explosions/fireballs that expired).
+                    this.changes.push(['destroy', null, i]);
+                }
             }
             newClientPacket = this.changesPacket(true, true); // Pass isInitialSync=true
             this.changes = savedChanges; // Restore changes for existing clients
@@ -482,10 +488,16 @@ export class BoloServerWorld extends ServerWorld {
             // Send regular updates to synchronized clients
             if (!client.synchronized)
                 continue;
-            // Skip packets for clients that just synchronized (they already have everything from initial sync)
+            // On the tick after initial sync, skip the UPDATE (already sent everything) but still
+            // deliver the changes-only smallPacket. This ensures DESTROY_MESSAGE for any objects
+            // that die on this tick reach the client — otherwise they become persistent ghost
+            // objects that cause "Message length mismatch" over-reads on every subsequent UPDATE.
             if (client.justSynchronized) {
                 client.justSynchronized = false;
-                continue; // Skip this tick entirely
+                client.send(smallPacket); // Changes (CREATE/DESTROY) but no UPDATE
+                if (teamScoresPacket)
+                    client.send(teamScoresPacket);
+                continue;
             }
             if (client.heartbeatTimer > 40) {
                 client.send(smallPacket);
@@ -684,15 +696,22 @@ export class Application {
                                 res.end(JSON.stringify({ error: 'Failed to load map' }));
                                 return;
                             }
-                            const game = this.createGame(data, tournamentMode);
-                            game.map.name = mapName; // Store map name for reference
-                            res.setHeader('Content-Type', 'application/json');
-                            res.end(JSON.stringify({
-                                gid: game.gid,
-                                url: game.url,
-                                mapName,
-                                playerCount: 0
-                            }));
+                            try {
+                                const game = this.createGame(data, tournamentMode);
+                                game.map.name = mapName; // Store map name for reference
+                                res.setHeader('Content-Type', 'application/json');
+                                res.end(JSON.stringify({
+                                    gid: game.gid,
+                                    url: game.url,
+                                    mapName,
+                                    playerCount: 0
+                                }));
+                            }
+                            catch (mapError) {
+                                console.error(`[MAP ERROR] Failed to parse map '${mapName}':`, mapError.message);
+                                res.statusCode = 400;
+                                res.end(JSON.stringify({ error: `Map parsing failed: ${mapError.message}` }));
+                            }
                         });
                     }
                     catch (e) {

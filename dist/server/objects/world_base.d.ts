@@ -13,6 +13,7 @@ export declare class WorldBase extends BoloObject {
     mines: number;
     refueling?: any;
     refuelCounter: number;
+    private _regenCounter;
     cell: any;
     owner?: any;
     map: any;

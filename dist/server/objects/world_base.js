@@ -19,6 +19,7 @@ export class WorldBase extends BoloObject {
     constructor(world_or_map, x, y, owner_idx, armour, shells, mines) {
         super(arguments.length === 1 ? world_or_map : null);
         this.owner_idx = 255;
+        this._regenCounter = 0;
         this._team = 255;
         this.styled = true;
         this.armour = 0;
@@ -107,27 +108,23 @@ export class WorldBase extends BoloObject {
         this.cell.base = this;
     }
     update() {
-        // Base resource regeneration (only on server)
+        // Base resource regeneration (server authority only).
+        // All three resources regenerate independently in parallel so a depleted
+        // base is playable again within ~90 seconds (1 unit/sec × 90 max capacity).
+        // REGEN_INTERVAL: 50 ticks × 20 ms/tick = 1 unit per second per resource.
         if (this.world.authority) {
-            // Formula: 1 unit per 20 seconds per player
-            // At 50 ticks/second: 20 seconds = 1000 ticks
-            // Probability per tick = playerCount / 1000
-            const playerCount = this.world.tanks.filter((t) => t.armour !== 255).length;
-            const regenRate = playerCount / 1000;
-            if (Math.random() < regenRate) {
-                // Regenerate resources up to max capacity (90)
-                const MAX_BASE_ARMOUR = 90;
-                const MAX_BASE_SHELLS = 90;
-                const MAX_BASE_MINES = 90;
-                if (this.armour < MAX_BASE_ARMOUR) {
+            const REGEN_INTERVAL = 50;
+            const MAX_ARMOUR = 90;
+            const MAX_SHELLS = 90;
+            const MAX_MINES = 90;
+            if (++this._regenCounter >= REGEN_INTERVAL) {
+                this._regenCounter = 0;
+                if (this.armour < MAX_ARMOUR)
                     this.armour++;
-                }
-                else if (this.shells < MAX_BASE_SHELLS) {
+                if (this.shells < MAX_SHELLS)
                     this.shells++;
-                }
-                else if (this.mines < MAX_BASE_MINES) {
+                if (this.mines < MAX_MINES)
                     this.mines++;
-                }
             }
         }
         // Check if we should clear the refueling reference

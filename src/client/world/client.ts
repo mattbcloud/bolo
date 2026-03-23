@@ -16,6 +16,15 @@ import * as helpers from '../../helpers';
 import { Vignette } from '../vignette';
 import BoloClientWorldMixin, { IBoloClientWorldMixin } from './mixin';
 
+// Brain imports
+import { brainOpen } from '../../brain/brain_init';
+import { aIndy_Think } from '../../brain/aindy_think';
+import { buildBrainState, applyControls } from '../../brain/aindy_interface';
+import { A4State } from '../../brain/a4_state';
+
+// Visual effects
+import { DeathOverlay } from '../death_overlay';
+
 const allObjects = allObjectsModule;
 
 // FIXME: Better error handling all around.
@@ -208,6 +217,38 @@ export class BoloClientWorld extends ClientWorld {
   viewMode!: 'tank' | 'pillbox';
   currentPillboxIndex!: number;
   teamScores: number[] = [0, 0, 0, 0, 0, 0];  // Scores for teams 0-5
+
+  // ── Brain state ─────────────────────────────────────────────────────────
+  brainEnabled: boolean = false;
+  brainA4: A4State | null = null;
+  brainTickCount: number = 0;
+
+  // Pre-allocated map arrays (65536 bytes each, reused every tick)
+  private _brainWorldMap:     Uint8Array = new Uint8Array(65536);
+  private _brainDangerMap:    Uint8Array = new Uint8Array(65536);
+  private _brainBlockedMap:   Uint8Array = new Uint8Array(65536);
+  private _brainOccupancyMap: Uint8Array = new Uint8Array(65536);
+  private _brainAllyMap:      Uint8Array = new Uint8Array(65536).fill(0xFF);
+  private _brainSightMap:     Uint8Array = new Uint8Array(65536);
+  private _brainVisitMap:     Uint8Array = new Uint8Array(65536);
+  private _brainOwnerMap:     Uint8Array = new Uint8Array(65536).fill(0x10);
+
+  // Previous-tick control flags (to detect changes and send START/STOP msgs)
+  private _brainPrev = {
+    accelerating: false, braking: false,
+    turningClockwise: false, turningCounterClockwise: false,
+    shooting: false, layingMine: false,
+  };
+
+  // Brain HUD overlay element
+  private _brainIndicator: HTMLElement | null = null;
+
+  // Respawn detection
+  private _brainPrevArmour: number = 40;
+
+  // Death / respawn visual effect
+  private _deathOverlay: DeathOverlay | null = null;
+  private _deathOverlayPrevArmour: number = 40;
 
   constructor() {
     super();
@@ -490,6 +531,7 @@ export class BoloClientWorld extends ClientWorld {
       layMine: 'Tab',
       tankView: 'Enter',
       pillboxView: 'KeyP',
+      toggleBrain: 'KeyB',
       autoSlowdown: true,
       autoGunsight: true
     };
@@ -546,7 +588,7 @@ export class BoloClientWorld extends ClientWorld {
           transform: translate(-50%, -50%);
           width: 500px;
           min-height: 400px;
-          max-height: 600px;
+          max-height: 820px;
           display: flex;
           flex-direction: column;
         ">
@@ -706,6 +748,23 @@ export class BoloClientWorld extends ClientWorld {
               <label style="width: 120px;">Pillbox view:</label>
               <input type="text" readonly class="key-input" data-binding="pillboxView"
                 value="${getFriendlyKeyName(keys.pillboxView)}"
+                style="
+                  width: 80px;
+                  border: 1px solid black;
+                  background: white;
+                  padding: 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
+                ">
+            </div>
+
+            <div style="font-weight: bold; margin-bottom: 8px;">Brain control</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Toggle brain:</label>
+              <input type="text" readonly class="key-input" data-binding="toggleBrain"
+                value="${getFriendlyKeyName(keys.toggleBrain)}"
                 style="
                   width: 80px;
                   border: 1px solid black;
@@ -1853,6 +1912,7 @@ export class BoloClientWorld extends ClientWorld {
   receiveWelcome(tank: any): void {
     this.player = tank;
     this.renderer.initHud();
+    this._deathOverlay = new DeathOverlay();
     this.initChat();
   }
 
@@ -1861,6 +1921,28 @@ export class BoloClientWorld extends ClientWorld {
    */
   tick(): void {
     super.tick();
+
+    // ── Death overlay ─────────────────────────────────────────────────────
+    if (this._deathOverlay && this.player) {
+      const armour = this.player.armour as number;
+      if (this._deathOverlayPrevArmour !== 255 && armour === 255) {
+        this._deathOverlay.triggerDeath();
+      } else if (this._deathOverlayPrevArmour === 255 && armour !== 255) {
+        this._deathOverlay.triggerRespawn();
+      }
+      this._deathOverlayPrevArmour = armour;
+    }
+
+    // ── Brain tick (multiplayer) ──────────────────────────────────────────
+    if (this.brainEnabled && this.brainA4 && this.player) {
+      const armour = this.player.armour as number;
+      if (armour !== 255) {
+        this._runBrainTick();
+      } else {
+        // Dead — ensure we record 255 so respawn is detected next tick
+        this._brainPrevArmour = 255;
+      }
+    }
 
     // Keep brakes engaged during auto slowdown - they'll be released when
     // the player presses Accelerate or manually controls braking
@@ -2002,12 +2084,184 @@ export class BoloClientWorld extends ClientWorld {
     }, 7000);
   }
 
+  // ── Brain methods (multiplayer) ─────────────────────────────────────────
+
+  /** Reset brain navigation/goal state after respawn — same logic as local.ts. */
+  private _brainOnRespawn(): void {
+    const a4 = this.brainA4!;
+    a4.worldCostsInitDone = 0;
+    a4.worldRouteMinX = 0; a4.worldRouteMaxX = 255;
+    a4.worldRouteMinY = 0; a4.worldRouteMaxY = 255;
+    a4.exploreTargetX = 0;
+    a4.exploreTargetY = 0;
+    for (const g of a4.goals) g.cost = 0xFFFF;
+    // Invalidate nav cache
+    a4.navCacheValid = 0;
+
+    a4.newGetPillAPChosen = 0;
+    a4.newGetPillStallTick = 0;
+    a4.killBaseAttackPos = 0;
+    a4.killBaseFirstShotFired = 0;
+    a4.killBaseInProgress = 0;
+    a4.killBaseTarget   = null;
+    a4.baseToGetTarget  = null;
+    a4.pillToGetTarget  = null;
+    a4.pillToFixTarget  = null;
+    a4.tankToKillTarget = null;
+    a4.manToKillTarget  = null;
+    // Also reset sent-control state so we don't send stale STOP messages
+    Object.assign(this._brainPrev, {
+      accelerating: false, braking: false,
+      turningClockwise: false, turningCounterClockwise: false,
+      shooting: false, layingMine: false,
+    });
+  }
+
+  /**
+   * Run one brain tick and translate resulting BrainControls into WebSocket
+   * START/STOP messages so the server-side tank responds correctly.
+   */
+  private _runBrainTick(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const a4 = this.brainA4!;
+
+    // Detect respawn
+    const currentArmour = this.player?.armour as number;
+    if (this._brainPrevArmour === 255 && currentArmour !== 255) {
+      this._brainOnRespawn();
+    }
+    this._brainPrevArmour = currentArmour;
+
+    const state = buildBrainState(
+      this.player,
+      this.map,
+      this.tanks ?? [],
+      this.brainTickCount++,
+      this._brainWorldMap,
+      this._brainDangerMap,
+      this._brainBlockedMap,
+      this._brainOccupancyMap,
+      this._brainAllyMap,
+      this._brainSightMap,
+      this._brainVisitMap,
+      this._brainOwnerMap,
+    );
+
+    // Run the brain — get back raw control words
+    const controls = aIndy_Think(a4, state);
+
+    // Decode control words to boolean flags via a temporary object
+    const next = {
+      accelerating: false, braking: false,
+      turningClockwise: false, turningCounterClockwise: false,
+      shooting: false, layingMine: false,
+    };
+    applyControls(next as any, controls);
+
+    const prev = this._brainPrev;
+    const ws   = this.ws;
+
+    // Send only the deltas (START when flag goes true, STOP when it goes false)
+    if (next.accelerating          !== prev.accelerating)          ws.send(next.accelerating          ? net.START_ACCELERATING   : net.STOP_ACCELERATING);
+    if (next.braking               !== prev.braking)               ws.send(next.braking               ? net.START_BRAKING        : net.STOP_BRAKING);
+    if (next.turningClockwise      !== prev.turningClockwise)      ws.send(next.turningClockwise      ? net.START_TURNING_CW     : net.STOP_TURNING_CW);
+    if (next.turningCounterClockwise !== prev.turningCounterClockwise) ws.send(next.turningCounterClockwise ? net.START_TURNING_CCW : net.STOP_TURNING_CCW);
+    if (next.shooting              !== prev.shooting)              ws.send(next.shooting              ? net.START_SHOOTING       : net.STOP_SHOOTING);
+    if (next.layingMine            !== prev.layingMine)            ws.send(next.layingMine            ? net.START_LAY_MINE       : net.STOP_LAY_MINE);
+
+    // Save for next tick
+    Object.assign(prev, next);
+  }
+
+  /**
+   * Toggle brain control on/off.
+   * On first enable: initialises the A4 state via brainOpen.
+   * On disable: sends STOP messages for any active controls.
+   */
+  toggleBrainControl(): void {
+    if (this.brainEnabled) {
+      // Disengage — stop everything the brain was doing
+      this.brainEnabled = false;
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        const p = this._brainPrev;
+        if (p.accelerating)           this.ws.send(net.STOP_ACCELERATING);
+        if (p.braking)                this.ws.send(net.STOP_BRAKING);
+        if (p.turningClockwise)       this.ws.send(net.STOP_TURNING_CW);
+        if (p.turningCounterClockwise) this.ws.send(net.STOP_TURNING_CCW);
+        if (p.shooting)               this.ws.send(net.STOP_SHOOTING);
+        if (p.layingMine)             this.ws.send(net.STOP_LAY_MINE);
+      }
+      // Reset previous-tick state
+      Object.assign(this._brainPrev, {
+        accelerating: false, braking: false,
+        turningClockwise: false, turningCounterClockwise: false,
+        shooting: false, layingMine: false,
+      });
+      this._hideBrainIndicator();
+    } else {
+      // Engage
+      if (!this.brainA4) {
+        const state = buildBrainState(
+          this.player, this.map, this.tanks ?? [], 0,
+          this._brainWorldMap, this._brainDangerMap,
+          this._brainBlockedMap, this._brainOccupancyMap,
+          this._brainAllyMap, this._brainSightMap,
+          this._brainVisitMap, this._brainOwnerMap,
+        );
+        this.brainA4 = brainOpen(state) ?? new A4State();
+        this.brainTickCount = 1;
+      }
+      this.brainEnabled = true;
+      this._showBrainIndicator();
+    }
+  }
+
+  private _showBrainIndicator(): void {
+    if (this._brainIndicator) return;
+    const el = document.createElement('div');
+    el.id = 'brain-indicator';
+    el.textContent = '🧠 Brain Active';
+    el.style.cssText = `
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 9000;
+      background: #000;
+      color: #fff;
+      font-family: 'Chicago', 'Charcoal', 'Courier New', monospace;
+      font-size: 11px;
+      padding: 4px 10px;
+      border: 2px solid #fff;
+      box-shadow: 2px 2px 0 rgba(255,255,255,0.3);
+      pointer-events: none;
+      user-select: none;
+      letter-spacing: 0.05em;
+    `;
+    document.body.appendChild(el);
+    this._brainIndicator = el;
+  }
+
+  private _hideBrainIndicator(): void {
+    this._brainIndicator?.remove();
+    this._brainIndicator = null;
+  }
+
   // Input handlers
 
   handleKeydown(e: KeyboardEvent): void {
-    if (!this.ws || !this.player || this.ws.readyState !== WebSocket.OPEN) return;
     const code = e.code;
     const kb = (this as any).keyBindings;
+
+    // Brain toggle: works even before WS check (we check inside toggleBrainControl)
+    if (code === kb.toggleBrain) {
+      this.toggleBrainControl();
+      return;
+    }
+
+    if (!this.ws || !this.player || this.ws.readyState !== WebSocket.OPEN) return;
+
+    // When brain is active, player keyboard input is locked out
+    if (this.brainEnabled) return;
 
     if (code === kb.shoot) {
       this.ws.send(net.START_SHOOTING);
@@ -2042,6 +2296,9 @@ export class BoloClientWorld extends ClientWorld {
     if (!this.ws || !this.player || this.ws.readyState !== WebSocket.OPEN) return;
     const code = e.code;
     const kb = (this as any).keyBindings;
+
+    // Brain controls all input while active
+    if (this.brainEnabled) return;
 
     if (code === kb.shoot) {
       this.ws.send(net.STOP_SHOOTING);

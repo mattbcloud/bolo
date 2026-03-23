@@ -206,6 +206,7 @@ export const BoloClientWorldMixin = {
       layMine: 'Tab',
       tankView: 'Enter',
       pillboxView: 'KeyP',
+      toggleBrain: 'KeyB',
       autoSlowdown: true,
       autoGunsight: true
     };

@@ -511,6 +511,11 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
         if (obj) {
           // Use obj.idx (not array index) to match the server's object index
           this.changes.push(['create', obj, obj.idx] as [string, any, number]);
+        } else {
+          // Send DESTROY for null slots so the client clears any ghost objects
+          // that were captured in the initial onConnect sync but have since been
+          // destroyed (e.g. shells/explosions/fireballs that expired).
+          this.changes.push(['destroy', null, i] as [string, any, number]);
         }
       }
       newClientPacket = this.changesPacket(true, true);  // Pass isInitialSync=true
@@ -565,10 +570,15 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       // Send regular updates to synchronized clients
       if (!client.synchronized) continue;
 
-      // Skip packets for clients that just synchronized (they already have everything from initial sync)
+      // On the tick after initial sync, skip the UPDATE (already sent everything) but still
+      // deliver the changes-only smallPacket. This ensures DESTROY_MESSAGE for any objects
+      // that die on this tick reach the client — otherwise they become persistent ghost
+      // objects that cause "Message length mismatch" over-reads on every subsequent UPDATE.
       if (client.justSynchronized) {
         client.justSynchronized = false;
-        continue;  // Skip this tick entirely
+        client.send(smallPacket);  // Changes (CREATE/DESTROY) but no UPDATE
+        if (teamScoresPacket) client.send(teamScoresPacket);
+        continue;
       }
 
       if (client.heartbeatTimer > 40) {

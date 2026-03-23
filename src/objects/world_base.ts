@@ -27,6 +27,7 @@ export class WorldBase extends BoloObject {
   mines: number;
   refueling?: any;
   refuelCounter: number;
+  private _regenCounter: number = 0;
   cell: any;
   owner?: any;
   map: any;
@@ -136,27 +137,21 @@ export class WorldBase extends BoloObject {
   }
 
   update(): void {
-    // Base resource regeneration (only on server)
+    // Base resource regeneration (server authority only).
+    // All three resources regenerate independently in parallel so a depleted
+    // base is playable again within ~90 seconds (1 unit/sec × 90 max capacity).
+    // REGEN_INTERVAL: 50 ticks × 20 ms/tick = 1 unit per second per resource.
     if (this.world.authority) {
-      // Formula: 1 unit per 20 seconds per player
-      // At 50 ticks/second: 20 seconds = 1000 ticks
-      // Probability per tick = playerCount / 1000
-      const playerCount = this.world.tanks.filter((t: any) => t.armour !== 255).length;
-      const regenRate = playerCount / 1000;
+      const REGEN_INTERVAL = 50;
+      const MAX_ARMOUR = 90;
+      const MAX_SHELLS = 90;
+      const MAX_MINES  = 90;
 
-      if (Math.random() < regenRate) {
-        // Regenerate resources up to max capacity (90)
-        const MAX_BASE_ARMOUR = 90;
-        const MAX_BASE_SHELLS = 90;
-        const MAX_BASE_MINES = 90;
-
-        if (this.armour < MAX_BASE_ARMOUR) {
-          this.armour++;
-        } else if (this.shells < MAX_BASE_SHELLS) {
-          this.shells++;
-        } else if (this.mines < MAX_BASE_MINES) {
-          this.mines++;
-        }
+      if (++this._regenCounter >= REGEN_INTERVAL) {
+        this._regenCounter = 0;
+        if (this.armour < MAX_ARMOUR) this.armour++;
+        if (this.shells < MAX_SHELLS) this.shells++;
+        if (this.mines  < MAX_MINES)  this.mines++;
       }
     }
 
