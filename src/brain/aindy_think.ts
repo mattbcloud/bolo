@@ -102,6 +102,11 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
   // ── Step 12: Goal dispatch (13-way) ───────────────────────────────────────
   dispatchGoal(a4, state, currentGoal);
 
+  // ── Step 12b: Save GetBase goal state for next tick ───────────────────────
+  // getBaseWasLastGoal is read by baseToGet() (sticky target) and
+  // getBaseGoalCost() (hysteresis discount) on the NEXT tick.
+  a4.getBaseWasLastGoal = (currentGoal === Goal.GET_BASE) ? 1 : 0;
+
   // ── Step 13: DoCommonStuff (0x008212) ─────────────────────────────────────
   doCommonStuff(a4, state);
 

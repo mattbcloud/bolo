@@ -97,13 +97,40 @@ export function baseToKill(a4: A4State, state: BrainState): BaseState | null {
  * BaseToGet (0x00c0c6) — Select enemy base to capture.
  *
  * Finds the nearest capturable enemy/neutral base.
+ *
+ * Intentional base-seeking improvements:
+ *   - Sticky committed target: while GetBase was active last tick, returns
+ *     the previously-committed base (by index) instead of re-ranking all
+ *     bases. This prevents mid-navigation target switching as the tank moves
+ *     and the distance rankings shuffle.
+ *   - Fresh selection only when: (a) GetBase was NOT the last goal, (b) the
+ *     committed base has been captured (isAlly), or (c) no committed target.
  */
 export function baseToGet(a4: A4State, state: BrainState): BaseState | null {
+  // ── Sticky committed target ───────────────────────────────────────────────
+  // If GetBase was running last tick and we have a committed target, honour it.
+  // BaseState objects are recreated each tick, so commit is stored by index.
+  if (a4.getBaseWasLastGoal && a4.getBaseCommittedIndex >= 0) {
+    const committed = a4.bases[a4.getBaseCommittedIndex] ?? null;
+    if (committed !== null && !committed.isAlly) {
+      // Still a valid capturable target — stay the course
+      return committed;
+    }
+    // Base was captured or removed — clear commitment, fall through to fresh pick
+    a4.getBaseCommittedIndex = -1;
+  }
+
+  // ── Fresh selection ───────────────────────────────────────────────────────
   let best: BaseState | null = null;
   let bestCost = 0xFFFF;
 
   for (const base of a4.bases) {
     if (base.isAlly) continue;                      // skip own bases
+    // Skip bases that recently timed out (cooldown blacklist)
+    if (
+      base.index < a4.getBaseFailedUntilTick.length &&
+      a4.tickCounter < a4.getBaseFailedUntilTick[base.index]
+    ) continue;
 
     const cost = getBaseCostForBase(a4, state, base);
     if (cost < bestCost) {
@@ -112,6 +139,8 @@ export function baseToGet(a4: A4State, state: BrainState): BaseState | null {
     }
   }
 
+  // Commit to the newly chosen base
+  a4.getBaseCommittedIndex = best !== null ? best.index : -1;
   return best;
 }
 
@@ -363,11 +392,42 @@ export function fixPillGoalCost(a4: A4State, state: BrainState): number {
 
 /**
  * GetBase goal cost — uses BaseToGet target.
+ *
+ * Intentional base-seeking improvements over raw distance cost:
+ *
+ *   1. Proximity lock-in (≤ 6 tiles): once close enough to a base, return
+ *      cost=0 so GetBase beats every other goal and the tank finishes the
+ *      approach. Guard: skipped when armor ≤ 10 (emergency refuel first).
+ *
+ *   2. Hysteresis discount (−30): when GetBase was the winning goal last tick,
+ *      shave 30 from the cost. This means a competing goal must beat GetBase
+ *      by >30 to steal focus mid-navigation, preventing thrashing when costs
+ *      are nearly tied.
  */
 export function getBaseGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.baseToGetTarget;
   if (target === null) return 0xFFFF;
-  return getBaseCostForBase(a4, state, target);
+
+  // ── Proximity lock-in ─────────────────────────────────────────────────────
+  // Within 6 tiles of target: finish what we started — highest priority.
+  // Exception: critically low armor (≤ 10) lets emergency refuel override.
+  const distTiles = target.distToTank >> 8;
+  if (distTiles <= 6 && state.tank.armor > 10) {
+    return 0;
+  }
+
+  let cost = getBaseCostForBase(a4, state, target);
+
+  // ── Hysteresis discount ───────────────────────────────────────────────────
+  // Competing goals must beat GetBase by >30 to take over while en route.
+  // Guard: only apply when armor > 15 so emergency refuel can always override.
+  // Clamp to 1 (not 0) — cost=0 is reserved for the explicit proximity lock-in
+  // above (within 6 tiles, armor checked there separately).
+  if (a4.getBaseWasLastGoal && state.tank.armor > 15) {
+    cost = Math.max(1, cost - 30);
+  }
+
+  return u16(cost);
 }
 
 /**

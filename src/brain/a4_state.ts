@@ -669,6 +669,49 @@ export class A4State {
   /** A4[13923] byte — GetBase: team-mismatch flag */
   getBaseTeamMismatch = 0;
 
+  /**
+   * Committed base index for intentional base capture.
+   * baseToGet() returns this base (by index) while GetBase is active,
+   * preventing mid-navigation target switching as the tank moves.
+   * -1 means no committed target.
+   */
+  getBaseCommittedIndex = -1;
+
+  /**
+   * Set to 1 after a tick where GetBase was the winning goal.
+   * Used by baseToGet() to decide whether to honor the sticky committed target,
+   * and by getBaseGoalCost() to apply a hysteresis discount.
+   */
+  getBaseWasLastGoal = 0;
+
+  /**
+   * Closest tile-distance ever achieved to the committed base target.
+   * Reset to 0xFFFF when commitment changes. Used for patience timeout.
+   */
+  getBaseMinDistSeen = 0xFFFF;
+
+  /**
+   * Tick when getBaseMinDistSeen last improved (got smaller).
+   * If (tickCounter - getBaseLastImprovedTick) > PATIENCE_LIMIT ticks
+   * and we're still far away, the commitment is abandoned.
+   */
+  getBaseLastImprovedTick = 0;
+
+  /**
+   * Index of the committed base from the PREVIOUS goalGetBase() call.
+   * Used to detect target changes by index (object refs change every tick
+   * since BaseState is rebuilt in buildBrainState each tick).
+   */
+  getBasePrevCommittedIndex = -1;
+
+  /**
+   * Per-base cooldown expiry ticks. When a patience timeout fires on base[i],
+   * getBaseFailedUntilTick[i] is set to tickCounter + 5000. baseToGet() skips
+   * bases where tickCounter < getBaseFailedUntilTick[base.index].
+   * Array length 16 — more than enough for any Bolo map.
+   */
+  getBaseFailedUntilTick: Uint32Array = new Uint32Array(16);
+
   // ── GetMan state ───────────────────────────────────────────────────────────
 
   /** A4[13046] byte — GetMan: man-dispatched flag */

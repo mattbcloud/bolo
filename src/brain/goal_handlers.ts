@@ -274,7 +274,9 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
   const target = a4.baseToGetTarget;
   if (target === null) return;
 
-  // Target change detection
+  // Original change detection (object-ref based) — for team message flag only.
+  // NOTE: BaseState objects are recreated every tick so this fires every tick,
+  // which is fine for the team-mismatch flag but NOT for patience counters.
   if (target !== a4.getBaseChangeDetectionPtr) {
     a4.getBaseChangeDetectionPtr = target;
     a4.killBaseCurrentTarget = target;  // KillBase target copy
@@ -286,6 +288,42 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
     }
   }
 
+  // ── Patience timeout (index-based change detection) ────────────────────────
+  // BaseState objects are recreated each tick, so we track by INDEX.
+  // When the committed base index changes, reset patience counters.
+  if (a4.getBaseCommittedIndex !== a4.getBasePrevCommittedIndex) {
+    a4.getBasePrevCommittedIndex  = a4.getBaseCommittedIndex;
+    a4.getBaseMinDistSeen         = 0xFFFF;
+    a4.getBaseLastImprovedTick    = a4.tickCounter;
+  }
+
+  // Track the minimum tile-distance ever achieved to this base.
+  // If distance hasn't improved in 1500 ticks (~30s) AND we're still far
+  // away (> 8 tiles), the tank is circling without getting closer — abandon
+  // this commitment and let baseToGet() pick a fresher target next tick.
+  const PATIENCE_TICKS = 1500;
+  const distTiles = target.distToTank >> 8;
+  if (distTiles < a4.getBaseMinDistSeen) {
+    a4.getBaseMinDistSeen      = distTiles;
+    a4.getBaseLastImprovedTick = a4.tickCounter;
+  } else if (
+    a4.getBaseMinDistSeen > 8 &&
+    (a4.tickCounter - a4.getBaseLastImprovedTick) > PATIENCE_TICKS
+  ) {
+    // Stuck too long without progress — blacklist this base for 5000 ticks
+    // so the selector picks a different base rather than immediately retrying.
+    const failedIdx = a4.getBaseCommittedIndex;
+    if (failedIdx >= 0 && failedIdx < a4.getBaseFailedUntilTick.length) {
+      a4.getBaseFailedUntilTick[failedIdx] = (a4.tickCounter + 5000) >>> 0;
+    }
+    a4.baseToGetTarget           = null;
+    a4.getBaseCommittedIndex     = -1;
+    a4.getBasePrevCommittedIndex = -1;
+    a4.getBaseMinDistSeen        = 0xFFFF;
+    a4.noLocalRouteFlag          = 0;
+    return;
+  }
+
   // Navigate to base — Orona captures the base automatically when the tank
   // drives over it. No builder dispatch needed.
   navigateToCoords(a4, target.x, target.y, 0);
@@ -293,8 +331,10 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
   // If navigation signals this destination is unreachable (solid wall between
   // tank and base, A* got ∞ for tank tile), clear the target so the selector
   // picks a different base next tick rather than getting stuck forever.
+  // Also clear the committed index so baseToGet() does a fresh selection.
   if (a4.noLocalRouteFlag) {
     a4.baseToGetTarget = null;
+    a4.getBaseCommittedIndex = -1;   // force fresh selection next tick
     a4.noLocalRouteFlag = 0;
   }
 
