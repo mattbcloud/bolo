@@ -39,10 +39,11 @@ function barrierCount(a4: A4State, fromX: number, fromY: number, toX: number, to
     const y = (fromY + Math.round(sdy * i / steps)) & 0xFFFF;
     const cell = a4.worldMap[(((y >> 8) & 0xFF) << 8) | ((x >> 8) & 0xFF)];
     const t = cell & 0x0F;
-    // Count only terrain that physically blocks tank movement: wall, forest,
-    // shot-wall. Water (0x80 flag) is intentionally excluded — tanks can
-    // navigate open sea, river-with-boat, etc., just more slowly.
-    if (t === 0 || t === 5 || t === 8) count++;
+    // Count only terrain that stops shots: forest (5) absorbs shells.
+    // Walls (0) and shot-walls (8) are NOT barriers — shots pass through them.
+    // Water (0x80) is also excluded here since this function scores line-of-fire
+    // for pill approach cost, and water is handled separately by navigation.
+    if (t === 5) count++;
   }
   return count;
 }

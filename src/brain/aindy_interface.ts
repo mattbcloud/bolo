@@ -560,8 +560,10 @@ export function buildBrainState(
         const cell = worldMap[idx];
         const terrain = cell & 0x0F;
 
-        // Stop ray at wall, forest, or water
-        if (terrain === 0 || terrain === 5 || terrain === 8 || (cell & 0x80)) break;
+        // Stop ray at forest or water — NOT walls (shots pass through walls in Bolo).
+        // Walls (terrain 0) and shot-walls (terrain 8) are penetrated by pillbox fire,
+        // so tiles behind walls are still in the danger zone.
+        if (terrain === 5 || (cell & 0x80)) break;
 
         // Mark danger by distance tier
         const danger: number = r <= 2 ? 3 : r <= 4 ? 2 : 1;

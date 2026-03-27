@@ -203,11 +203,11 @@ export function checkBarriers(
     const cell  = a4.worldMap[((tileY & 0xFF) << 8) | (tileX & 0xFF)];
     const terrain = cell & 0x0F;
 
-    // Barrier terrain: wall=0, forest=5, shot-wall=8
-    if (terrain === 0 || terrain === 5 || terrain === 8) {
+    // Barrier terrain for shots: only forest (5) and water (0x80 flag).
+    // Walls (0) and shot-walls (8) are NOT barriers — tank shots pass through
+    // them in Bolo.  Forest is kept as a soft barrier because it absorbs shots.
+    if (terrain === 5 || (cell & 0x80)) {
       barriers++;
-    } else if (cell & 0x80) {
-      barriers++;   // water flag
     }
   }
 
@@ -459,10 +459,11 @@ export function shootPill(
       return 1;
     }
 
-    // Shot blocked by barrier
+    // Shots pass through walls (terrain 0) and shot-walls (terrain 8) in Bolo.
+    // Only forest (5) and water (0x80) stop the simulated trajectory.
     const cell    = a4.worldMap[((sty & 0xFF) << 8) | (stx & 0xFF)];
     const terrain = cell & 0x0F;
-    if (terrain === 0 || terrain === 5 || terrain === 8 || (cell & 0x80)) break;
+    if (terrain === 5 || (cell & 0x80)) break;
   }
 
   return 0;   // shot does not reach pill
