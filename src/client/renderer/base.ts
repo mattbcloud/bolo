@@ -18,6 +18,23 @@ import TEAM_COLORS from '../../team_colors';
 
 const { min: mathMin, max: mathMax, round: mathRound, cos: mathCos, sin: mathSin, PI: mathPI, sqrt: mathSqrt } = Math;
 
+/**
+ * One animated smoke blob in the fog overlay.
+ * The blurred ellipse is pre-rendered to `canvas` once (in initFogBlobs) so
+ * that every animation frame only needs a cheap drawImage blit — no per-frame
+ * filter / rasterisation cost.
+ */
+interface FogBlob {
+  baseBx: number;    // home x (fog zone, px)
+  baseBy: number;    // home y (fog zone, px)
+  phase: number;     // oscillation phase offset (radians)
+  speed: number;     // oscillation speed (radians / ms)
+  amplitude: number; // drift radius (px)
+  canvas: HTMLCanvasElement; // pre-rendered blurred ellipse texture
+  halfW: number;     // canvas.width  / 2  (for centering on bx/by)
+  halfH: number;     // canvas.height / 2
+}
+
 export class BaseRenderer {
   world: any;
   images: any;
@@ -31,6 +48,16 @@ export class BaseRenderer {
   baseIndicators?: Array<[HTMLDivElement, any]>;
   playerIndicators?: Array<HTMLDivElement>;
   currentTool: string | null = null;
+  fogCanvas?: HTMLCanvasElement;          // animated overlay (composited each frame)
+  fogCtx?: CanvasRenderingContext2D;
+  fogStaticCanvas?: HTMLCanvasElement;    // offscreen: static dark fog + hole punch
+  fogStaticCtx?: CanvasRenderingContext2D;
+  fogBlobs: FogBlob[] = [];              // animated cloud blobs
+  fogLastDraw: number = 0;              // timestamp of last fog redraw (ms)
+  fogCx: number = 0;                    // visible-window left edge (px, updated on resize)
+  fogCy: number = 0;                    // visible-window top  edge (px, updated on resize)
+  fogBlobCanvas?: HTMLCanvasElement;     // offscreen: blobs masked to fog zone
+  fogBlobCtx?: CanvasRenderingContext2D;
 
   /**
    * The constructor takes a reference to the World it needs to draw. Once the constructor finishes,
@@ -53,6 +80,7 @@ export class BaseRenderer {
     });
 
     this.setup();
+    this.initFogOfWar();
 
     this.handleResize();
     window.addEventListener('resize', () => this.handleResize());
@@ -62,6 +90,205 @@ export class BaseRenderer {
    * Subclasses use this as their constructor.
    */
   setup(): void {}
+
+  /**
+   * Create the fog of war overlay canvas. A fixed-position canvas sits above the game canvas
+   * (z-index 99, below the HUD at 100) and masks the visible area to a 300×300 pixel window
+   * centered on screen with a soft gradient fade at the edges.
+   */
+  initFogOfWar(): void {
+    // Visible overlay canvas (animated blobs composited here every frame).
+    this.fogCanvas = document.createElement('canvas');
+    this.fogCanvas.style.position = 'fixed';
+    this.fogCanvas.style.top = '0';
+    this.fogCanvas.style.left = '0';
+    this.fogCanvas.style.pointerEvents = 'none';
+    this.fogCanvas.style.zIndex = '99';
+    document.body.appendChild(this.fogCanvas);
+    this.fogCtx = this.fogCanvas.getContext('2d')!;
+
+    // Offscreen canvas for the static dark fog + Gaussian hole punch.
+    this.fogStaticCanvas = document.createElement('canvas');
+    this.fogStaticCtx = this.fogStaticCanvas.getContext('2d')!;
+
+    // Offscreen canvas that holds blobs pre-masked to the fog zone each frame.
+    this.fogBlobCanvas = document.createElement('canvas');
+    this.fogBlobCtx = this.fogBlobCanvas.getContext('2d')!;
+
+    // Lightweight rAF heartbeat — keeps fog animating in the lobby (when the
+    // game's draw() loop isn't running).  On skipped frames updateFogIfDue
+    // returns after a single number comparison, so this adds negligible cost.
+    const tick = (now: number) => {
+      this.updateFogIfDue(now);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  /**
+   * Render the fog of war mask onto the fog canvas. The visible window is 300×300 pixels,
+   * centered on screen.
+   *
+   * Technique: a single CSS-blurred rectangle is punched through the fog with
+   * destination-out. The rect is padded 3× the blur sigma beyond the visible edges,
+   * placing the visible boundary ~3σ inside the fully-erased zone (~99.97% clear —
+   * imperceptible residual). Because the falloff is a continuous Gaussian on both the
+   * inner and outer sides, there are no hard lines at any window size. No secondary
+   * hard-clear rect is drawn (that was the source of the inner seam in earlier versions).
+   *
+   * The smoke blob animation is handled by `initFogBlobs` / `startFogAnimation` /
+   * `drawFogFrame`. The static dark layer is drawn once (on resize) to `fogStaticCanvas`
+   * by `drawFog`, then blitted cheaply every frame.
+   */
+  /**
+   * Draw only the static parts of the fog (dark base + Gaussian hole punch) to
+   * `fogStaticCanvas`. This is expensive (blurred rect) so it runs only on resize.
+   * The animated blob layer is composited on top each frame by `drawFogFrame`.
+   */
+  drawFog(): void {
+    if (!this.fogStaticCanvas || !this.fogStaticCtx) return;
+
+    const vw = 300;
+    const vh = 300;
+    const blurPx = 45;
+    const pad = blurPx * 3; // 3σ → visible edges are 99.97% clear
+
+    const fw = this.fogStaticCanvas.width;
+    const fh = this.fogStaticCanvas.height;
+    const cx = Math.round((fw - vw) / 2);
+    const cy = Math.round((fh - vh) / 2);
+
+    const ctx = this.fogStaticCtx;
+    ctx.clearRect(0, 0, fw, fh);
+
+    // Solid base fog — fully opaque so nothing bleeds through outside the window.
+    ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+    ctx.fillRect(0, 0, fw, fh);
+
+    // Single Gaussian hole punch — smooth on both inner and outer edges, no seams.
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.filter = `blur(${blurPx}px)`;
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.fillRect(cx - pad, cy - pad, vw + pad * 2, vh + pad * 2);
+    ctx.restore();
+  }
+
+  /**
+   * Populate `fogBlobs` with home positions scattered around the visible-window
+   * perimeter in the fog zone. Call this whenever the window is resized.
+   */
+  initFogBlobs(cx: number, cy: number, vw: number, vh: number, minOut: number, maxOut: number): void {
+    // Seeded PRNG so layout is deterministic (same look every session / resize).
+    let seed = 12345;
+    const rand = (): number => {
+      seed = Math.imul(seed, 1664525) + 1013904223 | 0;
+      return (seed >>> 0) / 0xffffffff;
+    };
+
+    this.fogBlobs = [];
+    const perimeter = 2 * (vw + vh);
+
+    for (let i = 0; i < 70; i++) {
+      // Pick a point on the visible-window perimeter
+      const pPos = rand() * perimeter;
+      let bx: number, by: number;
+      if (pPos < vw) {
+        bx = cx + pPos;               by = cy;
+      } else if (pPos < vw + vh) {
+        bx = cx + vw;                 by = cy + (pPos - vw);
+      } else if (pPos < 2 * vw + vh) {
+        bx = cx + vw - (pPos - vw - vh); by = cy + vh;
+      } else {
+        bx = cx;                      by = cy + vh - (pPos - 2 * vw - vh);
+      }
+
+      // Push outward from the window centre into the fog zone
+      const dx = bx - (cx + vw / 2);
+      const dy = by - (cy + vh / 2);
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      const outward = minOut + rand() * (maxOut - minOut);
+      bx += (dx / len) * outward;
+      by += (dy / len) * outward;
+
+      // Draw parameters (only needed here for pre-rendering)
+      const rx       = 70 + rand() * 100;  // 70–170 px  (was 20–75)
+      const ry       = 45 + rand() * 70;   // 45–115 px  (was 12–50)
+      const rotation = rand() * mathPI;
+      const blobBlur = 18 + rand() * 28;   // 18–46 px   (was 8–30)
+      const opacity  = 0.10 + rand() * 0.22; // slightly more subtle at large size
+
+      // Pre-render the blurred ellipse to a small offscreen canvas.
+      // A blurred ellipse needs ~3σ of padding on every side so the
+      // Gaussian doesn't get clipped at the canvas edge.
+      const blurPad  = Math.ceil(blobBlur * 3);
+      const halfSize = Math.ceil(Math.max(rx, ry));  // covers any rotation
+      const blobW    = (halfSize + blurPad) * 2;
+      const blobH    = (halfSize + blurPad) * 2;
+      const bc       = document.createElement('canvas');
+      bc.width  = blobW;
+      bc.height = blobH;
+      const bctx = bc.getContext('2d')!;
+      bctx.filter    = `blur(${blobBlur}px)`;
+      // Smoke-grey — lighter than the near-black fog so the blob is actually visible
+      // as a lighter cloud shape when composited on top of the dark fog layer.
+      bctx.fillStyle = `rgba(90, 95, 110, ${opacity})`;
+      bctx.beginPath();
+      bctx.ellipse(blobW / 2, blobH / 2, rx, ry, rotation, 0, mathPI * 2);
+      bctx.fill();
+
+      this.fogBlobs.push({
+        baseBx:    bx,
+        baseBy:    by,
+        phase:     rand() * mathPI * 2,
+        speed:     0.00018 + rand() * 0.00022,   // 28–58 s per cycle — visibly drifting
+        amplitude: 18 + rand() * 32,            // 18–50 px drift — clearly perceptible
+        canvas:    bc,
+        halfW:     blobW / 2,
+        halfH:     blobH / 2,
+      });
+    }
+  }
+
+  /**
+   * Called from the game's own draw() loop — no separate rAF needed.
+   * Redraws the fog canvas at most 12 fps; in between, the browser compositor
+   * reuses the unchanged fog canvas texture for free.
+   * `now` is the DOMHighResTimeStamp already available in the game frame.
+   */
+  updateFogIfDue(now: number): void {
+    const FOG_INTERVAL = 1000 / 12; // ~83 ms between redraws
+    if (now - this.fogLastDraw < FOG_INTERVAL) return;
+    this.fogLastDraw = now;
+
+    if (!this.fogCanvas || !this.fogCtx || !this.fogStaticCanvas || !this.fogBlobCanvas || !this.fogBlobCtx) return;
+
+    const fw = this.fogStaticCanvas.width;
+    const fh = this.fogStaticCanvas.height;
+
+    // ── Pass A: build masked blob layer on fogBlobCanvas ────────────────────
+    const bctx = this.fogBlobCtx;
+    bctx.clearRect(0, 0, fw, fh);
+
+    if (this.fogBlobs.length > 0) {
+      for (const b of this.fogBlobs) {
+        const bx = b.baseBx + Math.cos(now * b.speed + b.phase)       * b.amplitude;
+        const by = b.baseBy + Math.sin(now * b.speed * 0.7 + b.phase) * b.amplitude;
+        bctx.drawImage(b.canvas, bx - b.halfW, by - b.halfH);
+      }
+      // Mask blobs to the fog zone via the static canvas alpha (Gaussian edge —
+      // no hard line). destination-in: result alpha = blob alpha × static alpha.
+      bctx.globalCompositeOperation = 'destination-in';
+      bctx.drawImage(this.fogStaticCanvas, 0, 0);
+      bctx.globalCompositeOperation = 'source-over';
+    }
+
+    // ── Pass B: composite onto the visible fogCanvas ─────────────────────────
+    const ctx = this.fogCtx;
+    ctx.clearRect(0, 0, fw, fh);
+    ctx.drawImage(this.fogStaticCanvas, 0, 0);  // dark base
+    ctx.drawImage(this.fogBlobCanvas, 0, 0);     // smoke blobs on top
+  }
 
   /**
    * This methods takes x and y coordinates to center the screen on. The callback provided should be
@@ -161,6 +388,9 @@ export class BaseRenderer {
     if (this.hud) {
       this.updateHud();
     }
+
+    // Update fog blobs in sync with the game frame (no competing rAF loop).
+    this.updateFogIfDue(performance.now());
   }
 
   /**
@@ -240,6 +470,26 @@ export class BaseRenderer {
     // Adjust the body as well, to prevent accidental scrolling on some browsers.
     document.body.style.width = `${window.innerWidth}px`;
     document.body.style.height = `${window.innerHeight}px`;
+
+    // Resize both fog canvases, redraw the static base, and re-place the blobs.
+    if (this.fogCanvas && this.fogStaticCanvas && this.fogBlobCanvas) {
+      this.fogCanvas.width        = window.innerWidth;
+      this.fogCanvas.height       = window.innerHeight;
+      this.fogStaticCanvas.width  = window.innerWidth;
+      this.fogStaticCanvas.height = window.innerHeight;
+      this.fogBlobCanvas.width    = window.innerWidth;
+      this.fogBlobCanvas.height   = window.innerHeight;
+      this.drawFog(); // re-render static layer at new size
+
+      const vw = 300, vh = 300, blurPx = 45, pad = blurPx * 3;
+      const cx = Math.round((window.innerWidth  - vw) / 2);
+      const cy = Math.round((window.innerHeight - vh) / 2);
+      this.fogCx = cx;
+      this.fogCy = cy;
+      // minOut = pad (135 px) keeps base positions well outside the visible window;
+      // maxOut = pad * 2.5 spreads blobs deeper into the fog zone.
+      this.initFogBlobs(cx, cy, vw, vh, pad, pad * 2.5);
+    }
   }
 
   handleClick(e: MouseEvent): void {
