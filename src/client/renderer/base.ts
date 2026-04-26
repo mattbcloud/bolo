@@ -58,6 +58,7 @@ export class BaseRenderer {
   fogCy: number = 0;                    // visible-window top  edge (px, updated on resize)
   fogBlobCanvas?: HTMLCanvasElement;     // offscreen: blobs masked to fog zone
   fogBlobCtx?: CanvasRenderingContext2D;
+  fogSeed: number = (Math.random() * 0xffffffff) | 0; // randomised once per session
 
   /**
    * The constructor takes a reference to the World it needs to draw. Once the constructor finishes,
@@ -179,8 +180,9 @@ export class BaseRenderer {
    * perimeter in the fog zone. Call this whenever the window is resized.
    */
   initFogBlobs(cx: number, cy: number, vw: number, vh: number, minOut: number, maxOut: number): void {
-    // Seeded PRNG so layout is deterministic (same look every session / resize).
-    let seed = 12345;
+    // Use the session seed (set once at class init) so positions differ each
+    // page load but stay stable across window resizes within the same session.
+    let seed = this.fogSeed;
     const rand = (): number => {
       seed = Math.imul(seed, 1664525) + 1013904223 | 0;
       return (seed >>> 0) / 0xffffffff;
