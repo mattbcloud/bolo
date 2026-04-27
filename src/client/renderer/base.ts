@@ -585,6 +585,96 @@ export class BaseRenderer {
     this.initHudToolSelect();
     this.initHudNotices();
     this.updateHud();
+
+    // Make every panel draggable; saved positions are restored from localStorage.
+    const panels = ['tankStatus', 'pillStatus', 'baseStatus', 'playersStatus', 'statsStatus', 'tool-select'];
+    for (const id of panels) {
+      const el = document.getElementById(id);
+      if (el) this.makeDraggable(el, id);
+    }
+  }
+
+  /**
+   * Make a HUD panel repositionable by dragging. A 4-pixel threshold separates
+   * a drag from a normal click so child controls (radio buttons, etc.) still work.
+   * The final position is written to localStorage under `hud-<key>` and restored
+   * automatically on the next page load.
+   */
+  makeDraggable(el: HTMLElement, key: string): void {
+    // Restore a previously saved position.
+    const raw = localStorage.getItem(`hud-${key}`);
+    if (raw) {
+      try {
+        const { top, left } = JSON.parse(raw) as { top: number; left: number };
+        el.style.top    = `${top}px`;
+        el.style.left   = `${left}px`;
+        el.style.bottom = '';
+        el.style.right  = '';
+      } catch { /* ignore malformed data and keep CSS defaults */ }
+    }
+
+    el.style.cursor = 'grab';
+
+    el.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      // Let INPUT and LABEL elements handle their own click behaviour.
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'LABEL') return;
+
+      const rect   = el.getBoundingClientRect();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startL = rect.left;
+      const startT = rect.top;
+      let dragging  = false;
+
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+
+        if (!dragging) {
+          // Require at least 4 px of movement before committing to a drag.
+          if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+          dragging = true;
+          // Anchor the element with explicit top/left so bottom/right don't fight us.
+          el.style.left        = `${startL}px`;
+          el.style.top         = `${startT}px`;
+          el.style.right       = '';
+          el.style.bottom      = '';
+          el.style.cursor      = 'grabbing';
+          el.style.zIndex      = '200';
+          el.style.userSelect  = 'none';
+          // Prevent text in other HUD elements from being selected during drag.
+          document.body.style.userSelect = 'none';
+        }
+
+        // Snap to an 8-pixel grid, then clamp to the viewport.
+        const GRID  = 8;
+        const snap  = (v: number) => Math.round(v / GRID) * GRID;
+        const maxL  = window.innerWidth  - el.offsetWidth;
+        const maxT  = window.innerHeight - el.offsetHeight;
+        el.style.left = `${snap(Math.max(0, Math.min(maxL, startL + dx)))}px`;
+        el.style.top  = `${snap(Math.max(0, Math.min(maxT, startT + dy)))}px`;
+      };
+
+      const onUp = () => {
+        if (dragging) {
+          el.style.cursor                = 'grab';
+          el.style.zIndex                = '';
+          el.style.userSelect            = '';
+          document.body.style.userSelect = ''; // re-enable selection everywhere
+          localStorage.setItem(`hud-${key}`, JSON.stringify({
+            top:  parseFloat(el.style.top),
+            left: parseFloat(el.style.left),
+          }));
+        }
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup',   onUp);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup',   onUp);
+    });
   }
 
   initHudTankStatus(): void {
@@ -737,15 +827,40 @@ export class BaseRenderer {
   initHudToolSelect(): void {
     this.currentTool = null;
     const tools = document.createElement('div');
-    tools.id = 'tool-select';
+    tools.id    = 'tool-select';
+    tools.title = 'Double-click to switch horizontal / vertical';
     this.hud!.appendChild(tools);
 
     for (const toolType of ['forest', 'road', 'building', 'pillbox', 'mine']) {
       this.initHudTool(tools, toolType);
     }
 
-    // Note: jQuery UI buttonset() functionality would need to be implemented separately
-    // or replaced with a modern UI library
+    // Apply orientation via inline styles (avoids CSS hot-reload timing issues).
+    const applyOrient = (vertical: boolean) => {
+      tools.style.width      = vertical ? '56px'  : '280px';
+      tools.style.marginLeft = vertical ? '0'     : '-140px';
+      tools.style.textAlign  = vertical ? 'left'  : 'center';
+
+      for (const lbl of Array.from(tools.querySelectorAll<HTMLElement>('label'))) {
+        lbl.style.display      = vertical ? 'block' : '';
+        lbl.style.marginRight  = vertical ? '0'     : '';
+        lbl.style.marginBottom = vertical ? '2px'   : '';
+      }
+
+      localStorage.setItem('hud-tool-orient', vertical ? 'vertical' : 'horizontal');
+    };
+
+    // Restore saved orientation.
+    applyOrient(localStorage.getItem('hud-tool-orient') === 'vertical');
+
+    // Document-level dblclick: fires anywhere inside the tray.
+    // Using document-level so nothing between the tray and document can swallow it.
+    document.addEventListener('dblclick', (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest || !target.closest('#tool-select')) return;
+      e.preventDefault();
+      applyOrient(tools.style.width !== '56px');
+    });
   }
 
   /**

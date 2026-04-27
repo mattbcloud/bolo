@@ -205,6 +205,19 @@ canvas {
   cursor: pointer;
 }
 
+/* Vertical orientation */
+#tool-select.vertical {
+  width: 56px;
+  margin-left: 0;
+  text-align: left;
+}
+#tool-select.vertical label {
+  display: block;
+  margin-right: 0;
+  margin-bottom: 2px;
+}
+
+
 #tool-select label .bolo-tool {
   border: 2px solid black;
   border-radius: 4px;

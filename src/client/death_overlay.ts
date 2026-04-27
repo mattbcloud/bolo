@@ -5,20 +5,27 @@
  * events rather than fixed durations:
  *
  *   triggerDeath()   → waits for the fireball animation to finish
- *                      (80 ticks × 20 ms = 1 600 ms), then fades in to static
+ *                      (80 ticks + 23-tick trailing explosions + buffer = 2 100 ms),
+ *                      then fades in to static
  *   triggerRespawn() → starts fading out; the static clears as the freshly-
  *                      spawned tank is revealed
  *
  * Phase flow:
- *   idle ──[triggerDeath]──► delay (1 600 ms) ──► fade-in (500 ms)
+ *   idle ──[triggerDeath]──► delay (2 100 ms) ──► fade-in (500 ms)
  *   ──► hold (until triggerRespawn) ──► fade-out (750 ms) ──► idle
  *
  * Z-index 99 puts the overlay above the game canvas (z 0) but below the
  * HUD (z 100), so all HUD elements remain visible throughout.
  */
 
-/** How long to wait after death before showing static (fireball duration). */
-const FIREBALL_DELAY_MS = 1_600; // 80 ticks × 20 ms/tick
+/**
+ * How long to wait after death before showing static.
+ * = fireball lifespan (80 ticks) + trailing explosion lifespan (23 ticks) + 2-tick buffer
+ * = 105 ticks × 20 ms/tick = 2 100 ms
+ * The last Explosion object is created at fireball tick 79 and lives 23 more ticks,
+ * so the full visual animation ends at tick 102 (2 040 ms). We add a small buffer.
+ */
+const FIREBALL_DELAY_MS = 2_100; // 105 ticks × 20 ms/tick
 
 const FADE_IN_MS  = 500;
 const FADE_OUT_MS = 750; // slightly longer — lets the player see the respawned tank emerge
