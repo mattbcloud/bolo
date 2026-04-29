@@ -12,6 +12,7 @@ export interface BoloWorldMixin {
   boloInit(): void;
   addTank(tank: any): void;
   removeTank(tank: any): void;
+  reclaimTeamObjects(tank: any): void;
   getAllMapObjects(): any[];
   spawnMapObjects(): void;
   resolveMapObjectOwners(): void;
@@ -31,10 +32,38 @@ export const BoloWorldMixin = {
   addTank(this: any, tank: any): void {
     tank.tank_idx = this.tanks.length;
     this.tanks.push(tank);
-    if (this.authority) this.resolveMapObjectOwners();
+    if (this.authority) {
+      this.resolveMapObjectOwners();
+      // Restore abandoned bases/pillboxes for this team so that enemy tanks
+      // must deplete their armour again before claiming them.  Without this,
+      // bases whose original owner disconnected would have owner=null, which
+      // disables the armour/speed check in getTankSpeed() even after a
+      // same-colour player rejoins.
+      this.reclaimTeamObjects(tank);
+    }
     // Clear empty timer when first player joins
     if (this.tanks.length === 1 && this.emptyStartTime !== undefined) {
       this.emptyStartTime = null;
+    }
+  },
+
+  /**
+   * When a player joins, any base or pillbox that belongs to their team but
+   * has no current owner (abandoned when the last same-team player left) is
+   * re-assigned to this tank.  This restores the owner reference used by
+   * getTankSpeed() / getTankTurn() so that enemies must fire on the base to
+   * deplete its armour before they can drive over and claim it.
+   *
+   * Only objects with owner_idx === 255 (explicitly abandoned) and a matching
+   * team colour are touched; objects already owned by another tank are left
+   * alone.
+   */
+  reclaimTeamObjects(this: any, tank: any): void {
+    for (const obj of this.getAllMapObjects()) {
+      if (obj.team === tank.team && obj.owner_idx === 255) {
+        obj.owner_idx = tank.tank_idx;
+        obj.ref('owner', tank);
+      }
     }
   },
 

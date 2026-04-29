@@ -94,7 +94,7 @@ export class BaseRenderer {
 
   /**
    * Create the fog of war overlay canvas. A fixed-position canvas sits above the game canvas
-   * (z-index 99, below the HUD at 100) and masks the visible area to a 300×300 pixel window
+   * (z-index 99, below the HUD at 100) and masks the visible area to a 200×200 pixel window
    * centered on screen with a soft gradient fade at the edges.
    */
   initFogOfWar(): void {
@@ -127,7 +127,7 @@ export class BaseRenderer {
   }
 
   /**
-   * Render the fog of war mask onto the fog canvas. The visible window is 300×300 pixels,
+   * Render the fog of war mask onto the fog canvas. The visible window is 200×200 pixels,
    * centered on screen.
    *
    * Technique: a single CSS-blurred rectangle is punched through the fog with
@@ -149,8 +149,8 @@ export class BaseRenderer {
   drawFog(): void {
     if (!this.fogStaticCanvas || !this.fogStaticCtx) return;
 
-    const vw = 300;
-    const vh = 300;
+    const vw = 200;
+    const vh = 200;
     const blurPx = 45;
     const pad = blurPx * 3; // 3σ → visible edges are 99.97% clear
 
@@ -483,7 +483,7 @@ export class BaseRenderer {
       this.fogBlobCanvas.height   = window.innerHeight;
       this.drawFog(); // re-render static layer at new size
 
-      const vw = 300, vh = 300, blurPx = 45, pad = blurPx * 3;
+      const vw = 200, vh = 200, blurPx = 45, pad = blurPx * 3;
       const cx = Math.round((window.innerWidth  - vw) / 2);
       const cy = Math.round((window.innerHeight - vh) / 2);
       this.fogCx = cx;

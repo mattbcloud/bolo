@@ -59,6 +59,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   boloInit!: () => void;
   addTank!: (tank: any) => void;
   removeTank!: (tank: any) => void;
+  reclaimTeamObjects!: (tank: any) => void;
   getAllMapObjects!: () => any[];
   spawnMapObjects!: () => void;
   resolveMapObjectOwners!: () => void;
