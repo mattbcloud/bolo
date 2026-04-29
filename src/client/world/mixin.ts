@@ -310,10 +310,55 @@ export const BoloClientWorldMixin = {
   },
 
   /**
+   * Add a build action to the LGM queue (max 10 entries).
+   * Called when the user clicks a build target while the builder is away on a task.
+   * The raw tool + cell are stored so the action is re-validated at execution time —
+   * if the cell state has changed by the time the builder returns, the entry is skipped.
+   */
+  queueBuildOrder(this: any, tool: string, cell: any): void {
+    if (!this.builderQueue)    this.builderQueue    = [];
+    if (this.builderQueue.length >= 10) return;          // cap at 10
+    this.builderQueue.push({ tool, cell });
+  },
+
+  /**
+   * Called every render frame. When the builder returns to the tank, pop and
+   * execute the next valid queued action.  Invalid/stale entries are skipped
+   * automatically.  A dispatch-guard flag prevents double-sends during the
+   * 1–3 frame network lag between sending the order and the server confirming
+   * the builder has left the tank.
+   */
+  processBuilderQueue(this: any): void {
+    if (!this.builderQueue || this.builderQueue.length === 0) return;
+    if (!this.player || !this.player.builder) return;
+
+    const builder = this.player.builder.$;
+
+    // Reset guard once we can confirm the builder is no longer idle.
+    if (builder.order !== builder.states.inTank) {
+      this._builderQueueDispatched = false;
+      return;
+    }
+
+    // Guard: we already dispatched this cycle — wait for builder to go busy.
+    if (this._builderQueueDispatched) return;
+
+    while (this.builderQueue.length > 0) {
+      const { tool, cell } = this.builderQueue.shift();
+      const [action, trees] = this.checkBuildOrder(tool, cell);
+      if (action) {
+        this.buildOrder(action, trees, cell);
+        this._builderQueueDispatched = true;  // guard until builder goes busy
+        return;                               // one action per builder-return
+      }
+      // Stale/invalid entry — skip and try the next one.
+    }
+  },
+
+  /**
    * Check and rewrite the build order that the user just tried to do.
    */
   checkBuildOrder(this: any, action: string, cell: any): [string | false, number?, boolean?] {
-    // FIXME: queue actions
     const builder = this.player.builder.$;
     if (builder.order !== builder.states.inTank) return [false];
 

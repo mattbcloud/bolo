@@ -393,6 +393,12 @@ export class BaseRenderer {
 
     // Update fog blobs in sync with the game frame (no competing rAF loop).
     this.updateFogIfDue(performance.now());
+
+    // Process the builder action queue — dispatches next queued action as soon
+    // as the builder returns to the tank.
+    if (this.world.processBuilderQueue) {
+      this.world.processBuilderQueue();
+    }
   }
 
   /**
@@ -501,6 +507,20 @@ export class BaseRenderer {
 
     const [mx, my] = this.mouse;
     const cell = this.getCellAtScreen(mx, my);
+
+    // If the builder is currently away from the tank, queue the action so it
+    // runs automatically when the builder returns (up to 10 queued actions).
+    const player  = this.world.player;
+    const builder = player && player.armour !== 255 && player.builder
+      ? player.builder.$
+      : null;
+
+    if (builder && builder.order !== builder.states.inTank) {
+      this.world.queueBuildOrder(this.currentTool, cell);
+      return;
+    }
+
+    // Builder is idle — execute immediately as before.
     const [action, trees, flexible] = this.world.checkBuildOrder(this.currentTool, cell);
     if (action) {
       this.world.buildOrder(action, trees, cell);
