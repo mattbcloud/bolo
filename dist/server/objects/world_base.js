@@ -186,11 +186,15 @@ export class WorldBase extends BoloObject {
                     }
                 }
                 if (canClaim) {
+                    // Pre-set owner_idx and team BEFORE ref() so the very first
+                    // serialisation sent to clients already has the correct colour.
+                    // Without this, ref('owner', tank) sends an intermediate packet
+                    // with the new owner but the old team/idx, causing a visible flicker
+                    // when claiming a base that belonged to a disconnected team.
+                    this.owner_idx = tank.tank_idx;
+                    this.team = tank.team;
                     this.ref('owner', tank);
-                    this.updateOwner();
-                    // Note: We don't listen for owner destroy events because server-side objects
-                    // don't emit events. Instead, owner_idx and team are sent via serialization
-                    // and persist even when the owner reference becomes null.
+                    this.updateOwner(); // re-applies owner_idx/team + triggers retile
                     this.ref('refueling', tank);
                     this.refuelCounter = 46;
                     break;

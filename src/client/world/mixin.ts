@@ -332,6 +332,13 @@ export const BoloClientWorldMixin = {
     if (!this.builderQueue || this.builderQueue.length === 0) return;
     if (!this.player || !this.player.builder) return;
 
+    // Clear the queue when the tank dies so stale orders don't execute on respawn.
+    if (this.player.armour === 255) {
+      this.builderQueue = [];
+      this._builderQueueDispatched = false;
+      return;
+    }
+
     const builder = this.player.builder.$;
 
     // Reset guard once we can confirm the builder is no longer idle.

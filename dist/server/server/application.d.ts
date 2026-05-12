@@ -25,6 +25,7 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     boloInit: () => void;
     addTank: (tank: any) => void;
     removeTank: (tank: any) => void;
+    reclaimTeamObjects: (tank: any) => void;
     getAllMapObjects: () => any[];
     spawnMapObjects: () => void;
     resolveMapObjectOwners: () => void;

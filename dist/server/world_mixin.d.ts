@@ -10,6 +10,7 @@ export interface BoloWorldMixin {
     boloInit(): void;
     addTank(tank: any): void;
     removeTank(tank: any): void;
+    reclaimTeamObjects(tank: any): void;
     getAllMapObjects(): any[];
     spawnMapObjects(): void;
     resolveMapObjectOwners(): void;
@@ -21,6 +22,18 @@ export declare const BoloWorldMixin: {
      */
     boloInit(this: any): void;
     addTank(this: any, tank: any): void;
+    /**
+     * When a player joins, any base or pillbox that belongs to their team but
+     * has no current owner (abandoned when the last same-team player left) is
+     * re-assigned to this tank.  This restores the owner reference used by
+     * getTankSpeed() / getTankTurn() so that enemies must fire on the base to
+     * deplete its armour before they can drive over and claim it.
+     *
+     * Only objects with owner_idx === 255 (explicitly abandoned) and a matching
+     * team colour are touched; objects already owned by another tank are left
+     * alone.
+     */
+    reclaimTeamObjects(this: any, tank: any): void;
     removeTank(this: any, tank: any): void;
     /**
      * A helper method which returns all map objects.
