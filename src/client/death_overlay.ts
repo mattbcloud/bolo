@@ -14,8 +14,9 @@
  *   idle ──[triggerDeath]──► delay (2 100 ms) ──► fade-in (500 ms)
  *   ──► hold (until triggerRespawn) ──► fade-out (750 ms) ──► idle
  *
- * Z-index 99 puts the overlay above the game canvas (z 0) but below the
- * HUD (z 100), so all HUD elements remain visible throughout.
+ * Z-index 50 puts the overlay above the game canvas (z 0) but below the
+ * fog of war (z 99) and HUD (z 100). The fog's dark border therefore masks
+ * the static outside the visible game window, constraining it to the game view.
  */
 
 /**
@@ -61,7 +62,7 @@ export class DeathOverlay {
       'width:100%',
       'height:100%',
       'pointer-events:none',
-      'z-index:99',
+      'z-index:50',
       'opacity:0',
       'image-rendering:pixelated',
       'image-rendering:crisp-edges',

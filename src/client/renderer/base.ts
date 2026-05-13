@@ -58,6 +58,8 @@ export class BaseRenderer {
   baseIndicators?: Array<[HTMLDivElement, any]>;
   playerIndicators?: Array<HTMLDivElement>;
   currentTool: string = 'forest';
+  hudPanels: HTMLElement[] = [];
+  hudPanelFracs: Map<HTMLElement, { xFrac: number; yFrac: number }> = new Map();
   fogCanvas?: HTMLCanvasElement;          // animated overlay (composited each frame)
   fogCtx?: CanvasRenderingContext2D;
   fogStaticCanvas?: HTMLCanvasElement;    // offscreen: static dark fog + hole punch
@@ -494,6 +496,18 @@ export class BaseRenderer {
     document.body.style.width = `${window.innerWidth}px`;
     document.body.style.height = `${window.innerHeight}px`;
 
+    // Reposition panels that have been placed explicitly (dragged or restored
+    // from localStorage) so they maintain their relative position in the new viewport.
+    for (const el of this.hudPanels) {
+      const fracs = this.hudPanelFracs.get(el);
+      if (!fracs) continue; // CSS-anchored default position — browser handles it
+      this.setPanelPosition(
+        el,
+        Math.round(fracs.xFrac * window.innerWidth),
+        Math.round(fracs.yFrac * window.innerHeight),
+      );
+    }
+
     // Resize both fog canvases, redraw the static base, and re-place the blobs.
     if (this.fogCanvas && this.fogStaticCanvas && this.fogBlobCanvas) {
       this.fogCanvas.width        = window.innerWidth;
@@ -636,16 +650,50 @@ export class BaseRenderer {
    * The final position is written to localStorage under `hud-<key>` and restored
    * automatically on the next page load.
    */
+  /**
+   * Set a panel's position in px, clamp it to the viewport, and record the
+   * viewport-relative fractions so resize can restore proportional placement.
+   * Pass `key` to also persist the fractions to localStorage.
+   */
+  setPanelPosition(el: HTMLElement, left: number, top: number, key?: string): void {
+    const maxL    = Math.max(0, window.innerWidth  - el.offsetWidth);
+    const maxT    = Math.max(0, window.innerHeight - el.offsetHeight);
+    const clampedL = Math.max(0, Math.min(left, maxL));
+    const clampedT = Math.max(0, Math.min(top,  maxT));
+
+    el.style.left   = `${clampedL}px`;
+    el.style.top    = `${clampedT}px`;
+    el.style.right  = '';
+    el.style.bottom = '';
+
+    const xFrac = window.innerWidth  > 0 ? clampedL / window.innerWidth  : 0;
+    const yFrac = window.innerHeight > 0 ? clampedT / window.innerHeight : 0;
+    this.hudPanelFracs.set(el, { xFrac, yFrac });
+
+    if (key) {
+      localStorage.setItem(`hud-${key}`, JSON.stringify({ xFrac, yFrac }));
+    }
+  }
+
   makeDraggable(el: HTMLElement, key: string): void {
+    this.hudPanels.push(el);
+
     // Restore a previously saved position.
+    // New format: { xFrac, yFrac } — viewport fractions.
+    // Legacy format: { top, left } — raw pixels (migrated on first save).
     const raw = localStorage.getItem(`hud-${key}`);
     if (raw) {
       try {
-        const { top, left } = JSON.parse(raw) as { top: number; left: number };
-        el.style.top    = `${top}px`;
-        el.style.left   = `${left}px`;
-        el.style.bottom = '';
-        el.style.right  = '';
+        const saved = JSON.parse(raw) as any;
+        let left: number, top: number;
+        if ('xFrac' in saved) {
+          left = saved.xFrac * window.innerWidth;
+          top  = saved.yFrac * window.innerHeight;
+        } else {
+          left = saved.left ?? 0;
+          top  = saved.top  ?? 0;
+        }
+        this.setPanelPosition(el, left, top);
       } catch { /* ignore malformed data and keep CSS defaults */ }
     }
 
@@ -698,11 +746,9 @@ export class BaseRenderer {
           el.style.cursor                = 'grab';
           el.style.zIndex                = '';
           el.style.userSelect            = '';
-          document.body.style.userSelect = ''; // re-enable selection everywhere
-          localStorage.setItem(`hud-${key}`, JSON.stringify({
-            top:  parseFloat(el.style.top),
-            left: parseFloat(el.style.left),
-          }));
+          document.body.style.userSelect = '';
+          // Persist the new position as viewport fractions.
+          this.setPanelPosition(el, parseFloat(el.style.left), parseFloat(el.style.top), key);
         }
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup',   onUp);
