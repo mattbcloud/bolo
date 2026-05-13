@@ -25,11 +25,11 @@ export class ClientWorld {
   }
 
   tick(): void {
-    // Update all objects
     for (const obj of this.objects) {
-      if (obj && obj.tick) {
-        obj.tick();
-      }
+      if (!obj) continue;
+      obj.prevX = obj.x;
+      obj.prevY = obj.y;
+      if (obj.tick) obj.tick();
     }
   }
 

@@ -176,7 +176,7 @@ export const BoloClientWorldMixin = {
     this.loop = createLoop({
       rate: TICK_LENGTH_MS,
       tick: () => this.tick(),
-      frame: () => this.renderer.draw(),
+      frame: (alpha: number) => this.renderer.draw(alpha),
     });
 
     this.increasingRange = false;

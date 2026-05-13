@@ -11,6 +11,8 @@ export class WorldObject extends EventEmitter {
   idx: number = -1;
   x: number | null = null;
   y: number | null = null;
+  prevX: number | null = null;
+  prevY: number | null = null;
 
   constructor(world: any) {
     super();

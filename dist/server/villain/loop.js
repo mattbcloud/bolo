@@ -1,13 +1,16 @@
 /**
  * Game Loop
  *
- * Simple game loop implementation for managing tick and frame callbacks.
+ * Ticks run on setInterval (unchanged — safe for networked play).
+ * Frames run on requestAnimationFrame and receive an alpha value in [0, 1)
+ * representing how far through the current tick interval we are, enabling
+ * sub-tick render interpolation without touching tick timing.
  */
 export function createLoop(options) {
     let tickInterval = null;
     let frameRequest = null;
     let running = false;
-    // Check if we're in a browser environment
+    let lastTickTime = 0;
     const hasBrowserAPIs = typeof globalThis !== 'undefined' &&
         typeof globalThis.window !== 'undefined' &&
         typeof globalThis.window.requestAnimationFrame === 'function';
@@ -17,16 +20,21 @@ export function createLoop(options) {
                 return;
             running = true;
             if (options.tick) {
-                tickInterval = setInterval(options.tick, options.rate);
+                lastTickTime = performance.now();
+                tickInterval = setInterval(() => {
+                    lastTickTime = performance.now();
+                    options.tick();
+                }, options.rate);
             }
             if (options.frame && hasBrowserAPIs) {
-                const frameLoop = () => {
+                const frameLoop = (now) => {
                     if (!running)
                         return;
-                    options.frame();
+                    const alpha = Math.min(1, (now - lastTickTime) / options.rate);
+                    options.frame(alpha);
                     frameRequest = globalThis.window.requestAnimationFrame(frameLoop);
                 };
-                frameLoop();
+                frameRequest = globalThis.window.requestAnimationFrame(frameLoop);
             }
         },
         stop() {

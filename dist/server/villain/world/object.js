@@ -10,6 +10,8 @@ export class WorldObject extends EventEmitter {
         this.idx = -1;
         this.x = null;
         this.y = null;
+        this.prevX = null;
+        this.prevY = null;
         this.world = world;
     }
     destroy() {

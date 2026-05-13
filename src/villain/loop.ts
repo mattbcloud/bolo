@@ -1,13 +1,16 @@
 /**
  * Game Loop
  *
- * Simple game loop implementation for managing tick and frame callbacks.
+ * Ticks run on setInterval (unchanged — safe for networked play).
+ * Frames run on requestAnimationFrame and receive an alpha value in [0, 1)
+ * representing how far through the current tick interval we are, enabling
+ * sub-tick render interpolation without touching tick timing.
  */
 
 interface LoopOptions {
   rate: number;
   tick?: () => void;
-  frame?: () => void;
+  frame?: (alpha: number) => void;
 }
 
 interface Loop {
@@ -19,8 +22,8 @@ export function createLoop(options: LoopOptions): Loop {
   let tickInterval: NodeJS.Timeout | null = null;
   let frameRequest: number | null = null;
   let running = false;
+  let lastTickTime: number = 0;
 
-  // Check if we're in a browser environment
   const hasBrowserAPIs = typeof globalThis !== 'undefined' &&
     typeof (globalThis as any).window !== 'undefined' &&
     typeof (globalThis as any).window.requestAnimationFrame === 'function';
@@ -31,16 +34,21 @@ export function createLoop(options: LoopOptions): Loop {
       running = true;
 
       if (options.tick) {
-        tickInterval = setInterval(options.tick, options.rate);
+        lastTickTime = performance.now();
+        tickInterval = setInterval(() => {
+          lastTickTime = performance.now();
+          options.tick!();
+        }, options.rate);
       }
 
       if (options.frame && hasBrowserAPIs) {
-        const frameLoop = () => {
+        const frameLoop = (now: number) => {
           if (!running) return;
-          options.frame!();
+          const alpha = Math.min(1, (now - lastTickTime) / options.rate);
+          options.frame!(alpha);
           frameRequest = ((globalThis as any).window as any).requestAnimationFrame(frameLoop);
         };
-        frameLoop();
+        frameRequest = ((globalThis as any).window as any).requestAnimationFrame(frameLoop);
       }
     },
 

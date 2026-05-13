@@ -18,6 +18,16 @@ import TEAM_COLORS from '../../team_colors';
 
 const { min: mathMin, max: mathMax, round: mathRound, cos: mathCos, sin: mathSin, PI: mathPI, sqrt: mathSqrt } = Math;
 
+// Linearly interpolate a world-space position between prev and curr.
+// Snaps (returns curr) when prev is unknown or the jump is too large to be
+// normal movement (teleport / respawn threshold: 500 world units).
+function lerpPos(prev: number | null, curr: number, alpha: number): number {
+  if (prev === null) return curr;
+  const d = curr - prev;
+  if (d * d > 250000) return curr;
+  return prev + d * alpha;
+}
+
 /**
  * One animated smoke blob in the fog overlay.
  * The blurred ellipse is pre-rendered to `canvas` once (in initFogBlobs) so
@@ -47,7 +57,7 @@ export class BaseRenderer {
   pillIndicators?: Array<[HTMLDivElement, any]>;
   baseIndicators?: Array<[HTMLDivElement, any]>;
   playerIndicators?: Array<HTMLDivElement>;
-  currentTool: string | null = null;
+  currentTool: string = 'forest';
   fogCanvas?: HTMLCanvasElement;          // animated overlay (composited each frame)
   fogCtx?: CanvasRenderingContext2D;
   fogStaticCanvas?: HTMLCanvasElement;    // offscreen: static dark fog + hole punch
@@ -335,20 +345,25 @@ export class BaseRenderer {
   /**
    * Draw a single frame.
    */
-  draw(): void {
+  draw(alpha: number = 1): void {
     let x: number | null, y: number | null;
 
     // Check if we're viewing a pillbox instead of the tank
     const viewTarget = this.world.getViewTarget ? this.world.getViewTarget() : null;
 
     if (viewTarget) {
-      // Center on the pillbox
+      // Center on the pillbox (static — no interpolation needed)
       ({ x, y } = viewTarget);
     } else if (this.world.player) {
-      // Center on the player's tank
-      ({ x, y } = this.world.player);
-      if (this.world.player.fireball) {
-        ({ x, y } = this.world.player.fireball.$);
+      // Center on the player's tank, interpolated between ticks
+      const p = this.world.player;
+      if (p.fireball) {
+        const fb = p.fireball.$;
+        x = lerpPos(fb.prevX, fb.x, alpha);
+        y = lerpPos(fb.prevY, fb.y, alpha);
+      } else {
+        x = lerpPos(p.prevX, p.x, alpha);
+        y = lerpPos(p.prevY, p.y, alpha);
       }
     } else {
       x = y = null;
@@ -374,8 +389,8 @@ export class BaseRenderer {
 
         if (obj.styled != null && obj.x != null && obj.y != null) {
           const [tx, ty] = obj.getTile();
-          const ox = mathRound(obj.x / PIXEL_SIZE_WORLD) - TILE_SIZE_PIXELS / 2;
-          const oy = mathRound(obj.y / PIXEL_SIZE_WORLD) - TILE_SIZE_PIXELS / 2;
+          const ox = mathRound(lerpPos(obj.prevX, obj.x, alpha) / PIXEL_SIZE_WORLD) - TILE_SIZE_PIXELS / 2;
+          const oy = mathRound(lerpPos(obj.prevY, obj.y, alpha) / PIXEL_SIZE_WORLD) - TILE_SIZE_PIXELS / 2;
           if (obj.styled === true) {
             this.drawStyledTile(tx, ty, obj.team, ox, oy);
           } else if (obj.styled === false) {
@@ -383,7 +398,7 @@ export class BaseRenderer {
           }
         }
       }
-      this.drawOverlay();
+      this.drawOverlay(alpha);
     });
 
     // Update all DOM HUD elements.
@@ -503,8 +518,6 @@ export class BaseRenderer {
   handleClick(e: MouseEvent): void {
     e.preventDefault();
     this.world.input.focus();
-    if (!this.currentTool) return;
-
     const [mx, my] = this.mouse;
     const cell = this.getCellAtScreen(mx, my);
 
@@ -554,7 +567,7 @@ export class BaseRenderer {
    * Draw HUD elements that overlay the map. These are elements that need to be drawn in regular
    * game coordinates, rather than screen coordinates.
    */
-  drawOverlay(): void {
+  drawOverlay(alpha: number = 1): void {
     const player = this.world.player;
     if (player && player.armour !== 255) {
       if (player.builder) {
@@ -565,18 +578,21 @@ export class BaseRenderer {
       }
       // Only draw reticle if gunsightVisible is true
       if (this.world.gunsightVisible) {
-        this.drawReticle();
+        this.drawReticle(alpha);
       }
     }
     this.drawNames();
     this.drawCursor();
   }
 
-  drawReticle(): void {
-    const distance = this.world.player.firingRange * TILE_SIZE_PIXELS;
-    const rad = (256 - this.world.player.direction) * 2 * mathPI / 256;
-    const x = mathRound(this.world.player.x / PIXEL_SIZE_WORLD + mathCos(rad) * distance) - TILE_SIZE_PIXELS / 2;
-    const y = mathRound(this.world.player.y / PIXEL_SIZE_WORLD + mathSin(rad) * distance) - TILE_SIZE_PIXELS / 2;
+  drawReticle(alpha: number = 1): void {
+    const p = this.world.player;
+    const distance = p.firingRange * TILE_SIZE_PIXELS;
+    const rad = (256 - p.direction) * 2 * mathPI / 256;
+    const px = lerpPos(p.prevX, p.x, alpha);
+    const py = lerpPos(p.prevY, p.y, alpha);
+    const x = mathRound(px / PIXEL_SIZE_WORLD + mathCos(rad) * distance) - TILE_SIZE_PIXELS / 2;
+    const y = mathRound(py / PIXEL_SIZE_WORLD + mathSin(rad) * distance) - TILE_SIZE_PIXELS / 2;
     this.drawTile(17, 4, x, y);
   }
 
@@ -845,7 +861,6 @@ export class BaseRenderer {
    * Create the build tool selection
    */
   initHudToolSelect(): void {
-    this.currentTool = null;
     const tools = document.createElement('div');
     tools.id    = 'tool-select';
     tools.title = 'Double-click to switch horizontal / vertical';
@@ -854,6 +869,9 @@ export class BaseRenderer {
     for (const toolType of ['forest', 'road', 'building', 'pillbox', 'mine']) {
       this.initHudTool(tools, toolType);
     }
+
+    const forestInput = tools.querySelector<HTMLInputElement>('#tool-forest');
+    if (forestInput) forestInput.checked = true;
 
     // Apply orientation via inline styles (avoids CSS hot-reload timing issues).
     const applyOrient = (vertical: boolean) => {
@@ -903,14 +921,7 @@ export class BaseRenderer {
     label.appendChild(span);
 
     tool.addEventListener('click', (e) => {
-      if (this.currentTool === toolType) {
-        this.currentTool = null;
-        tools.querySelectorAll('input').forEach((input) => {
-          (input as HTMLInputElement).checked = false;
-        });
-      } else {
-        this.currentTool = toolType;
-      }
+      this.currentTool = toolType;
       this.world.input.focus();
     });
   }

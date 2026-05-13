@@ -9,6 +9,8 @@ export declare class WorldObject extends EventEmitter {
     idx: number;
     x: number | null;
     y: number | null;
+    prevX: number | null;
+    prevY: number | null;
     constructor(world: any);
     destroy(): void;
     tick(): void;
