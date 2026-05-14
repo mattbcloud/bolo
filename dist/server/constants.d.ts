@@ -14,4 +14,7 @@ export declare const MAP_SIZE_PIXELS: number;
 export declare const MAP_SIZE_WORLD: number;
 /** The game tick length in milliseconds. */
 export declare const TICK_LENGTH_MS = 20;
+/** Fog-of-war visible window size in CSS pixels. */
+export declare const FOG_WINDOW_W = 200;
+export declare const FOG_WINDOW_H = 200;
 //# sourceMappingURL=constants.d.ts.map

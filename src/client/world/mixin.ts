@@ -9,9 +9,18 @@ import { Progress } from '../progress';
 import { Vignette } from '../vignette';
 import { SoundKit } from '../soundkit';
 import DefaultRenderer from '../renderer/offscreen_2d';
-import { TICK_LENGTH_MS } from '../../constants';
+import { TICK_LENGTH_MS, PIXEL_SIZE_WORLD, TILE_SIZE_PIXELS, FOG_WINDOW_W, FOG_WINDOW_H } from '../../constants';
 import * as helpers from '../../helpers';
 import BoloWorldMixin from '../../world_mixin';
+
+// Arrow keys are reserved for map panning and cannot be assigned to other actions.
+const RESERVED_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
+// World units moved per render frame (~60 fps) while an arrow key is held.
+const PAN_SPEED = 20 * PIXEL_SIZE_WORLD;   // 20 px/frame
+
+// Fraction of the current offset removed per frame when no key is held (drift-back).
+const PAN_RETURN = 0.06;
 
 declare const applicationCache: any;
 
@@ -187,6 +196,14 @@ export const BoloClientWorldMixin = {
     this.viewMode = 'tank';
     this.currentPillboxIndex = 0;
 
+    // Pan state
+    this.panX = 0;
+    this.panY = 0;
+    this.panLeftHeld  = false;
+    this.panRightHeld = false;
+    this.panUpHeld    = false;
+    this.panDownHeld  = false;
+
     // Load key bindings from cookie or use defaults
     const getCookie = (name: string): string | null => {
       const value = `; ${document.cookie}`;
@@ -196,10 +213,10 @@ export const BoloClientWorldMixin = {
     };
 
     const defaultKeys = {
-      accelerate: 'ArrowUp',
-      decelerate: 'ArrowDown',
-      turnLeft: 'ArrowLeft',
-      turnRight: 'ArrowRight',
+      accelerate: 'KeyW',
+      decelerate: 'KeyS',
+      turnLeft: 'KeyA',
+      turnRight: 'KeyD',
       increaseRange: 'KeyL',
       decreaseRange: 'Semicolon',
       shoot: 'Space',
@@ -232,6 +249,19 @@ export const BoloClientWorldMixin = {
       e.stopPropagation();
       const code = e.code;
 
+      // Arrow keys are dedicated to view panning — not remappable.
+      if (code === 'ArrowLeft')  { this.panLeftHeld  = true; return; }
+      if (code === 'ArrowRight') { this.panRightHeld = true; return; }
+      if (code === 'ArrowUp')    { this.panUpHeld    = true; return; }
+      if (code === 'ArrowDown')  { this.panDownHeld  = true; return; }
+
+      // Tank-view key: snap pan back to centre immediately.
+      if (code === this.keyBindings.tankView) {
+        this.panX = 0;
+        this.panY = 0;
+        this.panLeftHeld = this.panRightHeld = this.panUpHeld = this.panDownHeld = false;
+      }
+
       // Check for range adjustment keys
       if (code === this.keyBindings.increaseRange) {
         this.increasingRange = true;
@@ -247,6 +277,12 @@ export const BoloClientWorldMixin = {
       e.preventDefault();
       e.stopPropagation();
       const code = e.code;
+
+      // Arrow keys: release pan direction.
+      if (code === 'ArrowLeft')  { this.panLeftHeld  = false; return; }
+      if (code === 'ArrowRight') { this.panRightHeld = false; return; }
+      if (code === 'ArrowUp')    { this.panUpHeld    = false; return; }
+      if (code === 'ArrowDown')  { this.panDownHeld  = false; return; }
 
       // Check for range adjustment keys
       if (code === this.keyBindings.increaseRange) {
@@ -307,6 +343,48 @@ export const BoloClientWorldMixin = {
     `;
     document.body.appendChild(overlay);
     document.body.appendChild(dialog);
+  },
+
+  /**
+   * Called every render frame. Advances the pan offset based on held arrow keys,
+   * drifts it back to zero when no key is held, and clamps it so the tank stays
+   * on-screen. Disabled during death / respawn (armour === 255 or fireball active).
+   */
+  updatePan(this: any): void {
+    const player = this.player;
+
+    // Disable pan (and drift back) while dead or in pillbox-view mode.
+    const isDead = !player || player.armour === 255 || !!player.fireball;
+    const isPillboxView = this.viewMode === 'pillbox';
+    if (isDead || isPillboxView) {
+      this.panX *= (1 - PAN_RETURN);
+      this.panY *= (1 - PAN_RETURN);
+      if (Math.abs(this.panX) < 0.5) this.panX = 0;
+      if (Math.abs(this.panY) < 0.5) this.panY = 0;
+      return;
+    }
+
+    if (this.panLeftHeld)  this.panX -= PAN_SPEED;
+    if (this.panRightHeld) this.panX += PAN_SPEED;
+    if (this.panUpHeld)    this.panY -= PAN_SPEED;
+    if (this.panDownHeld)  this.panY += PAN_SPEED;
+
+    // Drift back to centre only when the tank is moving and no arrow key is held.
+    const tankMoving = player.speed > 0;
+    if (tankMoving && !this.panLeftHeld && !this.panRightHeld) this.panX *= (1 - PAN_RETURN);
+    if (tankMoving && !this.panUpHeld   && !this.panDownHeld)  this.panY *= (1 - PAN_RETURN);
+
+    // Snap to exact zero once close enough.
+    if (Math.abs(this.panX) < 0.5) this.panX = 0;
+    if (Math.abs(this.panY) < 0.5) this.panY = 0;
+
+    // Clamp so the tank stops inside the fog-of-war gradient.
+    // 75% of the fog window half-width puts the tank about 1σ into the soft
+    // fade zone at the extreme, so the fog itself is the visual stop cue.
+    const maxPanX = (FOG_WINDOW_W * 1.0) * PIXEL_SIZE_WORLD;
+    const maxPanY = (FOG_WINDOW_H * 1.0) * PIXEL_SIZE_WORLD;
+    this.panX = Math.max(-maxPanX, Math.min(maxPanX, this.panX));
+    this.panY = Math.max(-maxPanY, Math.min(maxPanY, this.panY));
   },
 
   /**

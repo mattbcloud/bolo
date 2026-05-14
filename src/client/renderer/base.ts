@@ -12,6 +12,8 @@ import {
   TILE_SIZE_WORLD,
   PIXEL_SIZE_WORLD,
   MAP_SIZE_PIXELS,
+  FOG_WINDOW_W,
+  FOG_WINDOW_H,
 } from '../../constants';
 import * as sounds from '../../sounds';
 import TEAM_COLORS from '../../team_colors';
@@ -161,8 +163,8 @@ export class BaseRenderer {
   drawFog(): void {
     if (!this.fogStaticCanvas || !this.fogStaticCtx) return;
 
-    const vw = 200;
-    const vh = 200;
+    const vw = FOG_WINDOW_W;
+    const vh = FOG_WINDOW_H;
     const blurPx = 45;
     const pad = blurPx * 3; // 3σ → visible edges are 99.97% clear
 
@@ -348,24 +350,31 @@ export class BaseRenderer {
    * Draw a single frame.
    */
   draw(alpha: number = 1): void {
+    // Update map-pan offset (arrow keys). Must run every frame for smooth motion.
+    if (this.world.updatePan) this.world.updatePan();
+
     let x: number | null, y: number | null;
 
     // Check if we're viewing a pillbox instead of the tank
     const viewTarget = this.world.getViewTarget ? this.world.getViewTarget() : null;
 
     if (viewTarget) {
-      // Center on the pillbox (static — no interpolation needed)
+      // Center on the pillbox (static — no interpolation needed, no pan).
       ({ x, y } = viewTarget);
     } else if (this.world.player) {
-      // Center on the player's tank, interpolated between ticks
+      // Center on the player's tank, interpolated between ticks, with pan offset.
       const p = this.world.player;
       if (p.fireball) {
         const fb = p.fireball.$;
         x = lerpPos(fb.prevX, fb.x, alpha);
         y = lerpPos(fb.prevY, fb.y, alpha);
+      } else if (p.x != null && p.y != null) {
+        x = lerpPos(p.prevX, p.x, alpha) + (this.world.panX || 0);
+        y = lerpPos(p.prevY, p.y, alpha) + (this.world.panY || 0);
       } else {
-        x = lerpPos(p.prevX, p.x, alpha);
-        y = lerpPos(p.prevY, p.y, alpha);
+        // Tank is dead but fireball not yet available (e.g. network delay).
+        // Fall through to lastCenter below rather than snapping to (0, 0).
+        x = y = null;
       }
     } else {
       x = y = null;
@@ -518,7 +527,7 @@ export class BaseRenderer {
       this.fogBlobCanvas.height   = window.innerHeight;
       this.drawFog(); // re-render static layer at new size
 
-      const vw = 200, vh = 200, blurPx = 45, pad = blurPx * 3;
+      const vw = FOG_WINDOW_W, vh = FOG_WINDOW_H, blurPx = 45, pad = blurPx * 3;
       const cx = Math.round((window.innerWidth  - vw) / 2);
       const cy = Math.round((window.innerHeight - vh) / 2);
       this.fogCx = cx;

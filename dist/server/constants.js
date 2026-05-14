@@ -14,4 +14,7 @@ export const MAP_SIZE_PIXELS = MAP_SIZE_TILES * TILE_SIZE_PIXELS;
 export const MAP_SIZE_WORLD = MAP_SIZE_TILES * TILE_SIZE_WORLD;
 /** The game tick length in milliseconds. */
 export const TICK_LENGTH_MS = 20;
+/** Fog-of-war visible window size in CSS pixels. */
+export const FOG_WINDOW_W = 200;
+export const FOG_WINDOW_H = 200;
 //# sourceMappingURL=constants.js.map

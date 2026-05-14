@@ -521,10 +521,10 @@ export class BoloClientWorld extends ClientWorld {
   showKeySettings(): void {
     // Default key bindings
     const defaultKeys = {
-      accelerate: 'ArrowUp',
-      decelerate: 'ArrowDown',
-      turnLeft: 'ArrowLeft',
-      turnRight: 'ArrowRight',
+      accelerate: 'KeyW',
+      decelerate: 'KeyS',
+      turnLeft: 'KeyA',
+      turnRight: 'KeyD',
       increaseRange: 'KeyL',
       decreaseRange: 'Semicolon',
       shoot: 'Space',
@@ -832,6 +832,22 @@ export class BoloClientWorld extends ClientWorld {
 
       e.preventDefault();
       e.stopPropagation();
+
+      // Arrow keys are reserved for map panning and cannot be assigned.
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        capturingInput.value = 'reserved';
+        capturingInput.style.background = '#ffcccc';
+        setTimeout(() => {
+          if (capturingInput) {
+            const binding = capturingInput.getAttribute('data-binding');
+            capturingInput.value = getFriendlyKeyName(
+              (binding && currentBindings[binding]) ? currentBindings[binding] : ''
+            );
+            capturingInput.style.background = '#ffffcc';
+          }
+        }, 800);
+        return;
+      }
 
       const binding = capturingInput.getAttribute('data-binding');
       if (!binding) return;
