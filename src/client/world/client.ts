@@ -242,6 +242,8 @@ export class BoloClientWorld extends ClientWorld {
 
   // Brain HUD overlay element
   private _brainIndicator: HTMLElement | null = null;
+  private _builderQueueDispatched: boolean = false;
+  private _brainWasIdle: boolean = false;
 
   // Respawn detection
   private _brainPrevArmour: number = 40;
@@ -2164,7 +2166,13 @@ export class BoloClientWorld extends ClientWorld {
     );
 
     // Run the brain — get back raw control words
-    const controls = aIndy_Think(a4, state);
+    let controls: ReturnType<typeof aIndy_Think>;
+    try {
+      controls = aIndy_Think(a4, state);
+    } catch (err) {
+      console.error('[brain] aIndy_Think threw:', err);
+      return;   // skip this tick — don't send stale deltas
+    }
 
     // Decode control words to boolean flags via a temporary object
     const next = {
@@ -2187,6 +2195,76 @@ export class BoloClientWorld extends ClientWorld {
 
     // Save for next tick
     Object.assign(prev, next);
+
+    // ── Builder dispatch ─────────────────────────────────────────────────────
+    // When the brain sets builderAction, call buildOrder() — but only when the
+    // builder is confirmed in-tank to avoid double-sends during the 1-3 tick
+    // WebSocket round-trip.  Guard against null/undefined builder.$
+    // (reference may be unresolved on the first few ticks).
+    const builderObj = this.player?.builder?.$ ?? null;
+    if (builderObj) {
+      if (controls.builderAction) {
+        if (builderObj.order === builderObj.states.inTank && !this._builderQueueDispatched) {
+          const { action, trees, tileX, tileY } = controls.builderAction;
+          const cell = this.map?.cellAtTile(tileX, tileY);
+          if (cell) {
+            this.buildOrder(action, trees, cell);
+            this._builderQueueDispatched = true;
+          }
+        }
+      }
+      // Reset guard once builder leaves the tank.
+      if (builderObj.order !== builderObj.states.inTank) {
+        this._builderQueueDispatched = false;
+      }
+    }
+
+    // Debug dump every second — also warn immediately on first idle tick
+    const controlsIdle = (controls.steeringWord | controls.firingWord) === 0;
+    if (a4.tickCounter % 50 === 0 || (controlsIdle && !this._brainWasIdle)) {
+      this._brainWasIdle = controlsIdle;
+      const GN: Record<number,string> = {0:'PlacePill',1:'Explore',2:'FixPill',3:'GetBase',4:'GetMan',5:'GetPill',6:'KillBase',7:'KillMan',8:'KillTank',9:'Refuel',10:'TourBases',12:'NoGoal'};
+      const best = a4.goals.reduce((b,g) => g.cost < b.cost ? g : b, {goalIndex:12, cost:0xFFFF});
+      const s = controls.steeringWord, f = controls.firingWord;
+      const ctrl = [
+        s&0x01?'ACC':'', s&0x02?'HBK':'',
+        s&0x04?'CCW':'', s&0x08?'CW':'',
+        s&0x10?'FWD':'', s&0x20?'BRK':'',
+        s&0x40?'FIR':'', s&0x80?'MIN':'',
+        f&0x01?'ga':'',  f&0x02?'gb':'',
+        f&0x04?'cc':'',  f&0x08?'cw':'',
+        f&0x10?'SH':'',  f&0x20?'S2':'', f&0x40?'S3':'',
+      ].filter(Boolean).join('|') || 'idle';
+      // Show goal-specific target and current navigation destination
+      const goalIdx = best.goalIndex;
+      let goalTgtStr = 'none';
+      if (goalIdx === 5) { // GetPill
+        const p = a4.pillToGetTarget;
+        const apX = a4.navCacheDestTileX, apY = a4.navCacheDestTileY;
+        const pdist = p ? Math.round(Math.hypot(p.tileX - a4.tankTileX, p.tileY - a4.tankTileY)) : 0;
+        const apdist = Math.round(Math.hypot(apX - a4.tankTileX, apY - a4.tankTileY));
+        goalTgtStr = p ? `pill[${p.tileX},${p.tileY}]d=${pdist}tx AP[${apX},${apY}]d=${apdist}tx tank[${a4.tankTileX},${a4.tankTileY}]` : 'none';
+      } else if (goalIdx === 3) { // GetBase
+        const b = a4.baseToGetTarget;
+        goalTgtStr = b ? `base[${b.tileX},${b.tileY}]d=${b.distToTank>>8}tx` : 'none';
+      } else if (goalIdx === 9) { // Refuel
+        const r = a4.refuelBaseTarget;
+        goalTgtStr = r ? `base[${r.tileX},${r.tileY}]d=${r.distToTank>>8}tx` : 'none';
+      } else if (goalIdx === 4) { // GetMan
+        const m = a4.myMan;
+        const md = m ? Math.round(Math.hypot((m.x>>8)-a4.tankTileX, (m.y>>8)-a4.tankTileY)) : 0;
+        goalTgtStr = m ? `man[${m.x>>8},${m.y>>8}]d=${md}tx tank[${a4.tankTileX},${a4.tankTileY}] failUntil=${a4.getManFailedUntilTick}` : 'none';
+      }
+      const spd = Math.round(state.tank.speed * 10) / 10;
+      const GN2: Record<number,string> = {0:'PP',1:'Ex',2:'FP',3:'GB',4:'GM',5:'GP',6:'KB',7:'KM',8:'KT',9:'RF',10:'TB',12:'NO'};
+      const allCosts = a4.goals.map(g => `${GN2[g.goalIndex]??g.goalIndex}:${g.cost===0xFFFF?'∞':g.cost}`).join(' ');
+      const msg = `🧠 t=${a4.tickCounter} ${GN[goalIdx]??goalIdx}(${best.cost}) arm=${state.tank.armor} ammo=${state.tank.ammo} spd=${spd} ctrl:${ctrl} route:${a4.navCacheValid?'ok':'MISS'} noRoute:${a4.noLocalRouteFlag} ${goalTgtStr}`;
+      const detail = `  costs: ${allCosts} refuelSt:${a4.refuelState} noRoute:${a4.noLocalRouteFlag} builderIn:${state.tank.builderInTank}`;
+      const el = document.getElementById('brain-indicator');
+      if (el) el.textContent = msg;
+      console.log(msg);
+      if (controlsIdle) console.warn('[brain] IDLE controls!', detail);
+    }
   }
 
   /**

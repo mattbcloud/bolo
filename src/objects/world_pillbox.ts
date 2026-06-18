@@ -229,9 +229,10 @@ export class WorldPillbox extends BoloObject {
     // On the flank from idle to targetting, don't fire immediatly.
     if (this.haveTarget) {
       // FIXME: This code needs some helpers, taken from Tank.
+      const aimSpeed = target.effectiveSpeed ?? target.speed;
       const rad = ((256 - target.getDirection16th() * 16) * 2 * PI) / 256;
-      const x = target.x + (targetDistance / 32) * round(cos(rad) * ceil(target.speed));
-      const y = target.y + (targetDistance / 32) * round(sin(rad) * ceil(target.speed));
+      const x = target.x + (targetDistance / 32) * round(cos(rad) * ceil(aimSpeed));
+      const y = target.y + (targetDistance / 32) * round(sin(rad) * ceil(aimSpeed));
       const direction = 256 - (heading(this as any, { x, y }) * 256) / (2 * PI);
       // Only spawn on server (ClientWorld doesn't have this method)
       if (this.world.spawn) {

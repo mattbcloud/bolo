@@ -127,11 +127,7 @@ export function baseToGet(a4: A4State, state: BrainState): BaseState | null {
 
   for (const base of a4.bases) {
     if (base.isAlly) continue;                      // skip own bases
-    // Skip bases that recently timed out (cooldown blacklist)
-    if (
-      base.index < a4.getBaseFailedUntilTick.length &&
-      a4.tickCounter < a4.getBaseFailedUntilTick[base.index]
-    ) continue;
+    if (a4.tickCounter < a4.getBaseFailedUntilTick[base.index]) continue;
 
     const cost = getBaseCostForBase(a4, state, base);
     if (cost < bestCost) {
@@ -182,7 +178,7 @@ export function pillToFix(a4: A4State, state: BrainState): PillState | null {
   for (const pill of a4.pills) {
     if (!pill.active) continue;
     if (pill.attackable) continue;                  // skip enemy pills
-    if (pill.captureDifficulty >= 15) continue;     // already full armor
+    if (pill.armour >= 15) continue;                 // already full armor
 
     const cost = fixPillCostForPill(a4, state, pill);
     if (cost < bestCost) {
@@ -229,48 +225,55 @@ export function manToKill(a4: A4State, state: BrainState): EnemyTankState | null
  * Base armor in Orona = supply stock (0–90), not defensive strength.
  */
 export function getBaseCostForBase(a4: A4State, _state: BrainState, base: BaseState): number {
+  // Verified from assembly 0x00c2a4: cost = distToTank_tiles + difficulty*16
+  // (base.byte[10] = difficulty, ASL.W #4 = ×16; base.word[14]=distToTank>>8=tiles)
   const distTiles = base.distToTank >> 8;
-  const difficultyPenalty = (base.difficulty & 0x03) * 30;   // 0–3 tier × 30
+  const difficultyPenalty = (base.difficulty & 0x03) * 16;
   return u16(distTiles + difficultyPenalty);
 }
 
 /**
- * GetPillCost (0x00d2dc) — complex multi-tier cost for capturing a pill.
+ * GetPillCost (0x00d2dc) — cost for capturing an enemy/neutral pill.
  *
- * Tiers by capture difficulty:
- *   0     → cost = dist (cheapest — undefended)
- *   1–3   → cost = dist × (difficulty + 1) + barrier penalty
- *   4–7   → cost = dist × 8 + defender penalty + barrier penalty
- *   8+    → cost = 0xFFFF (skip)
+ * Distance scaling by defenderCount (binary 0x00d4b8–0x00d4e0):
+ *   0–2 defenders:  dist >> 10  (very cheap — undefended pill is highest priority)
+ *   3–7 defenders:  dist >> 8   (tile distance)
+ *   8+  defenders:  dist >> 7   (expensive — heavily defended)
  *
- * Barrier penalty: each wall/water/forest tile in the approach path adds 80.
- * This causes the brain to prefer pills it can reach with a clear line of travel.
+ * Plus defenderCount×8 added to base cost (binary 0x00d4f2–0x00d500).
+ *
+ * captureDifficulty (binary 0x00d5f2–0x00d60e) is the count of neutral bases
+ * near this pill, and discounts cost as 2^diff (higher centrality = preferred).
  */
-export function getPillCostForPill(a4: A4State, state: BrainState, pill: PillState): number {
-  const diff = pill.captureDifficulty & 0xFF;
-  // Convert BWorld distance to tile units (>> 8), matching getBaseCostForBase
-  // and fixPillCostForPill. Without this, BWorld-scale costs (5000+) always
-  // lose to exploreGoalCost (200), so the brain never switches to GetPill.
-  const dist = u16(pill.distToTank >> 8);
+export function getPillCostForPill(_a4: A4State, state: BrainState, pill: PillState): number {
+  // Can't shoot an armed pill without ammo; only pursue armour=0 pills for auto-capture
+  if (state.tank.ammo === 0 && pill.armour > 0) return 0xFFFF;
 
-  if (diff >= 8) return 0xFFFF;
+  const defCount = pill.defenderCount & 0xFF;
+  const bwDist   = pill.distToTank;
 
-  // Barrier count between tank and pill (direct line, DDA).
-  // Used as a small TIEBREAKER — prefer pills with clearer approach paths.
-  // Penalty is intentionally tiny (5/barrier) so that walls never price out
-  // a nearby pill; A* navigation handles routing around barriers anyway.
-  const barriers = barrierCount(a4, state.tank.x, state.tank.y, pill.x, pill.y);
-  const barrierPenalty = barriers * 5;
-
-  if (diff === 0) {
-    return u16(dist + barrierPenalty);
-  } else if (diff <= 3) {
-    return u16(dist * (diff + 1) + barrierPenalty);
+  // Distance tier based on defender count
+  let D3: number;
+  if (defCount > 7) {
+    D3 = bwDist >> 7;
+  } else if (defCount > 2) {
+    D3 = bwDist >> 8;
   } else {
-    // High difficulty: expensive
-    const defenderPenalty = pill.defenderCount * 200;
-    return u16(dist * 8 + defenderPenalty + barrierPenalty);
+    D3 = bwDist >> 10;
   }
+
+  // Add per-defender cost (binary: defenderCount * 8)
+  D3 += defCount * 8;
+
+  // Final discount: shift right by captureDifficulty (base-centrality count, 0–7)
+  const diff = pill.captureDifficulty & 0x07;
+  if (diff === 1 || diff === 2) {
+    D3 = D3 >> 1;
+  } else if (diff > 2) {
+    D3 = D3 >> diff;
+  }
+
+  return u16(Math.max(1, D3));
 }
 
 /**
@@ -297,28 +300,32 @@ export function killBaseCostForBase(a4: A4State, _state: BrainState, base: BaseS
 }
 
 /**
- * KillTankCost (0x00cb76) — simple 0–3 priority for engaging enemy tanks.
+ * KillTankCost (0x00cb76) — verified from binary disassembly.
  *
- * Returns:
- *   0   → high priority (close enemy)
- *   1   → medium (distant enemy)
- *   2   → low (shielded enemy)
- *   3   → skip (out of range)
- *   0xFFFF → no target
+ * Binary KillTankCost(tank, flag=1):
+ *   dist ≤ 0x0500 (1280, ~5 tiles) AND has pill-guard: cost 0
+ *   dist ≤ 0x0500 AND no pill-guard:                   cost 1
+ *   dist >  0x0500 AND has pill-guard:                  cost 2
+ *   dist >  0x0500 AND no pill-guard:                   cost 3
+ *
+ * MarkKillableTanks only marks tanks within 0x0A00 (2560, ~10 tiles) as
+ * killable when ammo ≥ 4; within 0x0400 (1024, ~4 tiles) when ammo < 4.
+ *
+ * We don't track the pill-guard field; use the "no pill-guard" path (costs
+ * 1 and 3 → mapped to 0 and 2 to keep the close-range override at 0).
+ *
+ *   dist ≤ 1280 (5 tiles):  cost 0  → beats every goal (including GetPill)
+ *   dist ≤ 2560 (10 tiles): cost 2  → beats defended pills and distant pills
  */
 export function killTankCostForTank(a4: A4State, _state: BrainState, tank: EnemyTankState): number {
-  if (!tank.active || !tank.isEnemy) return 0xFFFF;
+  if (!tank.active || !tank.isEnemy || !tank.attackable) return 0xFFFF;
 
   const dist = tank.distanceMetric;
 
-  // Within 4 tiles: high priority
-  if (dist < 1024) return 0;
+  if (dist <= 1280) return 0;   // ≤ 5 tiles: highest priority
+  if (dist <= 2560) return 2;   // ≤ 10 tiles: beats most objectives
 
-  // Within 14 tiles: medium
-  if (dist < 3584) return 1;
-
-  // Too far
-  return 3;
+  return 0xFFFF;
 }
 
 /**
@@ -341,11 +348,17 @@ export function killManCostForTank(a4: A4State, _state: BrainState, man: EnemyTa
 export function fixPillCostForPill(a4: A4State, _state: BrainState, pill: PillState): number {
   const dist = pill.distToTank;
   const distTiles = dist >> 8;
-  const diff = pill.captureDifficulty;
+  const armour = pill.armour;
 
-  if (diff <= 4) return u16(distTiles);
-  if (diff <= 9) return u16(distTiles * 2);
-  return u16(distTiles * 4);
+  // If the tank is ON the pill tile (distTiles=0), the pill.armour>0 tile freezes
+  // the tank (world_map.ts getTankSpeed returns 0).  Treat as 1-tile distance so
+  // cost is never 0 (which would lock FixPill at highest priority while the tank
+  // is physically unable to do anything).
+  const effectiveTiles = Math.max(1, distTiles);
+
+  if (armour <= 4) return u16(effectiveTiles);
+  if (armour <= 9) return u16(effectiveTiles * 2);
+  return u16(effectiveTiles * 4);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -373,13 +386,12 @@ export function placePillGoalCost(a4: A4State, state: BrainState): number {
 }
 
 /**
- * Explore goal cost — always relatively high (fallback goal).
- * Returns a modest cost based on how little map we know.
+ * Explore goal cost — verified from assembly 0x007406: initialized to 0xFFF5
+ * (65525) and NEVER modified. It only wins when ALL other goals return 0xFFFF
+ * (no targets available). Not 200 as previously thought.
  */
 export function exploreGoalCost(a4: A4State, _state: BrainState): number {
-  // Explore is the default fallback; give it a moderate cost
-  // so any real goal with target takes priority.
-  return 200;
+  return 0xFFF5;  // 65525: true last-resort fallback
 }
 
 /**
@@ -417,18 +429,18 @@ export function getBaseGoalCost(a4: A4State, state: BrainState): number {
     return 0;
   }
 
-  let cost = getBaseCostForBase(a4, state, target);
-
-  // ── Hysteresis discount ───────────────────────────────────────────────────
-  // Competing goals must beat GetBase by >30 to take over while en route.
-  // Guard: only apply when armor > 15 so emergency refuel can always override.
-  // Clamp to 1 (not 0) — cost=0 is reserved for the explicit proximity lock-in
-  // above (within 6 tiles, armor checked there separately).
-  if (a4.getBaseWasLastGoal && state.tank.armor > 15) {
-    cost = Math.max(1, cost - 30);
-  }
-
-  return u16(cost);
+  // Verified binary behaviour: GetBase cost = distTiles + difficulty×16.
+  // No hysteresis discount — the original binary never needed one because
+  // GetBase competed against defended pills (cost ≥ 8) in multiplayer.
+  // In solo play (undefended pills, cost 1–4), GetBase only wins via the
+  // proximity lock-in (≤ 6 tiles → cost=0 above).  Bases farther away are
+  // captured opportunistically when goalGetPill drives over them, not by
+  // explicitly switching to GetBase.
+  //
+  // The old -30 discount made GetBase cost=1 for distant bases (27 tiles
+  // → cost=max(1,27-30)=1) causing rapid GetBase↔GetPill oscillation and
+  // constant A* restarts.
+  return u16(getBaseCostForBase(a4, state, target));
 }
 
 /**
@@ -442,6 +454,11 @@ export function getBaseGoalCost(a4: A4State, state: BrainState): number {
 export function getManGoalCost(a4: A4State, state: BrainState): number {
   const man = state.tank.manPtr;
   if (man === null) return 0xFFFF;
+
+  // Abandoned: the builder proved unreachable (route MISS) — stay off GetMan
+  // during the cooldown so the tank refuels/retreats instead of dying on top of
+  // an unreachable man. Checked before the override so it can't be starved.
+  if (a4.tickCounter < a4.getManFailedUntilTick) return 0xFFFF;
 
   // Priority override flag
   if (a4.getManCostPriorityOverride) return 1;
@@ -504,39 +521,77 @@ export function killTankGoalCost(a4: A4State, state: BrainState): number {
 }
 
 /**
- * Refuel goal cost — based on current armor/ammo deficit.
+ * Refuel goal cost — re-verified from binary ChooseGoal (0x0073ee, 0x0079f8).
  *
- * High priority when low on resources; inactive when full.
+ * Activation thresholds (binary 0x0079f8-0x007a06):
+ *   myTank.byte[44] (armor)  < 30 (0x1E)   → consider refueling
+ *   myTank.byte[46] (shells) < 7            → consider refueling
+ *   Both must be false to skip refueling entirely.
+ *
+ *   NOTE: byte[46] is the RAW shell count (0–40), not the mapped 0–8 ammo.
+ *   The old threshold `ammo < 7` (mapped) triggered at 87.5% capacity —
+ *   far too aggressive.  The correct threshold is `shells < 7` (raw) = 17.5%.
+ *
+ * Cost formula (binary 0x007a6c-0x007a84):
+ *   cost = armor + raw_shells×8 + 40
+ *   Full tank (arm=40, shells=40): 40 + 320 + 40 = 400 — never reached (gate above)
+ *   Critically low (arm=5, shells=3): 5 + 24 + 40 = 69 — high priority
+ *
+ * ChooseRefuelBaseCost (0x00c71e) also gates on shells < 8 for the base
+ * being worthwhile — consistent with the same 7–8 shell threshold.
  */
 export function refuelGoalCost(a4: A4State, state: BrainState): number {
   const tank = state.tank;
 
-  // Full resources: don't refuel
-  if (tank.armor >= 40 && tank.ammo >= 8) return 0xFFFF;
+  // Binary threshold (0x0079f8): armor >= 30 AND shells >= 7 → no refuel needed.
+  // shells is the raw 0-40 count; 7 shells = ~17% of max capacity.
+  if (tank.armor >= 30 && tank.shells >= 7) return 0xFFFF;
 
-  const armorDeficit = 40 - tank.armor;
-  const ammoDeficit  = 8  - tank.ammo;
-
-  // Scale: larger deficit = lower cost = higher priority.
-  // arm=20 → deficit=40 → base cost=160 → beats Explore(200) if base ≤ 40tx
-  // arm=10 → deficit=60 → base cost=140 → beats Explore if base ≤ 60tx
-  // arm=40 → deficit= 0 → base cost=200 → ties Explore (won't refuel when healthy)
-  const totalDeficit = armorDeficit * 2 + ammoDeficit * 5;
-
-  // Need a base to refuel at
+  // Need an ally base with stock to refuel at
   if (a4.refuelBaseTarget === null) return 0xFFFF;
 
-  const distTiles = (a4.refuelBaseTarget.distToTank >> 8) & 0xFFFF;
-  return u16(Math.max(0, 200 - totalDeficit) + distTiles);
+  // Emergency disengage: at critically low armor, refueling outranks combat goals
+  // (GetPill/KillTank/KillBase cost 1-9) so the tank breaks off and flees to a
+  // base instead of fighting a defended target to the death. Observed: tank
+  // ground armor 40→0 attacking defended pills because GetPill always won.
+  // Cost 1 = top priority; once armor recovers ≥30 this returns 0xFFFF and the
+  // tank resumes — i.e. hit-and-run.
+  if (tank.armor < 16) return 1;
+
+  // Binary cost formula (0x007a6c): armor + raw_shells×8 + 40.
+  // Lower = higher priority; critically depleted tank refuels before any other goal.
+  return u16(tank.armor + tank.shells * 8 + 40);
 }
 
 /**
- * TourBases goal cost — low-priority fallback, active when no better goals.
- * Returns a moderate cost if we have ally bases to patrol.
+ * TourBases goal cost — idle-only fallback.
+ *
+ * From binary (0x007cf2): TourBases only gets cost 1 (highest priority) when
+ * ALL of GetPill, FixPill, and PlacePill are unavailable (0xFFFF).
+ * Otherwise returns 0xFFFF (inactive).
+ *
+ * This prevents TourBases from competing with active objectives.
  */
 export function tourBasesGoalCost(a4: A4State, _state: BrainState): number {
-  if (a4.bases.some(b => b.isAlly)) return 400;
-  return 0xFFFF;
+  if (!a4.bases.some(b => b.isAlly)) return 0xFFFF;
+
+  // Only activate when no GetPill, FixPill, or PlacePill objectives exist
+  const getPillCost  = a4.goals[5]?.cost ?? 0xFFFF;   // Goal.GET_PILL = 5
+  const fixPillCost  = a4.goals[2]?.cost ?? 0xFFFF;   // Goal.FIX_PILL = 2
+  const placePillCost = a4.goals[0]?.cost ?? 0xFFFF;  // Goal.PLACE_PILL = 0
+  if (getPillCost < 0xFFFF || fixPillCost < 0xFFFF || placePillCost < 0xFFFF) {
+    return 0xFFFF;
+  }
+
+  // Yield to Refuel. TourBases is the lowest-priority "wander when idle" goal;
+  // a tank that needs fuel/ammo (refuel active) must refuel, not tour. Without
+  // this, a depleted tank with no reachable pills picked TourBases(1) over
+  // Refuel, failed to navigate to an unreachable base, sat idle, and was shot
+  // to death while refuel was available. (Refuel cost is computed before this.)
+  const refuelCost = a4.goals[9]?.cost ?? 0xFFFF;  // Goal.REFUEL = 9
+  if (refuelCost < 0xFFFF) return 0xFFFF;
+
+  return 1;
 }
 
 /**
@@ -550,12 +605,15 @@ export function selectTankToKill(a4: A4State, state: BrainState): EnemyTankState
   for (const man of a4.men) {
     if (!man.active || !man.isEnemy || !man.attackable) continue;
 
-    // MarkKillableTanks gate: need ammo >= 4 or armor > 10
-    if (state.tank.ammo < 4 && state.tank.armor <= 10) continue;
+    // MarkKillableTanks gate (binary 0x00ccb2): need raw shells >= 4 or armor > 10.
+    // Binary: CMPI.B #$04, 46(A0) (raw shells), not mapped ammo.
+    if (state.tank.shells < 4 && state.tank.armor <= 10) continue;
 
-    // Distance gate: must be within ~14 tiles (3584 BWorld)
+    // MarkKillableTanks distance gate (binary 0x00cc90/0x00cc7c):
+    // 0x0A00 (2560, ~10 tiles) when shells >= 4; 0x0400 (1024, ~4 tiles) when low.
     const dist = man.distanceMetric;
-    if (dist > 3584) continue;
+    const rangeLimit = (state.tank.shells >= 4) ? 2560 : 1024;
+    if (dist > rangeLimit) continue;
 
     const cost = killTankCostForTank(a4, state, man);
     if (cost < bestCost) {
@@ -569,7 +627,18 @@ export function selectTankToKill(a4: A4State, state: BrainState): EnemyTankState
 
 /**
  * ChooseRefuelBase — select the best ally base to refuel at.
- * Simplified version of ChooseRefuelBase (0x00c566).
+ *
+ * Verified from binary ChooseRefuelBase (0x00c566) + ChooseRefuelBaseCost (0x00c71e).
+ *
+ * Binary base filters (0x00c594-0x00c5d4):
+ *   - base.byte[22] & 0x01 must be set (ally base)
+ *   - Not blocked (blockedMap[tile] == 0)
+ *   - Tank armor >= 5 (unless base has force flag)
+ *
+ * ChooseRefuelBaseCost gates (0x00c7e0-0x00c7f2 non-urgent path):
+ *   - base.armour > 34 (0x22) — base has ≥85% stock for non-urgent refuel
+ *   - OR base.armour > 14 (0x0E) with lower urgency thresholds
+ *   The base must have meaningful stock; cost scales with distance.
  */
 export function chooseRefuelBase(a4: A4State, state: BrainState): BaseState | null {
   let best: BaseState | null = null;
@@ -579,14 +648,19 @@ export function chooseRefuelBase(a4: A4State, state: BrainState): BaseState | nu
     if (!base.isAlly) continue;
     if (base.isEnemy) continue;
 
-    // Must have stock
-    if (base.armor === 0) continue;
+    // Binary (0x00c5b0): tank must have armor >= 5 to approach a refuel base
+    if (state.tank.armor < 5) continue;
+
+    // Binary (0x00c71e): base must have meaningful stock.
+    // ChooseRefuelBaseCost returns 0xFFFF when base.armour ≤ 14 (< 40% stock).
+    // Use same threshold for our simplified version.
+    if (base.armor < 15) continue;
 
     // Not blocked
     const idx = ((base.tileY & 0xFF) << 8) | (base.tileX & 0xFF);
     if (a4.blockedMap[idx]) continue;
 
-    // Cost: distance + danger penalty
+    // Cost: distance + danger penalty (approximates ChooseRefuelBaseCost distance term)
     const distTiles = base.distToTank >> 8;
     const dangerPenalty = a4.dangerMap[idx] * 10;
     const cost = u16(distTiles + dangerPenalty);

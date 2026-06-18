@@ -211,6 +211,49 @@ export class BoloLocalWorld extends NetLocalWorld {
 
     // Apply the resulting control word bits to the tank's boolean flags
     applyControls(this.player, controls);
+
+    // ── Console debug dump (once per second) ─────────────────────────────────
+    if (a4.tickCounter % 50 === 0) {
+      const GOAL_NAMES: Record<number, string> = {
+        0:'PlacePill', 1:'Explore', 2:'FixPill', 3:'GetBase', 4:'GetMan',
+        5:'GetPill', 6:'KillBase', 7:'KillMan', 8:'KillTank', 9:'Refuel',
+        10:'TourBases', 12:'NoGoal',
+      };
+      const bestGoal = a4.goals.reduce((b, g) => g.cost < b.cost ? g : b, { goalIndex: 12, cost: 0xFFFF });
+      const goalName = GOAL_NAMES[bestGoal.goalIndex] ?? `Goal${bestGoal.goalIndex}`;
+      const goalCosts = a4.goals.map(g =>
+        `${GOAL_NAMES[g.goalIndex] ?? g.goalIndex}=${g.cost === 0xFFFF ? '—' : g.cost}`
+      ).join(' ');
+
+      const target = a4.baseToGetTarget;
+      const targetStr = target
+        ? `base[${target.tileX},${target.tileY}] dist=${target.distToTank >> 8}tx`
+        : a4.pillToGetTarget
+          ? `pill[${a4.pillToGetTarget.tileX},${a4.pillToGetTarget.tileY}]`
+          : 'none';
+
+      const steer = controls.steeringWord;
+      const fire  = controls.firingWord;
+      const ctrlStr = [
+        steer & 0x04 ? 'CCW' : '',
+        steer & 0x08 ? 'CW'  : '',
+        steer & 0x10 ? 'FWD' : '',
+        steer & 0x20 ? 'BRK' : '',
+        fire  & 0x10 ? 'FIRE': '',
+      ].filter(Boolean).join('|') || 'idle';
+
+      console.log(
+        `[Brain t=${a4.tickCounter}] GOAL:${goalName}(${bestGoal.cost}) ` +
+        `target:${targetStr} ` +
+        `tile:(${a4.tankTileX},${a4.tankTileY}) ` +
+        `ctrl:${ctrlStr} ` +
+        `route:${a4.navCacheValid ? 'ok' : 'miss'} ` +
+        `stall:${a4.tickCounter - a4.navStallSinceTick}tx ` +
+        `noRoute:${a4.noLocalRouteFlag}\n` +
+        `  costs: ${goalCosts}`
+      );
+
+    }
   }
 
   /**

@@ -580,12 +580,9 @@ export function receiveAnyMessages(a4: A4State, state: BrainState): void {
 
   const { senderId, text } = msg;
 
-  // ── Normal mode ───────────────────────────────────────────────────────────
-  if (!a4.borgMessageMode) {
-    if (!isAlly(a4, senderId)) {
-      a4.pendingMessage = null;
-      return;
-    }
+  if (!isAlly(a4, senderId)) {
+    a4.pendingMessage = null;
+    return;
   }
 
   if (!isOkToReceive(text)) {
@@ -598,14 +595,6 @@ export function receiveAnyMessages(a4: A4State, state: BrainState): void {
   const commandId = recognizeBrainCommand(tokens);
   a4.lastRecognizedCommandId = commandId & 0xFFFF;
 
-  // ── Borg mode: ally check deferred for privileged commands ────────────────
-  if (a4.borgMessageMode && commandId !== 0 && commandId !== 5) {
-    if (!isAlly(a4, senderId)) {
-      disposeTokenString(tokens);
-      a4.pendingMessage = null;
-      return;
-    }
-  }
 
   // Dispatch command
   dispatchCommand(a4, state, commandId, tokens);

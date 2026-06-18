@@ -485,7 +485,7 @@ export const BoloClientWorldMixin = {
           if (cell.hasTankOnBoat()) {
             result = [false];
           } else {
-            result = ['boat', 20];
+            result = ['boat', 5];
           }
         } else if (cell === this.player.cell) {
           result = [false];

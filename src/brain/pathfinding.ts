@@ -658,7 +658,8 @@ export function turnTowardsXY(
   fromX: number, fromY: number,
   toX: number, toY: number,
   currentDir: number,
+  tolerance = 5,
 ): void {
   const targetDir = directionTo(fromX, fromY, toX, toY);
-  turnTowardsDir(a4, currentDir, targetDir);
+  turnTowardsDir(a4, currentDir, targetDir, tolerance);
 }

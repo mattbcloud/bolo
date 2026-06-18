@@ -84,41 +84,66 @@ export const TERRAIN_ASCII_TO_ID: Record<string, Terrain> = {
 // CONTROL WORDS → Orona Tank Flags
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Builder action command emitted by the brain and handled by _runBrainTick. */
+export interface BuilderActionCommand {
+  /** Orona BuilderAction string: 'forest' to harvest, 'repair' to fix pill, 'boat' to build boat on water. */
+  action: 'forest' | 'repair' | 'boat';
+  /** Number of trees to consume (0 for forest harvest; 1-4 for repair). */
+  trees: number;
+  /** Target tile X coordinate (0-255). */
+  tileX: number;
+  /** Target tile Y coordinate (0-255). */
+  tileY: number;
+}
+
 /** Output from the brain: raw 32-bit control words (written each tick) */
 export interface BrainControls {
   /** A4[11678]: steering control bits (see module JSDoc for bit assignments) */
   steeringWord: number;
   /** A4[11682]: firing control bits */
   firingWord: number;
+  /** Optional builder dispatch command for this tick (handled by _runBrainTick). */
+  builderAction?: BuilderActionCommand;
 }
 
-/** Steering word bit flags */
+/** Steering word bit flags — verified from 68k assembly (binary extraction 2026-05-23) */
 export const STEER = {
+  ACCEL_HARD     : 0x01,  // SetSpeed: hard accelerate (desired > current + 3)
+  BRAKE_HARD     : 0x02,  // SetSpeed: hard brake (desired < current - 3)
   TURN_CCW_LARGE : 0x04,  // TurnTowardsDir: >9-unit angular error, CCW
   TURN_CW_LARGE  : 0x08,  // TurnTowardsDir: >9-unit angular error, CW
-  FORWARD        : 0x10,  // Accelerate toward target (AimAt, Shoot)
-  BRAKE          : 0x20,  // Brake / slow (AimAt: too close to target)
-  FORWARD_FIRE   : 0x40,  // Forward while firing mode (Shoot: rate-limited)
-  // Mine placement bit: TBD from Mac Bolo engine spec
-  // MINE        : 0x??,  // DropMines: deploy mine while moving
+  FORWARD        : 0x10,  // Shoot/AimAt: approach target (move toward while shooting)
+  BRAKE          : 0x20,  // Shoot/AimAt: retreat/brake (too close to target)
+  FORWARD_FIRE   : 0x40,  // KillBase/Shoot: forward-fire mode
+  LAY_MINE       : 0x80,  // DropMines: deploy mine
 } as const;
 
-/** Firing word bit flags */
+/** Firing word bit flags — verified from 68k assembly */
 export const FIRE = {
+  ACCEL_GENTLE   : 0x01,  // SetSpeed: gentle accelerate (desired in (current, current+3])
+  BRAKE_GENTLE   : 0x02,  // SetSpeed: gentle brake (desired in [current-3, current))
   TURN_CCW_FINE  : 0x04,  // TurnTowardsDir: ≤9-unit angular error, CCW
   TURN_CW_FINE   : 0x08,  // TurnTowardsDir: ≤9-unit angular error, CW
-  SHOOT          : 0x10,  // Fire (direct, Shoot primary)
-  SHOOT_SHORT    : 0x20,  // Fire (short-range supplemental, Shoot)
-  SHOOT_RATELIM  : 0x40,  // Fire (rate-limited, max 1/sec, Shoot)
+  SHOOT          : 0x10,  // Shoot: fire (short range)
+  SHOOT_SHORT    : 0x20,  // Shoot: fire (supplemental)
+  SHOOT_RATELIM  : 0x40,  // Shoot: fire (rate-limited)
 } as const;
 
 /**
  * Apply brain control words to an Orona Tank object.
- * Call this every tick after the brain has set steeringWord / firingWord.
  *
- * Note: Fine turns (0x04/0x08 in firingWord) represent small angular corrections.
- * Orona doesn't distinguish fine/large turns, so both sets of bits feed into
- * the same turningClockwise / turningCounterClockwise flags.
+ * Bit assignments verified directly from 68k assembly extraction (2026-05-23):
+ *   steeringWord 0x01 = hard accel (SetSpeed)
+ *   steeringWord 0x02 = hard brake (SetSpeed)
+ *   steeringWord 0x04/firingWord 0x04 = CCW turn (TurnTowardsDir large/fine)
+ *   steeringWord 0x08/firingWord 0x08 = CW  turn (TurnTowardsDir large/fine)
+ *   steeringWord 0x10 = forward/approach (Shoot, AimAt)
+ *   steeringWord 0x20 = brake/retreat   (Shoot, AimAt)
+ *   steeringWord 0x40 = forward-fire    (KillBase, Shoot rate-limited)
+ *   steeringWord 0x80 = lay mine        (DropMines)
+ *   firingWord   0x01 = gentle accel    (SetSpeed)
+ *   firingWord   0x02 = gentle brake    (SetSpeed)
+ *   firingWord   0x10/0x20/0x40 = fire  (Shoot variants)
  */
 export function applyControls(tank: OronaTankLike, controls: BrainControls): void {
   const s = controls.steeringWord;
@@ -126,10 +151,19 @@ export function applyControls(tank: OronaTankLike, controls: BrainControls): voi
 
   tank.turningCounterClockwise = !!(s & STEER.TURN_CCW_LARGE) || !!(f & FIRE.TURN_CCW_FINE);
   tank.turningClockwise        = !!(s & STEER.TURN_CW_LARGE)  || !!(f & FIRE.TURN_CW_FINE);
-  tank.accelerating            = !!(s & STEER.FORWARD) || !!(s & STEER.FORWARD_FIRE);
-  tank.braking                 = !!(s & STEER.BRAKE);
-  tank.shooting                = !!(f & FIRE.SHOOT) || !!(f & FIRE.SHOOT_SHORT) || !!(f & FIRE.SHOOT_RATELIM);
-  // tank.layingMine: handled separately when brain calls mine-placement logic
+  // Accelerating: hard accel (SetSpeed 0x01), gentle accel (SetSpeed firingWord 0x01),
+  //               forward approach (Shoot/AimAt 0x10), forward-fire (0x40)
+  tank.accelerating = !!(s & STEER.ACCEL_HARD) || !!(f & FIRE.ACCEL_GENTLE)
+                   || !!(s & STEER.FORWARD)     || !!(s & STEER.FORWARD_FIRE);
+  // Braking: hard brake (SetSpeed 0x02), gentle brake (SetSpeed firingWord 0x02),
+  //          retreat (Shoot/AimAt 0x20)
+  tank.braking = !!(s & STEER.BRAKE_HARD) || !!(f & FIRE.BRAKE_GENTLE) || !!(s & STEER.BRAKE);
+  // In Mac Bolo, steeringWord 0x40 (11678|=0x40) fires the gun AND moves forward
+  // simultaneously — it is the primary "on-target fire" path in Shoot/ShootPill.
+  // Our mapping correctly accelerates on FORWARD_FIRE but was missing the shoot.
+  tank.shooting   = !!(f & FIRE.SHOOT) || !!(f & FIRE.SHOOT_SHORT) || !!(f & FIRE.SHOOT_RATELIM)
+                 || !!(s & STEER.FORWARD_FIRE);
+  tank.layingMine = !!(s & STEER.LAY_MINE);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,6 +221,7 @@ export interface TankState {
   tileY: number;                // Tile Y (A4[11687])
   direction: number;            // 0-255 (TankRecord+24)
   facingDir: number;            // 0-255 (TankRecord+40 — alternate facing)
+  speed: number;                // current speed (TankRecord+41, via myTank.speed)
   localX: number;               // Local X (TankRecord+36)
   localY: number;               // Local Y (TankRecord+38)
   altX: number;                 // Alternate X (TankRecord+66, man position)
@@ -195,13 +230,16 @@ export interface TankState {
 
   // Resources
   armor: number;                // 0-40 (TankRecord+44)
-  ammo: number;                 // 0-8 ammo count (TankRecord+46, byte[46])
+  shells: number;               // 0-40 raw shell count (TankRecord+46) — used for binary-accurate refuel thresholds
+  ammo: number;                 // 0-8 ammo count (shells/5, for backward compat)
   shellCount: number;           // Shot range/count multiplier (TankRecord+52)
   mineCount: number;            // Mine count (TankRecord+55)
   pillsCarried: number;         // Pills in hand (TankRecord+48)
   resourceCount: number;        // Fuel/ammo resource (TankRecord+47)
-  resourceEnabled: boolean;     // Resource gate flag (TankRecord+42)
+  resourceEnabled: boolean;     // Resource gate: false = tank can harvest trees (TankRecord+42)
   mineDeployEnabled: boolean;   // Mine deploy flag (TankRecord+45)
+  builderInTank: boolean;       // true when builder is in the tank (available for dispatch)
+  onBoat: boolean;              // Whether tank is currently on a boat (Orona-specific)
 
   // Man (builder)
   manBehaviorA: number;         // TankRecord+77 (LocalRouteFind param)
@@ -214,9 +252,6 @@ export interface TankState {
   basesInGame: number;          // TankRecord+22 word
   baseCountOwned: number;       // TankRecord+86 word
 
-  // Borg settings (loaded at BrainOpen from TankRecord)
-  borgNavCommit: number;        // TankRecord+169 → A4[12862]
-  borgProximityGate: number;    // TankRecord+171 → A4[12861]
 }
 
 /** State of a base (BaseRecord, stride 184) */
@@ -268,7 +303,8 @@ export interface PillState {
   ownerByte2: number;         // +11 byte
   surroundOwner: number;      // +110 byte (init=16)
   surroundOwner2: number;     // +111 byte (init=16)
-  captureDifficulty: number;  // +12 byte
+  armour: number;             // Orona pill armour (0–15; 0 = auto-capturable)
+  captureDifficulty: number;  // +12 byte: count of neutral bases near this pill (0–7)
   defenderCount: number;      // +19 byte
   attackable: boolean;        // +20 byte bit0 (enemy-attackable)
   capturable: boolean;        // +30 byte
@@ -464,6 +500,7 @@ export interface OronaTankLike {
   layingMine: boolean;
   kills: number;
   deaths: number;
+  onBoat?: boolean;             // Whether tank is currently on a boat
   /** Returns array of pillboxes currently being carried by the tank */
   getCarryingPillboxes?: () => any[];
 }
@@ -473,6 +510,24 @@ export interface OronaMapLike {
   pills: any[];
   bases: any[];
   cellAtTile(x: number, y: number): any;
+}
+
+// ── Static terrain cache ────────────────────────────────────────────────────
+// The Bolo terrain (road, grass, forest, walls, water) is STATIC — it never
+// changes during a game. Only pill presence and base state change dynamically.
+// We build the static terrain map once and copy+overlay each tick instead of
+// calling cellAtTile() 65536 times (which caused 50ms+ handler violations).
+let _staticTerrainMap: Uint8Array | null = null;
+let _waterTileList: Uint16Array | null = null;   // tiles with isTrueWater
+let _waterTileCount = 0;
+let _staticTerrainBuilt = false;
+
+/** Reset the static terrain cache (call when joining a new game/map). */
+export function resetStaticTerrainCache(): void {
+  _staticTerrainBuilt = false;
+  _staticTerrainMap   = null;
+  _waterTileList      = null;
+  _waterTileCount     = 0;
 }
 
 /**
@@ -501,23 +556,78 @@ export function buildBrainState(
   // ── World map terrain encoding ─────────────────────────────────────────────
   // Rebuild worldMap from Orona cells.
   // This is expensive (65536 lookups) — may want to cache and update incrementally.
-  worldMap.fill(0);
-  for (let ty = 0; ty < 256; ty++) {
-    for (let tx = 0; tx < 256; tx++) {
-      const cell = oronaMap.cellAtTile(tx, ty);
-      const idx = (ty << 8) | tx;
-      let terrainId: number;
-      if (cell.pill) {
-        terrainId = Terrain.PILL;
-      } else if (cell.base) {
-        terrainId = Terrain.BASE;
-      } else {
-        terrainId = TERRAIN_ASCII_TO_ID[cell.type?.ascii ?? '|'] ?? Terrain.WALL;
+  // The 0x80 flag on a world map byte means "this water cell has a boat available"
+  // (original Bolo BMAP encoding). Cost for 0x80|terrain = 19 (cheap, boat navigable).
+  // Without 0x80, water terrain (type 1=river, 10=deep-sea) costs 1000 (impassable).
+  // We set 0x80 on water cells ONLY when the brain's tank is on a boat, meaning
+  // the tank can navigate water. When on land, water is treated as impassable walls.
+  const tankOnBoat = !!(myTank.onBoat);
+
+  // Build the worldMap efficiently using a cached static terrain layer.
+  // Terrain is STATIC (never changes during a game). Pills and bases overlay it.
+  // On first call: build the static terrain + water-tile index from cellAtTile().
+  // On subsequent calls: copy cached base, overlay pills/bases, apply boat flag.
+  if (!_staticTerrainBuilt || !_staticTerrainMap) {
+    _staticTerrainMap = new Uint8Array(65536);
+    _waterTileList    = new Uint16Array(65536);
+    _waterTileCount   = 0;
+
+    for (let ty = 0; ty < 256; ty++) {
+      for (let tx = 0; tx < 256; tx++) {
+        const cell = oronaMap.cellAtTile(tx, ty);
+        const idx = (ty << 8) | tx;
+        // Static terrain — no pill/base overlay here (applied per-tick below)
+        const terrainId = TERRAIN_ASCII_TO_ID[cell.type?.ascii ?? '|'] ?? Terrain.WALL;
+        _staticTerrainMap[idx] = terrainId;
+        if (terrainId === Terrain.RIVER || terrainId === Terrain.DEEP_SEA) {
+          _waterTileList[_waterTileCount++] = idx;
+        }
       }
-      // Preserve water flag: if terrainId is river/swamp/deep sea, set bit 0x80
-      const isWater = terrainId === Terrain.RIVER || terrainId === Terrain.SWAMP ||
-                      terrainId === Terrain.DEEP_SEA || terrainId === Terrain.BOAT;
-      worldMap[idx] = terrainId | (isWater ? 0x80 : 0);
+    }
+    _staticTerrainBuilt = true;
+  }
+
+  // Fast path: copy static terrain, then overlay dynamic elements
+  worldMap.set(_staticTerrainMap);
+
+  // Overlay pill tiles — only active (armour > 0) pills block routing.
+  // Dead pills (armour=0) are driven over to capture; their tile should show
+  // the underlying terrain so the A* can route onto it.
+  for (const pill of oronaMap.pills) {
+    if ((pill.armour ?? 0) <= 0) continue;   // dead/empty: don't block routing
+    if (pill.cell) {
+      worldMap[(pill.cell.y << 8) | pill.cell.x] = Terrain.PILL;
+    } else if (pill.x != null && pill.y != null) {
+      worldMap[(((pill.y >> 8) & 0xFF) << 8) | ((pill.x >> 8) & 0xFF)] = Terrain.PILL;
+    }
+  }
+
+  // Overlay base tiles.
+  // Binary Examine (0x022596): ally bases get quality penalty 5000 → effectively
+  // impassable for A*.  We use the building flag (0x40) on ally base tiles so
+  // examineTerrainCostTable[0x40|BASE] = 1000 → same impassable effect.
+  //
+  // Enemy bases with armour > 9 AND an active owner: world_map.ts
+  // getTankSpeed/getTankTurn return 0 on that tile (tank completely frozen).
+  // Block these in worldMap so A* routes around; goalGetBase shoots from adjacent.
+  // Threshold matches world_map.ts:83 exactly: `owner != null && armour > 9`.
+  // Using owner (not just team) is critical: when a team leaves, owner becomes
+  // null and the base is passable even if team persists.
+  for (const base of oronaMap.bases) {
+    const isAlly = base.team != null && base.team === myTank.team;
+    const isEnemyArmoured = !isAlly && base.owner != null && (base.armour ?? 0) > 9;
+    const terrain = (isAlly || isEnemyArmoured) ? (0x40 | Terrain.BASE) : Terrain.BASE;
+    if (base.cell) {
+      worldMap[(base.cell.y << 8) | base.cell.x] = terrain;
+    } else if (base.x != null && base.y != null) {
+      worldMap[(((base.y >> 8) & 0xFF) << 8) | ((base.x >> 8) & 0xFF)] = terrain;
+    }
+  }
+
+  // Apply 0x80 boat-navigable flag to water tiles when tank is on a boat
+  if (tankOnBoat && _waterTileList) {
+    for (let i = 0; i < _waterTileCount; i++) {
+      worldMap[_waterTileList[i]] |= 0x80;
     }
   }
 
@@ -574,15 +684,11 @@ export function buildBrainState(
     }
   }
 
-  // ── Blocked map: tiles with walls or water ────────────────────────────────
+  // ── Blocked map: cleared each tick, then populated by addTanks.
+  // Walls are already impassable via examineTerrainCostTable[0]=1000.
+  // The blockedMap adds a 500 penalty to non-wall tiles (used for enemy
+  // builder positions set by addTanks via 0x40 worldMap flag).
   blockedMap.fill(0);
-  for (let i = 0; i < 65536; i++) {
-    const t = worldMap[i] & 0x0F;
-    // Blocked: wall or water types
-    if (t === Terrain.WALL || (worldMap[i] & 0x80)) {
-      blockedMap[i] = 1;
-    }
-  }
 
   // ── Ally map: team ownership per tile ─────────────────────────────────────
   allyMap.fill(0xFF);  // 0xFF = neutral/unknown
@@ -627,27 +733,31 @@ export function buildBrainState(
     tileY: (tankY >> 8) & 0xFF,
     direction: myTank.direction,
     facingDir: myTank.direction,
+    speed: myTank.speed,
     localX: tankX & 0xFF,
     localY: tankY & 0xFF,
     altX: 0, altY: 0,  // set from builder position if available
     team: myTeam,
     armor: myTank.armour,
-    ammo: Math.round(myTank.shells / 5),    // shells 0-40 → ammo 0-8
+    shells: myTank.shells ?? 0,             // raw 0-40 shell count for binary-accurate thresholds
+    ammo: Math.round((myTank.shells ?? 0) / 5),  // shells 0-40 → ammo 0-8
     shellCount: Math.round(myTank.firingRange * 2),  // firingRange 1-7 → byte[52]
     mineCount: myTank.mines,
     pillsCarried: myTank.getCarryingPillboxes ? myTank.getCarryingPillboxes().length : 0,
     resourceCount: myTank.trees,
-    resourceEnabled: true,
+    // resourceEnabled mirrors TankRecord+42: 0=can harvest, nonzero=skip harvest.
+    // We set it based on whether the tank has room for more trees (cap 40).
+    resourceEnabled: (myTank.trees ?? 0) >= 40,
     mineDeployEnabled: myTank.mines > 0,
+    onBoat: !!(myTank.onBoat),
     manBehaviorA: 1,
     manBehaviorB: 0,
-    manPtr: null,       // TODO: build from myTank.builder
+    builderInTank: !myTank.builder || (myTank.builder.$.x == null),
+    manPtr: null,       // filled below if builder is on map
     menInGame: allTanks.filter(t => t.team === myTeam && t.builder != null).length,
     pillsInGame: oronaMap.pills.length,
     basesInGame: oronaMap.bases.length,
     baseCountOwned: oronaMap.bases.filter((b: any) => b.team === myTeam).length,
-    borgNavCommit: 0x80,  // default: Borg nav enabled (from TankRecord+169)
-    borgProximityGate: 0x01,
   };
 
   // Builder (man) state.
@@ -655,7 +765,7 @@ export function buildBrainState(
   // tank (not deployed on the map). Only create manPtr when the builder has a
   // real position — otherwise the brain would navigate toward tile (0,0).
   if (myTank.builder) {
-    const b = myTank.builder;
+    const b = myTank.builder.$;
     const bx: number | null = b.x ?? null;
     const by: number | null = b.y ?? null;
     tank.altX = bx ?? 0;
@@ -699,10 +809,11 @@ export function buildBrainState(
     ownerByte2: p.team ?? 0xFF,
     surroundOwner: 16,
     surroundOwner2: 16,
-    // captureDifficulty: map Orona pill armour (0-15) to the brain's 0-7 tier.
-    // The cost function rejects diff >= 8, so we cap at 7.
-    // armour 0 → diff 0 (undefended/nearly dead), armour 14-15 → diff 7 (full health).
-    captureDifficulty: Math.min(7, Math.floor(((p.armour ?? 0) / 2))),
+    armour: p.armour ?? 0,
+    // captureDifficulty: count of neutral bases where this pill appears in ally/enemy
+    // pill mask (PillToGet 0x00cec4: pill[+12] is incremented per qualifying base).
+    // Computed in post-processing below after bases are built; init to 0.
+    captureDifficulty: 0,
     // defenderCount: count enemy/neutral tanks within 5 tiles of this pill
     // that could contest our attack. Also add 1 if the pill itself is actively
     // firing (haveTarget). This is used by ChooseGoal cost functions.
@@ -721,7 +832,8 @@ export function buildBrainState(
       }
       return Math.min(255, count);
     })(),
-    attackable: p.team !== myTeam && p.team != null,
+    // Neutral pills (team=null) ARE attackable — p.team !== myTeam is true for null
+    attackable: p.team !== myTeam,
     capturable: !p.inTank && p.armour < 15,
     alreadyTargeted: false,
     processingBlocked: false,
@@ -771,6 +883,32 @@ export function buildBrainState(
       ? Math.round(Math.hypot(bx - frontlineX, by - frontlineY))
       : 0;
 
+    // Compute pill masks: scan all active pills within ~7 tiles (1792 BWorld).
+    // Bits 0-15 correspond to pill indices. The masks drive KillBase (defend ally
+    // bases that have enemy pills nearby) and cost adjustments in killBaseCostForBase.
+    const PILL_RANGE = 7 * 256;  // 7 tiles in BWorld
+    let neutralPillMask = 0;
+    let allyPillMask    = 0;
+    let enemyPillMask   = 0;
+    let minDistToEnemyPill = 0xFFFF;
+    for (const p of oronaMap.pills) {
+      if (p.inTank) continue;
+      if (p.x == null || p.y == null) continue;
+      const pdx = Math.abs(p.x - bx);
+      const pdy = Math.abs(p.y - by);
+      if (pdx >= PILL_RANGE || pdy >= PILL_RANGE) continue;
+      const bit = 1 << (p.index ?? 0);
+      if (p.team == null) {
+        neutralPillMask |= bit;
+      } else if (p.team === myTeam) {
+        allyPillMask |= bit;
+      } else {
+        enemyPillMask |= bit;
+        const dist = Math.round(Math.hypot(pdx, pdy));
+        if (dist < minDistToEnemyPill) minDistToEnemyPill = dist;
+      }
+    }
+
     return {
       index: i,
       x: bx,
@@ -787,13 +925,13 @@ export function buildBrainState(
       forceFlag: false,
       newRefuelTrigger: b.refueling != null,
       teamId: b.team ?? 0,
-      minDistToEnemyPill: 0xFFFF,  // computed per pill scan (expensive; left for future)
+      minDistToEnemyPill,
       distToTank: b.x != null ? Math.round(Math.hypot(bx - tankX, by - tankY)) : 0xFFFF,
       distToAllyCoG,
       distToFrontline,
-      neutralPillMask: 0,
-      allyPillMask: 0,
-      enemyPillMask: 0,
+      neutralPillMask,
+      allyPillMask,
+      enemyPillMask,
       nearbyBaseCount: 0,
       nearbyBasePtrs: [],
       nearbyPillCount: 0,
@@ -801,6 +939,20 @@ export function buildBrainState(
       oronaBase: b,
     };
   });
+
+  // ── Compute captureDifficulty for pills (PillToGet 0x00cec4) ─────────────
+  // For each neutral base (neither ally nor enemy), increment captureDifficulty
+  // for every pill that appears in that base's allyPillMask or enemyPillMask.
+  // Pills near many neutral bases are strategically central → lower GetPillCost.
+  for (const pill of pills) {
+    let count = 0;
+    const bit = 1 << pill.index;
+    for (const base of bases) {
+      if (base.isAlly || base.isEnemy) continue;
+      if ((base.allyPillMask & bit) || (base.enemyPillMask & bit)) count++;
+    }
+    pill.captureDifficulty = Math.min(7, count);
+  }
 
   // ── Build visible tank states ──────────────────────────────────────────────
   const tanks: EnemyTankState[] = allTanks
@@ -881,7 +1033,14 @@ export function bworldDist(x1: number, y1: number, x2: number, y2: number): numb
 
 /** Signed 16-bit word (simulate 68k WORD sign extension) */
 export function signedWord(v: number): number {
-  return (v & 0x8000) ? v - 0x10000 : v & 0xFFFF;
+  // Mask to 16 bits FIRST. Without this, a negative input like -512 evaluates
+  // (-512 & 0x8000) on its 32-bit two's-complement form (0xFFFFFE00) → 0x8000
+  // is set → returns -512 - 0x10000 = -66048. That made computeDistanceBetween
+  // return garbage (~66096) whenever the target was left/above the tank, which
+  // defeated all distance-gated nav logic (fine-steering, approach slowdown) and
+  // left the tank idle/orbiting on up-left targets.
+  v &= 0xFFFF;
+  return (v & 0x8000) ? v - 0x10000 : v;
 }
 
 /** Unsigned byte mask */

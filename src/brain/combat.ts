@@ -55,9 +55,9 @@ export function aimAt(
   const dist = computeDistanceBetween(tank.x, tank.y, targetX, targetY);
   const rangeMid = (tank.shellCount & 0xFF) << 7;   // byte[52] × 128
 
-  // Always turn toward target
+  // Turn toward target with tolerance=0 (verified from assembly 0x002702)
   const targetDir = directionTo(tank.x, tank.y, targetX, targetY);
-  turnTowardsDir(a4, tank.facingDir, targetDir);
+  turnTowardsDir(a4, tank.facingDir, targetDir, 0);
 
   if (mode === 0) {
     // Close-range fire
@@ -159,8 +159,10 @@ export function onTarget(
 
   if (useRangeFlag) return true;
 
-  // Extra range check: shot must physically reach target
-  return shotRange >= Math.max(0, dist - 128);
+  // Verified from assembly 0x0159ea: when dist < 128 (too close), returns false.
+  // When dist >= 128: return true only if shot range reaches target.
+  if (dist < 128) return false;
+  return shotRange >= (dist - 128);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -308,7 +310,7 @@ export function findSafestPointFrom(
  * 1. Hard distance gate (2048 BWorld = 8 tiles)
  * 2. Turn toward target
  * 3. Range-aware thrust logic
- * 4. Borg man-protection check (don't hit own builder)
+ * 4. Man-protection check (don't hit own deployed builder)
  * 5. OnTarget accuracy check
  * 6. Rate-limited fire: max 1 shot per 60 ticks (1.2 s)
  *
@@ -333,30 +335,42 @@ export function shoot(
   const shotRange = (tank.shellCount & 0xFF) << 7;   // byte[52] × 128
   const overshoot = dist - shotRange;
 
-  // Step 1: Turn toward target
+  // Step 1: Turn toward target with tolerance=0 (verified from assembly 0x0178ca)
+  // Shoot requires exact aim — keeps turning until angErr===0.
   const targetDir = directionTo(tank.x, tank.y, targetX, targetY);
-  turnTowardsDir(a4, tank.facingDir, targetDir);
+  turnTowardsDir(a4, tank.facingDir, targetDir, 0);
 
-  // Step 2: Range-aware thrust logic
+  // Step 2: Range-aware thrust/retreat logic (verified from 0x0178f0-0x017932)
   if (!rangeFlag) {
-    // Simple mode: push forward if short range
+    // Simple mode: push forward if not at max range (shellCount < 14)
     if ((tank.shellCount & 0xFF) < 14) {
       a4.steeringWord |= 0x10;   // FORWARD
     }
-  } else if (overshoot > 0) {
-    if (overshoot >= 256) {
-      a4.steeringWord |= 0x10;   // too far → advance
-    } else if (overshoot >= 64) {
-      a4.firingWord |= 0x10;     // barely out of range → pre-fire
+  } else {
+    if (overshoot > 64) {
+      // Target beyond range: advance
+      if (overshoot >= 256) {
+        a4.steeringWord |= 0x10;  // hard advance
+      } else {
+        a4.firingWord   |= 0x10;  // gentle advance
+      }
+    } else if (overshoot < -64) {
+      // Target within range (too close): retreat
+      const retreat = -overshoot;
+      if (retreat >= 256) {
+        a4.steeringWord |= 0x20;  // hard retreat/brake
+      } else {
+        a4.firingWord   |= 0x20;  // gentle retreat
+      }
     }
-    // overshoot < 64: close to range edge; let OnTarget handle
+    // |overshoot| < 64: at ideal range — let OnTarget decide
   }
 
-  // Step 3: Borg man-protection (don't fire if shot lands near own builder)
-  if (a4.borgProximityGate && state.tank.manPtr !== null) {
+  // Step 3: Man-protection — don't fire if shot would land near own deployed builder.
+  if (state.tank.manPtr !== null) {
     const projDist = rangeFlag ? shotRange : dist;
     const { x: shotX, y: shotY } = locationFromDir(
-      tank.facingDir, projDist, tank.localX, tank.localY,
+      tank.facingDir, projDist, tank.x, tank.y,  // fixed: was tank.localX/Y
     );
     const manX = state.tank.altX;
     const manY = state.tank.altY;
@@ -415,7 +429,10 @@ export function shootPill(
   // Phase 1: Turn toward direction + armor gate
   const aligned = turnTowardsDir(a4, tank.facingDir, direction);
 
-  if ((tank.armor & 0xFF) < 14) {
+  // Binary gate: myTank.byte[52] (shellCount / firingRange×2) must be ≥ 14.
+  // shellCount = firingRange × 2; at max range (7) shellCount=14 → always passes.
+  // Checking armor here was wrong — it incorrectly blocked firing when armor < 14.
+  if ((tank.shellCount & 0xFF) < 14) {
     a4.steeringWord |= 0x10;   // set forward bit (low-priority fire)
     return 0;
   }
@@ -706,10 +723,10 @@ export function adjustTankAtAP(
  *   1. Mine-at-feet when armor critically low
  *   2. Opportunistic shoot at closest enemy tank in range
  *   3. Pill-drop check (delegates to CheckDropPills — stub)
- *   4. KillMan override in Borg mode
+ *   4. (removed — KillMan handled entirely by goal system)
  *   5. Drop mines near enemy bases
  *   6. DoBuilding (stub)
- *   7. Auto-aim at pill ahead in Borg navigation mode
+ *   7. Auto-aim at attackable pill ahead in current travel direction
  *
  * See docommonstuff_decode.md.
  *
@@ -722,50 +739,40 @@ export function doCommonStuff(
 ): void {
   const tank = state.tank;
 
-  // ── Phase 1: Mine-at-feet (low armor anti-threat) ──────────────────────
-  if ((tank.armor & 0xFF) < 14) {
-    if (!a4.borgActive && !a4.shotAtMan) {
-      a4.firingWord |= 0x10;   // drop mine at feet (firing control bit 4)
+  // ── Phase 1: Auto-fire at short range ────────────────────────────────
+  // Verified from assembly 0x008222: when shellCount < 14 AND not shotAtMan → fire.
+  if ((tank.shellCount & 0xFF) < 14) {
+    if (!a4.shotAtMan) {
+      a4.firingWord |= 0x10;   // FIRE
     }
   }
 
   // ── Phase 2: Shoot at closest enemy tank ──────────────────────────────
   const enemy = a4.closestEnemyTank;
-  if (!a4.borgActive || a4.borgAimEnable) {
-    if (enemy !== null && (tank.armor & 0xFF) > 0) {
-      const enemyDist = enemy.distanceMetric;
-      if (enemyDist < 1792) {    // within ~7 tiles
-        // Track enemy position for velocity computation.
-        // enemyPrev* arrays are indexed by enemy.index (clamped to 0-15).
-        const eIdx = Math.min(15, enemy.index);
-        const prevTick = a4.enemyPrevTick[eIdx];
-        const prevX    = a4.enemyPrevX[eIdx];
-        const prevY    = a4.enemyPrevY[eIdx];
+  if (enemy !== null && (tank.armor & 0xFF) > 0) {
+    const enemyDist = enemy.distanceMetric;
+    if (enemyDist < 1792) {    // within ~7 tiles
+      const eIdx = Math.min(15, enemy.index);
+      const prevTick = a4.enemyPrevTick[eIdx];
+      const prevX    = a4.enemyPrevX[eIdx];
+      const prevY    = a4.enemyPrevY[eIdx];
 
-        // Compute speed from displacement since last tick (BWorld/tick)
-        let tgtSpeed = 0;
-        if (prevTick > 0 && a4.tickCounter - prevTick <= 2) {
-          const dvx = enemy.x - prevX;
-          const dvy = enemy.y - prevY;
-          // Real tank max speed ≈ 25 BWorld/tick at full throttle on road
-          tgtSpeed = Math.min(25, Math.round(Math.sqrt(dvx * dvx + dvy * dvy)));
-        }
+      let tgtSpeed = 0;
+      if (prevTick > 0 && a4.tickCounter - prevTick <= 2) {
+        const dvx = enemy.x - prevX;
+        const dvy = enemy.y - prevY;
+        tgtSpeed = Math.min(25, Math.round(Math.sqrt(dvx * dvx + dvy * dvy)));
+      }
 
-        // Record current position for next tick
-        a4.enemyPrevX[eIdx]    = enemy.x;
-        a4.enemyPrevY[eIdx]    = enemy.y;
-        a4.enemyPrevTick[eIdx] = a4.tickCounter;
+      a4.enemyPrevX[eIdx]    = enemy.x;
+      a4.enemyPrevY[eIdx]    = enemy.y;
+      a4.enemyPrevTick[eIdx] = a4.tickCounter;
 
-        // LinearAim: predict enemy position using real measured velocity
-        const aim = linearAim(state, tank.x, tank.y, enemy.x, enemy.y, enemy.direction, tgtSpeed);
-
-        // OnTarget check
-        if (onTarget(state, aim.x, aim.y, 0)) {
-          // Barriers check
-          const barriers = checkBarriers(a4, tank.x, tank.y, aim.x, aim.y);
-          if (barriers === 0) {
-            a4.steeringWord |= 0x40;   // SHOOT
-          }
+      const aim = linearAim(state, tank.x, tank.y, enemy.x, enemy.y, enemy.direction, tgtSpeed);
+      if (onTarget(state, aim.x, aim.y, 0)) {
+        const barriers = checkBarriers(a4, tank.x, tank.y, aim.x, aim.y);
+        if (barriers === 0) {
+          a4.steeringWord |= 0x40;   // SHOOT
         }
       }
     }
@@ -773,31 +780,17 @@ export function doCommonStuff(
 
   // ── Phase 3: Pill drop check ──────────────────────────────────────────
   if (tank.pillsCarried > 0 && tank.resourceCount >= 4 && a4.setGlobalsGate) {
-    if (!a4.borgActive || a4.borgPillDropEnable) {
-      // checkDropPills(a4, state);  // TODO Step 12
-    }
-  }
-
-  // ── Phase 4: KillMan override (Borg mode) ────────────────────────────
-  // When Borg aim is active and no control bits set yet, hunt nearby men.
-  if (a4.borgActive && a4.borgAimEnable) {
-    const steerFire = a4.steeringWord | a4.firingWord;
-    if (steerFire === 0 && (tank.armor & 0xFF) > 0) {
-      // KillMan handled via goal system; DoCommonStuff just triggers it again.
-      // (Full implementation deferred: would call ManToKill + KillMan)
-    }
+    // checkDropPills(a4, state);  // TODO Step 12
   }
 
   // ── Phase 5: Drop mines near enemy bases ──────────────────────────────
   if (tank.mineCount > 0 && a4.dropMinesActive && a4.mineDeployEnable) {
-    if (!a4.borgActive || a4.borgDropMinesEnable) {
-      if (currentGoal !== 8 && currentGoal !== 5) {  // not KillTank or GetPill
-        const enemyBase = a4.closestEnemyBase;
-        const allyBase  = a4.closestAllyBase;
-        if (enemyBase !== null && allyBase !== null) {
-          if (enemyBase.distToAllyCoG < allyBase.distToAllyCoG) {
-            _dropMines(a4, 10);
-          }
+    if (currentGoal !== 8 && currentGoal !== 5) {  // not KillTank or GetPill
+      const enemyBase = a4.closestEnemyBase;
+      const allyBase  = a4.closestAllyBase;
+      if (enemyBase !== null && allyBase !== null) {
+        if (enemyBase.distToTank < allyBase.distToTank) {
+          _dropMines(a4, 10);
         }
       }
     }
@@ -806,21 +799,48 @@ export function doCommonStuff(
   // ── Phase 6: DoBuilding ────────────────────────────────────────────────
   _doBuilding(a4, state, currentGoal);
 
-  // ── Phase 7: Auto-aim at nearby pill (Borg navigation) ────────────────
-  if (a4.borgActive && (a4.steeringWord | a4.firingWord) === 0 &&
-      (tank.armor & 0xFF) > 0 && a4.borgNavEnable) {
-    // Look 1 tile ahead in current facing direction
-    const halfFacing = ((tank.shellCount & 0xFF) * 128) & 0xFF;
-    const { x: aheadX, y: aheadY } = locationFromDir(halfFacing, 256, tank.x, tank.y);
+  // ── Phase 6b: Shoot at armoured enemy bases in navigation path ────────
+  // Verified from binary FollowRoute (0x022856, section 0x022d52-0x022e2e):
+  // FollowRoute fires at the next route waypoint when it is an obstacle.
+  // BASE tiles (type 11) reach the catch-all shoot at 0x022e14 because they
+  // are not river (1) or deep sea (10).
+  // Preconditions: alive AND barriers ≤ 1 AND not already shooting this tick.
+  if ((tank.armor & 0xFF) > 0 && !(a4.steeringWord & 0x40)) {
+    for (const base of a4.bases) {
+      if (base.isAlly) continue;
+      // Only shoot at bases that are actually blocked in worldMap (armour > 9
+      // and active owner) — same condition used in aindy_interface.ts overlay.
+      const bIdx = ((base.tileY & 0xFF) << 8) | (base.tileX & 0xFF);
+      if (!(a4.worldMap[bIdx] & 0x40)) continue;
+      const dist = base.distToTank;
+      if (dist > 1792) continue;
+      // Binary: CheckBarriers ≤ 1 before shooting.
+      const barriers = checkBarriers(a4, tank.x, tank.y, base.x, base.y);
+      if (barriers > 1) continue;
+      shoot(a4, state, base.x, base.y, 0, 0);
+      break;  // one base per tick
+    }
+  }
+
+  // ── Phase 7: Auto-aim at attackable pill ahead ────────────────────────
+  // Verified from assembly 0x00841a-0x008720:
+  // Looks ahead (shellCount*128) BWorld in current facing direction for a defended
+  // pill.  Only runs when no other controls are already set and the tank is alive.
+  if ((a4.steeringWord | a4.firingWord) === 0 && (tank.armor & 0xFF) > 0) {
+    const lookAheadDist = (tank.shellCount & 0xFF) * 128;
+    const { x: aheadX, y: aheadY } = locationFromDir(
+      tank.facingDir, lookAheadDist, tank.x, tank.y,
+    );
     const aheadTileX = (aheadX >> 8) & 0xFF;
     const aheadTileY = (aheadY >> 8) & 0xFF;
 
-    // Check if there's an attackable pill ahead
     const pill = a4.getPillAtTile(aheadTileX, aheadTileY);
-    if (pill !== null && pill.attackable && pill.defenderCount > 0) {
-      // Auto-aim: turn toward pill
+    // Binary condition: pill.byte[20] & 0x01 (attackable) AND pill.byte[19] > 0 (armour > 0).
+    // NO defender count check — fires at undefended pills too.  This is the main
+    // way the brain reduces pill armour while navigating past pills in solo play.
+    if (pill !== null && pill.attackable && pill.armour > 0) {
       const dirToPill = directionTo(tank.x, tank.y, pill.x, pill.y);
-      turnTowardsDir(a4, tank.facingDir, dirToPill);
+      shootPill(a4, state, pill, dirToPill & 0xFF, 0);
     }
   }
 }

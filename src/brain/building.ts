@@ -78,7 +78,7 @@ export function dropMines(a4: A4State, period: number): void {
 export function borgFixPillCost(pill: PillState): number {
   if (!pill)                          return 0xFFFF;
   if (pill.attackable)                return 0xFFFF;   // enemy pill
-  if (pill.captureDifficulty >= 15)   return 0xFFFF;   // too hard
+  if (pill.armour >= 15)               return 0xFFFF;   // too hard
   if (pill.defenderCount === 0)       return 0xFFFF;   // no defenders
   if (pill.distToTank > 512)          return 0xFFFF;   // too far
 
@@ -204,17 +204,11 @@ export function findTree(a4: A4State): { x: number; y: number } | null {
  *   4 = Drop pill
  *   5 = Lay mine
  *
- * @param priority  Resource priority threshold
- * @returns true if builderman dispatched
+ * @param priority  Resource priority threshold (from DoBuilding: pillCount × 4)
+ * @returns true if a builder action was queued
  */
 export function build(a4: A4State, state: BrainState, priority: number): boolean {
-  const man = a4.myMan;
-  if (!man) return false;
-
   const tank = state.tank;
-
-  // Gate: resource enable
-  if (tank.resourceEnabled) return false;
 
   // Gate: enemy proximity (closest enemy < 8 tiles with clear LOS)
   const enemy = a4.closestEnemyTank;
@@ -222,67 +216,34 @@ export function build(a4: A4State, state: BrainState, priority: number): boolean
     if (hasLineOfSight(a4, tank.x, tank.y, enemy.x, enemy.y)) return false;
   }
 
-  const movMode = a4.movementMode & 0xFF;
-
-  // ── Mode 1: Borg structure build (movement modes 1 or 10) ─────────────────
-  if (movMode === 1 || movMode === 10) {
-    if (!a4.borgActive && !a4.borgBuildMode) return false;
-    if (tank.resourceCount < 20) return false;
-
-    // Route quality check (bit 14 of route iter count)
-    const routeWord = a4.routeIterCountTable[a4.tankPackedPos & 0xFFFF] ?? 0;
-    if (!(routeWord & 0x4000)) {
-      if ((routeWord & 0x3FFF) <= 10) return false;
-    }
-
-    man.x = (a4.tankTileX << 8) + 128;
-    man.y = (a4.tankTileY << 8) + 128;
-    man.actionCode = 3;   // BUILD
-    a4.newGetPillAttackMode = 1;
-    setManTime(a4, tank.x, tank.y, man.x, man.y);
-    return true;
-  }
-
-  // ── Mode 2: Pill navigation (movement mode 5) ─────────────────────────────
-  if (movMode === 5) {
-    if (!a4.borgActive && !a4.borgBuildMode) return false;
-    if (tank.resourceCount < 20) return false;
-
-    man.actionCode = 1;   // NAVIGATE
-    a4.newGetPillAttackMode = 1;
-    setManTime(a4, tank.x, tank.y, man.x, man.y);
-    return true;
-  }
-
-  // ── Mode 3: General pill placement (modes 2, 3, 6) ───────────────────────
-  // Note: movMode===1 is already handled by Mode 1 above.
-  if (movMode === 2 || movMode === 3 || movMode === 6) {
-    if (tank.resourceCount < priority + 2) return false;
-    if (!a4.borgActive && !a4.borgBuildEnable) return false;
-
-    man.actionCode = 2;   // PLACE_PILL
-    a4.newGetPillAttackMode = 1;
-    setManTime(a4, tank.x, tank.y, man.x, man.y);
-    return true;
-  }
-
-  // ── Mode 4: Tree harvest (fallback) ───────────────────────────────────────
-  if (tank.resourceCount < 40) {
-    if (!a4.borgActive && !a4.borgBuildMode) return false;
-    if (tank.resourceEnabled) return false;
-
+  // ── Mode 4: Tree harvest (binary Build mode 4) ───────────────────────────
+  // Verified from binary 0x02311C: harvest when resourceCount < 40 AND
+  // resourceEnabled == false (byte[42] == 0).
+  if (!tank.resourceEnabled && tank.resourceCount < 40) {
     const tree = findTree(a4);
     if (!tree) return false;
 
-    man.x = (tree.x << 8) + 128;
-    man.y = (tree.y << 8) + 128;
-    man.actionCode = 1;   // NAVIGATE to tree
-    setManTime(a4, tank.x, tank.y, man.x, man.y);
+    a4.pendingBuilderAction = { action: 'forest', trees: 0, tileX: tree.x, tileY: tree.y };
     a4.newGetPillAttackMode = 1;
     return true;
   }
 
   return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers for builder dispatch
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Number of trees needed to repair a pill at the given armour level.
+ * Matches Orona's checkBuildOrder() 'pillbox' case thresholds.
+ */
+export function treesForRepair(armour: number): number {
+  if (armour >= 11) return 1;
+  if (armour >= 7)  return 2;
+  if (armour >= 3)  return 3;
+  return 4;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -292,32 +253,81 @@ export function build(a4: A4State, state: BrainState, priority: number): boolean
 /**
  * DoBuilding — Per-tick building gate.
  *
- * Called by DoCommonStuff. Gates Build and BorgFixPill on several conditions
- * before dispatching.
+ * Verified from binary DoBuilding (0x008732):
+ *   Entry gates: !newGetPillAttackMode AND !defenderCount AND setGlobalsGate.
+ *   Priority 1 (BorgFixPill path): repair nearby damaged ally pill when safe.
+ *   Priority 2 (Build path): harvest trees or perform other building.
+ *
+ * Both paths now write to a4.pendingBuilderAction so _runBrainTick can call
+ * buildOrder().  Only fires when builder is in the tank (builderInTank=true).
  */
 export function doBuilding(a4: A4State, state: BrainState, currentGoal: number): void {
-  if (!a4.buildPermitted) return;
-  if (a4.newGetPillAttackMode) return;  // already attacking
-  if (!a4.setGlobalsGate) return;        // nav-commit required
+  if (a4.newGetPillAttackMode) return;        // builder already dispatched this session
+  if (a4.newGetPillDefenderCount) return;     // defenders nearby — don't build
+  if (!a4.setGlobalsGate) return;             // nav-commit gate
 
   const tank = state.tank;
-  const pillCount = a4.pillCount & 0xFF;
 
-  // BorgFixPill path
-  if (a4.borgBuildEnable && tank.armor > 0 && !a4.closestEnemyTank) {
-    const pill = borgFixPill(a4);
-    if (pill !== null && a4.myMan !== null) {
-      a4.myMan.x = pill.x;
-      a4.myMan.y = pill.y;
-      a4.myMan.actionCode = 4;   // REPAIR
-      a4.newGetPillAttackMode = 1;
-      setManTime(a4, tank.x, tank.y, pill.x, pill.y);
-      return;
+  // Builder must be in the tank to dispatch
+  if (!tank.builderInTank) return;
+
+  // Never deploy the builder while on a boat — strands it in water
+  if (tank.onBoat) return;
+
+  // ── Priority 1: Repair nearby ally pill (BorgFixPill) ────────────────────
+  // Binary gates (0x008800-0x00880e): alive, no enemy tank close, not dangerous.
+  if (tank.armor > 0 && !a4.closestEnemyTank) {
+    const bIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
+    const danger  = a4.dangerMap[bIdx];
+    const occupied = a4.occupancyMap[bIdx];
+    if (danger === 0 && occupied === 0) {
+      const pill = borgFixPill(a4);
+      if (pill !== null) {
+        const trees = treesForRepair(pill.armour);
+        if (tank.resourceCount >= trees) {
+          const dist = computeDistanceBetween(tank.x, tank.y, pill.x, pill.y);
+          if (dist < 512) {  // binary threshold: pill.word[22] < 0x0200
+            a4.pendingBuilderAction = {
+              action: 'repair', trees,
+              tileX: pill.tileX, tileY: pill.tileY,
+            };
+            a4.newGetPillAttackMode = 1;
+            setManTime(a4, tank.x, tank.y, pill.x, pill.y);
+            return;
+          }
+        }
+      }
     }
   }
 
-  // Build dispatch
-  const priority = (pillCount << 2) + (a4.borgActive ? 0 : 3);
+  // ── Priority 2: Build a boat when the routing system flags one is needed ──
+  if (a4.boatNeeded && tank.armor > 20) {
+    const boatTileX = a4.boatBuildTileX;
+    const boatTileY = a4.boatBuildTileY;
+    const boatBWorld = computeDistanceBetween(
+      tank.x, tank.y,
+      (boatTileX << 8) + 128, (boatTileY << 8) + 128,
+    );
+
+    if (boatBWorld < 768) {
+      // Close enough to the water edge — dispatch builder
+      if (tank.resourceCount >= 5) {
+        a4.pendingBuilderAction = {
+          action: 'boat', trees: 5,
+          tileX: boatTileX, tileY: boatTileY,
+        };
+        a4.newGetPillAttackMode = 1;
+        setManTime(a4, tank.x, tank.y,
+          (boatTileX << 8) + 128, (boatTileY << 8) + 128);
+        return;
+      }
+      // Not enough trees — fall through to tree harvest
+    }
+    // Not close enough — navigation will bring us closer
+  }
+
+  // ── Priority 3: Tree harvest or other building ────────────────────────────
+  const priority = (a4.pillCount & 0xFF) << 2;
   build(a4, state, priority);
 }
 

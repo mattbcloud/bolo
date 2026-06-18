@@ -1,88 +1,367 @@
 /**
- * Navigation Controller — aIndy3.1 TypeScript Port
+ * Navigation Controller — Full-Map A* Rewrite
  *
- * Functions ported in this file:
- *   SetSpeed            (0x017810) — speed control with ±3 hysteresis
- *   SetMaxSpeed         (0x0210dc) — cap the max speed
- *   SetGlobals          (0x020f2e) — pre-navigation state setup
- *   FindCheapestSquare  (0x022EC8) — 3×3 grid local waypoint selection
- *   GoToPreviousDestination (0x020efc) — resume navigation to saved coords
- *   NavigateToCoords    (0x020888) — main navigation controller
+ * The original binary used a bounded A* (±20 tiles) with multi-tick expansion,
+ * stall detection, progress timeouts, and two-phase local routing — all
+ * designed for 68k Mac hardware with ~2KB of working memory.
  *
- * Navigation architecture:
- *   NavigateToCoords → SetGlobals → ComputeDistanceBetween
- *     → (long range)  WorldRouteFind → getNextStepTile → steer toward it
- *     → (short range) direct steer via TurnTowardsXY + SetSpeed
+ * This rewrite exploits the AI brain's full map visibility: a single-shot A*
+ * on the 256×256 grid runs in microseconds on modern hardware. The path is
+ * stored as a tile array and followed waypoint by waypoint. Recomputation
+ * happens on destination change or map state change (base capture, pill
+ * destruction, boat transition).
  *
- * References:
- *   setspeed_decode.md, setglobals_decode.md, findcheapestsquare_decode.md,
- *   navigatetocoords_decode.md, gotopreviousdestination_decode.md
+ * Preserved from original:
+ *   - SetSpeed (0x017810) — speed control with ±3 hysteresis
+ *   - GetTurnSpeed (0x02380e) — adaptive speed near water/turns
+ *   - Fine-steering (dist < 256) — sub-tile precision controller
+ *   - SetGlobals (0x020f2e) — pre-navigation state setup
+ *   - SetMaxSpeed / ResetMaxSpeed
  */
 
 import { A4State } from './a4_state.js';
 import type { BrainState } from './aindy_interface.js';
-import { signedWord } from './aindy_interface.js';
 import {
-  directionTo, computeDistanceBetween, turnTowardsXY, turnTowardsDir,
+  directionTo, computeDistanceBetween, turnTowardsXY,
   computeDirectionDelta, locationFromDir,
 } from './pathfinding.js';
-import { worldRouteFind, getNextStepTile } from './routing.js';
+import { setRouteCosts } from './brain_init.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CLOSE_RANGE = 256;  // 1 tile in BWorld units — fine-steering threshold
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A* PATHFINDER — Full 256×256 map, single-shot
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DIRS = [
+  [-1, -1], [0, -1], [1, -1],
+  [-1,  0],          [1,  0],
+  [-1,  1], [0,  1], [1,  1],
+];
+
+/**
+ * Compute A* path from startTile to destTile on the full map.
+ * Returns array of packed tile indices (y<<8|x) from start to dest (inclusive),
+ * or null if no path exists.
+ */
+function computePath(
+  a4: A4State,
+  startTileX: number,
+  startTileY: number,
+  destTileX: number,
+  destTileY: number,
+  waterMode = false,
+): Uint16Array | null {
+  const startIdx = ((startTileY & 0xFF) << 8) | (startTileX & 0xFF);
+  const destIdx  = ((destTileY & 0xFF) << 8) | (destTileX & 0xFF);
+
+  if (startIdx === destIdx) return new Uint16Array([startIdx]);
+
+  const costs = a4.examineTerrainCostTable;
+  const worldMap = a4.worldMap;
+  const blockedTile = a4.navStallBlockedTile;
+
+  // g-cost for each tile (0xFFFF = unvisited)
+  const gCost = a4.navGCost;
+  gCost.fill(0xFFFF);
+  gCost[startIdx] = 0;
+
+  // parent backpointer for path reconstruction
+  const parent = a4.navParent;
+  parent.fill(0xFFFF);
+
+  // Binary min-heap: stores packed (f-cost << 16 | tileIdx)
+  // f = g + h where h = Chebyshev distance (admissible for 8-dir movement)
+  const heap = a4.navHeap;
+  let heapSize = 0;
+
+  const h0 = Math.max(Math.abs(startTileX - destTileX), Math.abs(startTileY - destTileY));
+  heap[heapSize++] = (h0 << 16) | startIdx;
+
+  while (heapSize > 0) {
+    // Pop min
+    const top = heap[0];
+    heapSize--;
+    if (heapSize > 0) {
+      heap[0] = heap[heapSize];
+      // Sift down
+      let i = 0;
+      while (true) {
+        let smallest = i;
+        const l = 2 * i + 1;
+        const r = 2 * i + 2;
+        if (l < heapSize && heap[l] < heap[smallest]) smallest = l;
+        if (r < heapSize && heap[r] < heap[smallest]) smallest = r;
+        if (smallest === i) break;
+        const tmp = heap[i]; heap[i] = heap[smallest]; heap[smallest] = tmp;
+        i = smallest;
+      }
+    }
+
+    const currentIdx = top & 0xFFFF;
+    if (currentIdx === destIdx) break;
+
+    const cx = currentIdx & 0xFF;
+    const cy = (currentIdx >> 8) & 0xFF;
+    const currentG = gCost[currentIdx];
+
+    // Already found a better path to this node (stale heap entry)
+    if (((top >>> 16) - Math.max(Math.abs(cx - destTileX), Math.abs(cy - destTileY))) > currentG) {
+      continue;
+    }
+
+    for (let d = 0; d < 8; d++) {
+      const dx = DIRS[d][0];
+      const dy = DIRS[d][1];
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || nx > 255 || ny < 0 || ny > 255) continue;
+
+      const nIdx = ((ny & 0xFF) << 8) | (nx & 0xFF);
+      if (nIdx === blockedTile) continue;  // stall-blocked tile
+      const raw = worldMap[nIdx];
+      const tileCost = costs[raw];
+      if (tileCost >= 1000) continue;  // impassable
+
+      // Prevent diagonal corner-cutting: Bolo physics block diagonal movement
+      // when either adjacent orthogonal tile is a wall.
+      if (dx !== 0 && dy !== 0) {
+        const adjX = worldMap[((cy & 0xFF) << 8) | ((cx + dx) & 0xFF)];
+        const adjY = worldMap[(((cy + dy) & 0xFF) << 8) | (cx & 0xFF)];
+        if (costs[adjX] >= 1000 || costs[adjY] >= 1000) continue;
+      }
+
+      // Wall proximity penalty: penalize tiles adjacent to impassable terrain.
+      // Keeps routes clean — centered on roads, away from wall edges.
+      // In water mode (navigating on a boat) we additionally treat dry land as
+      // an obstacle, so the route stays in the middle of the channel rather
+      // than hugging the bank — clipping a land corner on a boat causes the
+      // tank to grind to a halt and spin.
+      let wallPenalty = 0;
+      for (let wd = 0; wd < 8; wd++) {
+        const wx = nx + DIRS[wd][0];
+        const wy = ny + DIRS[wd][1];
+        if (wx < 0 || wx > 255 || wy < 0 || wy > 255) continue;
+        const wRaw = worldMap[((wy & 0xFF) << 8) | (wx & 0xFF)];
+        let isObstacle = costs[wRaw] >= 1000;
+        if (waterMode && !isObstacle) {
+          // Dry land = anything that isn't river/boat/deep/water-flagged
+          const wTerrain = wRaw & 0x0F;
+          const isWater =
+            (wRaw & 0x80) !== 0 || wTerrain === 1 || wTerrain === 9 || wTerrain === 10;
+          if (!isWater) isObstacle = true;
+        }
+        if (isObstacle) wallPenalty += 30;
+      }
+
+      const newG = currentG + tileCost + wallPenalty;
+      if (newG >= gCost[nIdx]) continue;
+
+      gCost[nIdx] = newG;
+      parent[nIdx] = currentIdx;
+
+      const h = Math.max(Math.abs(nx - destTileX), Math.abs(ny - destTileY));
+      const f = newG + h;
+
+      // Insert into heap
+      let pos = heapSize++;
+      heap[pos] = (f << 16) | nIdx;
+      while (pos > 0) {
+        const up = (pos - 1) >> 1;
+        if (heap[up] <= heap[pos]) break;
+        const tmp = heap[pos]; heap[pos] = heap[up]; heap[up] = tmp;
+        pos = up;
+      }
+    }
+  }
+
+  // Reconstruct path from dest back to start
+  if (parent[destIdx] === 0xFFFF && startIdx !== destIdx) return null;
+
+  let pathLen = 0;
+  let cur = destIdx;
+  while (cur !== startIdx && cur !== 0xFFFF) {
+    pathLen++;
+    cur = parent[cur];
+  }
+  if (cur === 0xFFFF) return null;
+  pathLen++; // include start
+
+  const path = new Uint16Array(pathLen);
+  cur = destIdx;
+  for (let i = pathLen - 1; i >= 0; i--) {
+    path[i] = cur;
+    cur = parent[cur];
+  }
+
+  return path;
+}
+
+/**
+ * Find the best boat entry point: prefer existing boat tiles (type 9) near the
+ * wet path, otherwise use the first river tile on the path (build a boat there).
+ */
+function findBoatBuildTile(a4: A4State, wetPath: Uint16Array): void {
+  const worldMap = a4.worldMap;
+  const tankTileX = a4.tankTileX & 0xFF;
+  const tankTileY = a4.tankTileY & 0xFF;
+
+  // First: scan the map for existing boat tiles (terrain 9) and pick the
+  // closest one to the tank that's reachable by land.
+  let bestBoatDist = 0xFFFF;
+  let bestBoatX = -1;
+  let bestBoatY = -1;
+
+  // Search within ±30 tiles of the tank for existing boats
+  const searchR = 30;
+  for (let dy = -searchR; dy <= searchR; dy++) {
+    const ty = tankTileY + dy;
+    if (ty < 0 || ty > 255) continue;
+    for (let dx = -searchR; dx <= searchR; dx++) {
+      const tx = tankTileX + dx;
+      if (tx < 0 || tx > 255) continue;
+      const idx = ((ty & 0xFF) << 8) | (tx & 0xFF);
+      if ((worldMap[idx] & 0x0F) === 9) {
+        // Check that the boat tile is adjacent to passable land
+        let hasLand = false;
+        for (let nd = 0; nd < 4; nd++) {
+          const ax = tx + [0, 0, -1, 1][nd];
+          const ay = ty + [-1, 1, 0, 0][nd];
+          if (ax < 0 || ax > 255 || ay < 0 || ay > 255) continue;
+          const aIdx = ((ay & 0xFF) << 8) | (ax & 0xFF);
+          const aCost = a4.examineTerrainCostTable[worldMap[aIdx]];
+          if (aCost < 100) { hasLand = true; break; }
+        }
+        if (!hasLand) continue;
+
+        const d = Math.abs(dx) + Math.abs(dy);
+        if (d < bestBoatDist) {
+          bestBoatDist = d;
+          bestBoatX = tx;
+          bestBoatY = ty;
+        }
+      }
+    }
+  }
+
+  if (bestBoatX >= 0) {
+    a4.boatBuildTileX = bestBoatX;
+    a4.boatBuildTileY = bestBoatY;
+    return;
+  }
+
+  // No existing boat found — use the first river tile on the wet path
+  for (let i = 0; i < wetPath.length; i++) {
+    const tile = wetPath[i];
+    const raw = worldMap[tile] & 0x0F;
+    if (raw === 1) {
+      a4.boatBuildTileX = tile & 0xFF;
+      a4.boatBuildTileY = (tile >> 8) & 0xFF;
+      return;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GetTurnSpeed (0x02380e)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function nearDangerTerrain(a4: A4State): boolean {
+  const tx = a4.tankTileX;
+  const ty = a4.tankTileY;
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const nx = (tx + dx) & 0xFF;
+      const ny = (ty + dy) & 0xFF;
+      const raw = a4.worldMap[((ny & 0xFF) << 8) | (nx & 0xFF)];
+      if (raw & 0x80) return true;
+      if ((raw & 0x0F) === 10) return true;
+    }
+  }
+  return false;
+}
+
+export function getTurnSpeed(a4: A4State, toTileX: number, toTileY: number): number {
+  const toWorldX = (toTileX << 8) + 128;
+  const toWorldY = (toTileY << 8) + 128;
+  const dirToTile = directionTo(a4.tankX, a4.tankY, toWorldX, toWorldY);
+  const angErr    = computeDirectionDelta(a4.tankDirection, dirToTile);
+
+  const tankMapIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
+  const tankOnWater = !!(a4.worldMap[tankMapIdx] & 0x80);
+  if (tankOnWater) {
+    // Disembark momentum: when the destination tile is land, the tank must
+    // carry enough speed to climb off the boat onto the shore. At low speed it
+    // stalls floating against the bank and never lands. Raise the floor to 24
+    // (vs 12 for open-water travel) whenever the target tile is dry land.
+    const toIdx = ((toTileY & 0xFF) << 8) | (toTileX & 0xFF);
+    const toRaw = a4.worldMap[toIdx];
+    const toIsLand =
+      !(toRaw & 0x80) &&
+      (toRaw & 0x0F) !== 1 &&
+      (toRaw & 0x0F) !== 9 &&
+      (toRaw & 0x0F) !== 10 &&
+      a4.examineTerrainCostTable[toRaw] < 1000;
+    const floor = toIsLand ? 24 : 12;
+    return Math.max(floor, 64 - angErr);
+  }
+
+  if (angErr >= 64) return 0;
+
+  if (angErr >= 5) {
+    return Math.max(1, 64 - angErr);
+  }
+
+  const ahead1 = locationFromDir(a4.tankDirection, 256, a4.tankX, a4.tankY);
+  const a1x = (ahead1.x >> 8) & 0xFF;
+  const a1y = (ahead1.y >> 8) & 0xFF;
+  const raw1 = a4.worldMap[((a1y & 0xFF) << 8) | (a1x & 0xFF)];
+
+  if (raw1 & 0x80) return 10;
+  if ((raw1 & 0x0F) === 10) return 20;
+
+  const ahead2 = locationFromDir(a4.tankDirection, 512, a4.tankX, a4.tankY);
+  const a2x = (ahead2.x >> 8) & 0xFF;
+  const a2y = (ahead2.y >> 8) & 0xFF;
+  const raw2 = a4.worldMap[((a2y & 0xFF) << 8) | (a2x & 0xFF)];
+
+  if ((raw2 & 0x80) || (raw2 & 0x0F) === 10) return 30;
+
+  return 64;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SetSpeed (0x017810)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * SetSpeed — Set tank movement speed with ±3 hysteresis to prevent jitter.
- *
- * Control bit assignments (setspeed_decode.md, verified assembly):
- *   A4[11678] |= 0x01 → Accelerate (desired > current + 3)
- *   A4[11678] |= 0x02 → Hard brake (desired < current - 3)
- *   A4[11682] |= 0x01 → Gentle acceleration (desired in [current+1, current+3])
- *   A4[11682] |= 0x02 → Gentle brake (desired in [current-3, current])
- *
- * @param desired  Target speed (0 = stop, higher = faster)
- * @param current  Current tank speed (from TankRecord+41)
- */
 export function setSpeed(a4: A4State, desired: number, current: number): void {
-  if (desired === current) return;
-
   if (desired > current + 3) {
-    // Aggressive acceleration
     a4.steeringWord |= 0x01;
-  } else if (desired <= current) {
-    if (desired > current - 3) {
-      // Gentle brake
-      a4.firingWord |= 0x02;
-    } else {
-      // Hard brake / reverse
-      a4.steeringWord |= 0x02;
-    }
+  } else if (desired > current) {
+    a4.firingWord   |= 0x01;
+  } else if (desired < current - 3) {
+    a4.steeringWord |= 0x02;
+  } else if (desired < current) {
+    a4.firingWord   |= 0x02;
   } else {
-    // Gentle acceleration (desired within [current+1, current+3])
-    a4.firingWord |= 0x01;
+    if (desired > 0) a4.firingWord |= 0x01;
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SetMaxSpeed (0x0210dc)
+// SetMaxSpeed / ResetMaxSpeed (0x0210dc)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * SetMaxSpeed — Set the maximum speed cap (A4[7502]).
- * Called with lower values to slow the tank near targets.
- * Only effective if value is below current max.
- */
 export function setMaxSpeed(a4: A4State, maxSpd: number): void {
   if (maxSpd < a4.maxSpeed) {
     a4.maxSpeed = maxSpd & 0xFF;
   }
 }
 
-/**
- * ResetMaxSpeed — Reset max speed to full (0x40 = 64).
- * Called at the start of long-distance navigation.
- */
 export function resetMaxSpeed(a4: A4State): void {
   a4.maxSpeed = 0x40;
 }
@@ -91,139 +370,35 @@ export function resetMaxSpeed(a4: A4State): void {
 // SetGlobals (0x020f2e)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * SetGlobals — Pre-navigation state configuration.
- * Called once per NavigateToCoords call to update:
- *   - Ammo threshold (A4[7532]) = max(resources - 10, 0)
- *   - Danger evaluation flag (A4[7499])
- *   - Resource constraint flag (A4[7500])
- *   - Predicted next tile (A4[13028])
- *
- * See setglobals_decode.md (Session 37).
- */
 export function setGlobals(a4: A4State, state?: BrainState): void {
-  // Phase 1: ammo threshold = max(resources - 10, 0)
   const resource = (state?.tank?.resourceCount ?? 0) & 0xFF;
   a4.ammoThreshold = Math.max(0, resource - 10) & 0xFF;
-
-  // Phase 2: danger evaluation flag based on Borg settings
-  if (a4.setGlobalsBorgNavCommit) {
-    a4.dangerEvalEnable = 1;
-  } else if (a4.setGlobalsBorgPillDrop) {
-    // Use stored tank position vs alternate position
-    const altTX = state ? ((state.tank.altX >> 8) & 0xFF) : 0;
-    const altTY = state ? ((state.tank.altY >> 8) & 0xFF) : 0;
-    const dTX = Math.abs(altTX - a4.tankTileX);
-    const dTY = Math.abs(altTY - a4.tankTileY);
-    a4.dangerEvalEnable = (dTX > 4 || dTY > 4) ? 1 : 0;
-  } else {
-    a4.dangerEvalEnable = 0;
-  }
-
-  // Phase 3: predict next tile
+  a4.dangerEvalEnable = 0;
   a4.predictedNextTile = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
-
-  // Phase 4: resource constraint flag
   a4.resourceConstraint = 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FindCheapestSquare (0x022EC8)
+// ExpandWorldLimits / FindCheapestSquare — kept as no-ops for import compat
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * FindCheapestSquare — Evaluate the 3×3 grid around the tank.
- *
- * Scans (tankX±1, tankY±1), skipping the tank's own tile.
- * Evaluates each cell using:
- *   - Route cost from A4[8128] (= worldRouteCostTable) at that tile
- *   - Terrain type (world map)
- *   - Danger level (if enabled)
- *   - Tank state (ammo, man deployed)
- *
- * Returns the tile with the lowest cost (primary) and the fallback.
- *
- * See findcheapestsquare_decode.md (Session 37).
- */
+export function expandWorldLimits(a4: A4State, _destTileX: number, _destTileY: number): void {
+  // No longer needed — full-map A* has no bounds
+}
+
 export function findCheapestSquare(
   a4: A4State,
 ): { primaryX: number; primaryY: number; secondaryX: number; secondaryY: number } {
-  const tankX = a4.tankTileX & 0xFF;
-  const tankY = a4.tankTileY & 0xFF;
-
-  let bestCost  = 0x7D00;
-  let fallCost  = 0x7D00;
-  let primaryX  = tankX;
-  let primaryY  = tankY;
-  let secondaryX = tankX;
-  let secondaryY = tankY;
-
-  for (let x = tankX - 1; x <= tankX + 1; x++) {
-    if (x < 0 || x > 255) continue;
-    for (let y = tankY - 1; y <= tankY + 1; y++) {
-      if (y < 0 || y > 255) continue;
-      if (x === tankX && y === tankY) continue;  // skip own tile
-
-      const tile = ((y & 0xFF) << 8) | (x & 0xFF);
-
-      // Base cost from world route cost table (A4[8128])
-      const routeCost = a4.worldRouteCostTable[tile] & 0x7FFF;
-      if (routeCost >= 0x7D00) continue;   // unvisited / impassable
-
-      // Terrain check
-      const rawCell = a4.worldMap[tile];
-      const terrain = rawCell & 0x0F;
-
-      // Reject true movement blockers: walls, forests, shot-walls.
-      // Tanks can navigate water (they float), so water is NOT rejected here.
-      if (terrain === 0 || terrain === 5 || terrain === 8) continue;
-
-      // Compute cost score
-      let cost = routeCost;
-
-      // Danger adjustment
-      if (a4.dangerEvalEnable) {
-        const danger = a4.dangerMap[tile];
-        if (danger >= 2) cost += 500;      // high danger: penalize heavily
-        else if (danger > 0) cost += 100;
-      }
-
-      // Update best/fallback
-      if (cost < bestCost) {
-        fallCost   = bestCost;
-        secondaryX = primaryX;
-        secondaryY = primaryY;
-        bestCost  = cost;
-        primaryX  = x;
-        primaryY  = y;
-      } else if (cost < fallCost) {
-        fallCost   = cost;
-        secondaryX = x;
-        secondaryY = y;
-      }
-    }
-  }
-
-  // Store in A4 state (A4[7538] / A4[7542])
-  a4.bestWaypointCost     = bestCost;
-  a4.fallbackWaypointCost = fallCost;
-
-  return { primaryX, primaryY, secondaryX, secondaryY };
+  // No longer used — path following replaces local 3×3 scan
+  const x = a4.tankTileX & 0xFF;
+  const y = a4.tankTileY & 0xFF;
+  return { primaryX: x, primaryY: y, secondaryX: x, secondaryY: y };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GoToPreviousDestination (0x020efc)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * GoToPreviousDestination — Resume navigation to saved coordinates.
- *
- * Reads A4[8228] (prev dest X) and A4[8230] (prev dest Y) then
- * calls NavigateToCoords with mode=1.
- *
- * Called from GetMan to resume movement after man pickup.
- * See gotopreviousdestination_decode.md.
- */
 export function goToPreviousDestination(a4: A4State): void {
   const prevX = a4.placePillBaseBWorldX;
   const prevY = a4.placePillBaseBWorldY;
@@ -231,185 +406,308 @@ export function goToPreviousDestination(a4: A4State): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NavigateToCoords (0x020888) — Main navigation controller
+// NavigateToCoords — Full-map A* with waypoint following
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CLOSE_RANGE   = 256;   // < 1 tile  → fine control, no routing
-const MEDIUM_RANGE  = 1000;  // < 4 tiles → A* at medium speed
-const LONG_RANGE    = 3584;  // > 14 tiles → steer directly, NO A* (too costly)
-const SEARCH_RADIUS = 20;    // A* window: ±20 tiles around destination (was 14; increased
-                              // to allow routing around forest barriers and complex terrain)
-
-/**
- * NavigateToCoords — Primary navigation controller (0x020888).
- *
- * Performance design:
- *   dist < 256 BWorld  (< 1 tile):   fine steer, no routing
- *   dist > 3584 BWorld (> 14 tiles): steer directly toward destination,
- *                                    NO A* — avoids 100×100 tile searches
- *   256 ≤ dist ≤ 3584  (1-14 tiles): A* on fixed ±14-tile window around
- *                                    destination (always 28×28 = 784 tiles max)
- *                                    CACHED: only re-runs when tank tile or
- *                                    destination tile changes (not every tick)
- */
 export function navigateToCoords(
   a4: A4State,
   targetX: number,
   targetY: number,
-  mode: number,
+  _mode: number,
 ): void {
   setGlobals(a4);
+  setRouteCosts(a4);
+  resetMaxSpeed(a4);
+
+  // Clear turn bits from DoCommonStuff combat auto-aim so navigation steering
+  // is authoritative. Without this, combat and navigation set conflicting turn
+  // directions (CW + CCW simultaneously), causing the tank to spin in place.
+  a4.steeringWord &= ~0x0C;  // clear bits 0x04 (CCW) and 0x08 (CW)
+  a4.firingWord   &= ~0x0C;
 
   const fromX      = a4.tankX;
   const fromY      = a4.tankY;
   const currentDir = a4.tankDirection;
   const currentSpd = a4.tankSpeed;
 
-  const dist = computeDistanceBetween(fromX, fromY, targetX, targetY);
-
-  // ── Very close: fine-turn + brake/creep, no routing ───────────────────────
-  if (dist < CLOSE_RANGE) {
-    turnTowardsXY(a4, fromX, fromY, targetX, targetY, currentDir);
-    setSpeed(a4, dist < 64 ? 0 : 8, currentSpd);
-    return;
+  // ── GetBoat sub-goal ──────────────────────────────────────────────────────
+  // When a water route is significantly shorter and we're not on a boat yet,
+  // acquire a boat: redirect navigation toward the boat pickup/build point.
+  // Once the tank drives onto the boat tile, tankOnBoat flips → path recomputes
+  // with water=cheap and the tank continues to the real destination via waterway.
+  //
+  // While acquiring, boatNeeded is LATCHED: we must NOT re-run wet/dry boat
+  // detection against the boat point itself (the boat point is dry-reachable, so
+  // detection would clear boatNeeded → flip-flop every recompute, thrashing the
+  // nav cache and stranding the tank short of the water). The `acquiringBoat`
+  // flag below suppresses that re-detection in the recompute block.
+  if (a4.tankOnBoat) {
+    // We boarded — acquisition complete; drop the latch and any cooldown.
+    a4.boatNeeded = false;
+    a4.boatAcquireSinceTick = 0;
+    a4.boatFailedUntilTick = 0;
   }
 
-  // ── Water mode: direct steering for long range, A* for short range ────────
-  // When far from the target (>LONG_RANGE) in open water, direct steering is
-  // simple and reliable — no walls out in the ocean to worry about.
-  // When close (≤LONG_RANGE), fall through to the hop+A* system which avoids
-  // walls and complex coastal terrain (direct steering would drive into walls).
-  const tankMapIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
-  if ((a4.worldMap[tankMapIdx] & 0x80) && dist > LONG_RANGE) {
-    const tDir = directionTo(fromX, fromY, targetX, targetY);
-    const angErr = computeDirectionDelta(currentDir, tDir);
-    turnTowardsDir(a4, currentDir, tDir);
-    if (angErr <= 64) {
-      setSpeed(a4, 24, currentSpd);
-      a4.steeringWord |= 0x10;
+  // Suppress acquisition during the post-timeout cooldown so boatNeeded can't
+  // re-latch every recompute (which made the tank repeatedly wade to an
+  // unreachable boat point, draining all its shells). During the cooldown the
+  // tank commits to the dry route (or the goal handler moves on).
+  const boatCooldownActive = a4.tickCounter < a4.boatFailedUntilTick;
+  let acquiringBoat = a4.boatNeeded && !a4.tankOnBoat && a4.boatBuildTileX >= 0 && !boatCooldownActive;
+  if (boatCooldownActive) a4.boatNeeded = false;
+
+  if (acquiringBoat) {
+    // Start (or continue) the acquisition timer.
+    if (a4.boatAcquireSinceTick === 0) a4.boatAcquireSinceTick = a4.tickCounter;
+
+    // Time out: if we've been trying to board for too long (unreachable boat
+    // point, no trees to build, repeated stalls), give up and let the normal
+    // dry-route detection run instead. ~1500 ticks ≈ 30s.
+    if ((a4.tickCounter - a4.boatAcquireSinceTick) > 1500) {
+      a4.boatNeeded = false;
+      a4.boatAcquireSinceTick = 0;
+      a4.boatFailedUntilTick = a4.tickCounter + 3000;  // ~60s cooldown before retrying
+      acquiringBoat = false;
+      a4.worldCostsInitDone = 0;  // force a fresh path to the real destination
+    } else {
+      targetX = (a4.boatBuildTileX << 8) + 128;
+      targetY = (a4.boatBuildTileY << 8) + 128;
+    }
+  } else {
+    a4.boatAcquireSinceTick = 0;
+  }
+
+  const dist = computeDistanceBetween(fromX, fromY, targetX, targetY);
+
+  // ── Fine-steering: within 1 tile, steer directly to target ────────────────
+  if (dist < CLOSE_RANGE) {
+    turnTowardsXY(a4, fromX, fromY, targetX, targetY, currentDir);
+    const dirToTgt = directionTo(fromX, fromY, targetX, targetY);
+    const angErrToTgt = computeDirectionDelta(currentDir, dirToTgt);
+    const aligned = (angErrToTgt <= 1);
+
+    if (a4.tankOnBoat) {
+      // On a boat: keep momentum to climb onto the shore when disembarking
+      // (fix 41). Precision landing isn't needed/possible on water.
+      setSpeed(a4, aligned ? 24 : 12, currentSpd);
+    } else if (aligned) {
+      // CREEP on final approach. The old tiers (up to 24 at dist 128-256) were
+      // far too fast: the tank would burst forward inside 1 tile, overshoot the
+      // target cell, and orbit it forever — never landing ON the tile to e.g.
+      // capture a base (which requires tank.cell === base.cell). Low speeds
+      // give a turning radius tight enough to actually reach the centre.
+      if      (dist < 32)  setSpeed(a4, 2,  currentSpd);
+      else if (dist < 64)  setSpeed(a4, 4,  currentSpd);
+      else if (dist < 128) setSpeed(a4, 6,  currentSpd);
+      else                 setSpeed(a4, 10, currentSpd);
+    } else {
+      // Misaligned this close → slower still, so the tank can pivot onto the tile.
+      if      (dist < 64)  setSpeed(a4, 2, currentSpd);
+      else if (dist < 128) setSpeed(a4, 4, currentSpd);
+      else                 setSpeed(a4, 6, currentSpd);
     }
     return;
   }
-  // In water AND close (≤LONG_RANGE): fall through to hop+A* for wall avoidance
 
-  // Working target — may be replaced with an intermediate hop for long range.
-  let navX = targetX;
-  let navY = targetY;
+  // ── Path computation / caching ────────────────────────────────────────────
+  const destTileX = (targetX >> 8) & 0xFF;
+  const destTileY = (targetY >> 8) & 0xFF;
+  const tankTileX = a4.tankTileX & 0xFF;
+  const tankTileY = a4.tankTileY & 0xFF;
 
-  // ── Long range: replace target with a 12-tile intermediate hop ────────────
-  // A* (medium range) handles the hop with full obstacle avoidance.
-  // When badly misaligned (>90°) we turn first without accelerating so we
-  // don't drift further from the target while the tank rotates.
-  // No BRK: braking in Orona prevents rotation; inertia dissipates naturally.
-  // No probe loop: per-tick probe offsets caused alternating CW/CCW that
-  // cancelled each other out and prevented net rotation progress.
-  if (dist > LONG_RANGE) {
-    const targetDir  = directionTo(fromX, fromY, navX, navY);
-    const angularErr = computeDirectionDelta(currentDir, targetDir);
+  const destChanged = (destTileX !== a4.navCacheDestTileX ||
+                       destTileY !== a4.navCacheDestTileY);
 
-    if (angularErr > 64) {
-      // Turn only — no FWD, no BRK
-      turnTowardsDir(a4, currentDir, targetDir);
+  // Boat transition invalidates path (water costs change dramatically)
+  const onBoat = a4.tankOnBoat;
+  if (onBoat !== a4.navCachePrevOnBoat) {
+    a4.navCachePrevOnBoat = onBoat;
+    a4.worldCostsInitDone = 0;
+  }
+
+  // Recompute path when: destination changed, map changed, or no valid path
+  const needsRecompute = destChanged || !a4.worldCostsInitDone || !a4.navPath;
+
+  if (needsRecompute) {
+    // Boat detection: when not on a boat (and not already acquiring one), first
+    // compute a wet path (rivers cheap) to see if water routing would be
+    // significantly shorter. Suppressed while acquiringBoat so the latch holds.
+    let wetPath: Uint16Array | null = null;
+    if (!onBoat && !acquiringBoat) {
+      const savedRiverCost = a4.examineTerrainCostTable[1];
+      a4.examineTerrainCostTable[1] = 3;
+      wetPath = computePath(a4, tankTileX, tankTileY, destTileX, destTileY);
+      a4.examineTerrainCostTable[1] = savedRiverCost;
+
+      if (wetPath) {
+        const destIdx = ((destTileY & 0xFF) << 8) | (destTileX & 0xFF);
+        a4.navWetPathCost = a4.navGCost[destIdx];
+      } else {
+        a4.navWetPathCost = 0;
+      }
+    }
+
+    // Compute the actual path (rivers expensive when not on boat).
+    // When on a boat, enable water mode so the route avoids hugging the shore.
+    const path = computePath(a4, tankTileX, tankTileY, destTileX, destTileY, onBoat);
+
+    if (!path) {
+      if (!onBoat && !acquiringBoat && wetPath) {
+        a4.boatNeeded = true;
+        findBoatBuildTile(a4, wetPath);
+      }
+      a4.noLocalRouteFlag = 1;
+      a4.navPath = null;
+      a4.navPathIndex = 0;
+      a4.navCacheValid = 0;
       return;
     }
 
-    // Replace target with a 12-tile intermediate hop; fall through to A*.
-    // 12 tiles = 3072 BWorld < LONG_RANGE (3584) so A* runs correctly below.
-    const hop = locationFromDir(targetDir, 12 * 256, fromX, fromY);
-    navX = hop.x;
-    navY = hop.y;
-    // (falls through to medium-range A* with the hop as destination)
-  }
-
-  // ── Medium range: A* with fixed ±14-tile window around DESTINATION ─────────
-  // Uses navX/navY which is either the original target (if medium range) or
-  // the 12-tile intermediate hop computed above (if long range).
-  // Bounds are ALWAYS ±SEARCH_RADIUS around dest, never larger.
-  // This caps the search at 28×28 = 784 tiles regardless of distance.
-  const destTileX = (navX >> 8) & 0xFF;
-  const destTileY = (navY >> 8) & 0xFF;
-
-  a4.worldRouteMinX = Math.max(0, destTileX - SEARCH_RADIUS);
-  a4.worldRouteMaxX = Math.min(255, destTileX + SEARCH_RADIUS);
-  a4.worldRouteMinY = Math.max(0, destTileY - SEARCH_RADIUS);
-  a4.worldRouteMaxY = Math.min(255, destTileY + SEARCH_RADIUS);
-
-  // Route cache: only re-run A* when tank tile or destination tile changes.
-  const tankTileChanged = (a4.tankTileX !== a4.navCacheTankTileX ||
-                           a4.tankTileY !== a4.navCacheTankTileY);
-  const destTileChanged = (destTileX !== a4.navCacheDestTileX ||
-                           destTileY !== a4.navCacheDestTileY);
-
-  // Stall recovery: if the tank hasn't changed tile in >250 ticks while navigating,
-  // force a fresh A* route.  This unsticks the tank from walls and dead corners.
-  if (a4.tankTileX === a4.navStallTileX && a4.tankTileY === a4.navStallTileY) {
-    if (a4.tickCounter - a4.navStallSinceTick > 250) {
-      a4.navCacheValid = 0;  // force fresh route
-      a4.navStallSinceTick = a4.tickCounter;
+    // Compare dry vs wet path costs to decide if a boat is worthwhile.
+    // While acquiringBoat, leave boatNeeded latched (skip both branches).
+    if (!onBoat && !acquiringBoat && wetPath && a4.navWetPathCost > 0) {
+      const destIdx = ((destTileY & 0xFF) << 8) | (destTileX & 0xFF);
+      a4.navDryPathCost = a4.navGCost[destIdx];
+      if (a4.navWetPathCost < a4.navDryPathCost * 0.8) {
+        a4.boatNeeded = true;
+        findBoatBuildTile(a4, wetPath);
+      } else {
+        a4.boatNeeded = false;
+      }
+    } else if (!acquiringBoat) {
+      a4.boatNeeded = false;
     }
-  } else {
-    a4.navStallTileX    = a4.tankTileX;
-    a4.navStallTileY    = a4.tankTileY;
-    a4.navStallSinceTick = a4.tickCounter;
-  }
 
-  if (!a4.navCacheValid || tankTileChanged || destTileChanged) {
-    a4.worldCostsInitDone = 0;
-    worldRouteFind(a4, a4.routingHeap, destTileX, destTileY);
-    a4.navCacheTankTileX = a4.tankTileX;
-    a4.navCacheTankTileY = a4.tankTileY;
+    a4.navPath = path;
+    a4.navPathIndex = 0;
     a4.navCacheDestTileX = destTileX;
     a4.navCacheDestTileY = destTileY;
+    a4.worldCostsInitDone = 1;
     a4.navCacheValid = 1;
   }
 
-  // Unreachable check: if A* can't reach the tank's tile the destination is
-  // blocked (e.g. solid wall between tank and dest).  Signal failure so the
-  // goal selector can pick a different target next tick.
-  const tankIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
-  if (a4.worldRouteCostTable[tankIdx] >= 0x7D00) {
-    // No path found — mark unreachable so the goal gives up this target
-    a4.navCacheValid = 0;   // force retry next tick
-    a4.noLocalRouteFlag = 1;  // signal: destination unreachable this tick
-    return;
-  }
+  // Clear route-failure flag (we have a valid path)
   a4.noLocalRouteFlag = 0;
 
-  // Extract next waypoint from cached A* route back-pointers
-  const destTile  = ((destTileY & 0xFF) << 8) | (destTileX & 0xFF);
-  const nextTile  = getNextStepTile(a4, destTile);
-  const nextTileX = nextTile & 0xFF;
-  const nextTileY = (nextTile >> 8) & 0xFF;
+  // ── Stall detection ──────────────────────────────────────────────────────
+  // If the tank hasn't moved tiles in 150 ticks (land) or 750 ticks (water),
+  // block the next waypoint tile and force a path recompute around it.
+  {
+    const stallLimit = a4.tankOnBoat ? 750 : 150;
+    if (tankTileX === a4.navStallTileX && tankTileY === a4.navStallTileY) {
+      if ((a4.tickCounter - a4.navStallSinceTick) > stallLimit) {
+        // Block the waypoint tile the tank is trying (and failing) to reach
+        const path = a4.navPath;
+        if (path && a4.navPathIndex < path.length) {
+          a4.navStallBlockedTile = path[a4.navPathIndex];
+        }
+        a4.worldCostsInitDone = 0;
+        a4.noLocalRouteFlag = 1;
+        a4.navStallSinceTick = a4.tickCounter;
+      }
+    } else {
+      a4.navStallTileX = tankTileX;
+      a4.navStallTileY = tankTileY;
+      a4.navStallSinceTick = a4.tickCounter;
+      a4.navStallBlockedTile = 0xFFFF;  // clear block when tank moves
+    }
+  }
 
-  const nextBWorldX = (nextTileX << 8) + 128;
-  const nextBWorldY = (nextTileY << 8) + 128;
-  turnTowardsXY(a4, fromX, fromY, nextBWorldX, nextBWorldY, currentDir);
+  // ── Waypoint following ────────────────────────────────────────────────────
+  const path = a4.navPath!;
+  let idx = a4.navPathIndex;
 
-  // Wall-ahead check: don't apply FWD if the tile 1 step ahead in the current
-  // direction is a hard wall.  Prevents the tank from pressing endlessly against
-  // walls when it overshoots a waypoint or the A* route clips a corner.
-  const aheadPt  = locationFromDir(currentDir, 200, fromX, fromY);  // ~0.8 tile
-  const aheadTX  = (aheadPt.x >> 8) & 0xFF;
-  const aheadTY  = (aheadPt.y >> 8) & 0xFF;
-  const aheadCell = a4.worldMap[(aheadTY << 8) | aheadTX];
-  const aheadTer  = aheadCell & 0x0F;
-  const wallAhead = (aheadTer === 0 || aheadTer === 8);   // wall or shot-wall
+  // Advance past tiles the tank has already reached or passed
+  const tankIdx = ((tankTileY & 0xFF) << 8) | (tankTileX & 0xFF);
+  while (idx < path.length - 1 && path[idx] === tankIdx) {
+    idx++;
+  }
 
-  if (wallAhead) {
-    // Wall directly ahead: turn only, no FWD — let the A* waypoint steer us clear
+  // Also skip waypoints that are behind us (tank may have cut a corner)
+  while (idx < path.length - 2) {
+    const wpTile = path[idx];
+    const wpX = wpTile & 0xFF;
+    const wpY = (wpTile >> 8) & 0xFF;
+    const dxWp = Math.abs(tankTileX - wpX);
+    const dyWp = Math.abs(tankTileY - wpY);
+    // If we're already adjacent to or past the next-next waypoint, skip this one
+    if (dxWp <= 1 && dyWp <= 1) {
+      const nextWp = path[idx + 1];
+      const nwX = nextWp & 0xFF;
+      const nwY = (nextWp >> 8) & 0xFF;
+      const dnX = Math.abs(tankTileX - nwX);
+      const dnY = Math.abs(tankTileY - nwY);
+      if (dnX <= 1 && dnY <= 1) {
+        idx++;
+        continue;
+      }
+    }
+    break;
+  }
+
+  a4.navPathIndex = idx;
+
+  // Check if current waypoint needs special handling
+  const wpTile = path[idx];
+  const wpRaw = a4.worldMap[wpTile];
+  const wpTerrain = wpRaw & 0x0F;
+  const wpCost = a4.examineTerrainCostTable[wpRaw];
+
+  if (wpCost >= 1000) {
+    // Truly impassable — force recompute next tick
+    a4.worldCostsInitDone = 0;
+    turnTowardsXY(a4, fromX, fromY, targetX, targetY, currentDir);
+    setSpeed(a4, 16, currentSpd);
     return;
   }
 
-  // Drive forward when reasonably facing the next waypoint.
-  // Threshold 32 (~45°): tight enough to avoid wall impacts, loose enough for flow.
-  const nextDir     = directionTo(fromX, fromY, nextBWorldX, nextBWorldY);
-  const nextAngErr  = computeDirectionDelta(currentDir, nextDir);
-  if (nextAngErr <= 32) {
-    setSpeed(a4, dist > MEDIUM_RANGE ? 16 : 8, currentSpd);
-    a4.steeringWord |= 0x10;
-  } else if (nextAngErr <= 64) {
-    setSpeed(a4, 6, currentSpd);
-    a4.steeringWord |= 0x10;
+  // Wall or shot-wall ahead on the path: stop and shoot to bulldoze through.
+  // Walls take 5 shots, shot-walls take 1. Only shoot if we have ammo.
+  if ((wpTerrain === 0 || wpTerrain === 8) && wpCost < 1000) {
+    const wpBWorldX = ((wpTile & 0xFF) << 8) + 128;
+    const wpBWorldY = (((wpTile >> 8) & 0xFF) << 8) + 128;
+    const wallDist = computeDistanceBetween(fromX, fromY, wpBWorldX, wpBWorldY);
+    if (wallDist < 1792) {
+      // In range — aim and fire
+      turnTowardsXY(a4, fromX, fromY, wpBWorldX, wpBWorldY, currentDir);
+      setSpeed(a4, 0, currentSpd);
+      a4.firingWord |= 0x10;  // fire
+      return;
+    }
   }
-  // angErr > 64: turn only (no FWD)
+
+  // ── Look-ahead steering ────────────────────────────────────────────────
+  // Steer toward a point further along the path based on current speed.
+  // At high speed, look further ahead so turns start early and are smooth.
+  // At low speed, steer toward the immediate next tile for precision.
+  const lookAhead = Math.max(1, Math.min(Math.floor(currentSpd / 4), path.length - 1 - idx));
+  const lookIdx = idx + lookAhead;
+  const lookTile = path[lookIdx];
+  const lookX = lookTile & 0xFF;
+  const lookY = (lookTile >> 8) & 0xFF;
+  const lookBWorldX = (lookX << 8) + 128;
+  const lookBWorldY = (lookY << 8) + 128;
+
+  turnTowardsXY(a4, fromX, fromY, lookBWorldX, lookBWorldY, currentDir);
+
+  // Speed control uses the immediate next waypoint (not the look-ahead point)
+  // so getTurnSpeed can detect water/terrain transitions close ahead.
+  const wpX = (wpTile & 0xFF);
+  const wpY = ((wpTile >> 8) & 0xFF);
+  const speed = getTurnSpeed(a4, wpX, wpY);
+  setMaxSpeed(a4, speed);
+
+  // Final-approach slowdown: when nearing the actual destination, cap speed so
+  // the turning radius is tight enough to land ON the target tile instead of
+  // orbiting it. High terrain speed (grass 12 / road 16) otherwise gives a
+  // turning circle wider than the target — the tank circles ~2 tiles out and
+  // never reaches the fine-steering zone (e.g. can't drive onto a base to
+  // capture it). Skipped on a boat, where the disembark momentum floor (#41)
+  // needs the speed to climb onto the shore.
+  if (!a4.tankOnBoat) {
+    if (dist < 640)      setMaxSpeed(a4, 4);
+    else if (dist < 896) setMaxSpeed(a4, 8);
+  }
+
+  setSpeed(a4, a4.maxSpeed, currentSpd);
 }

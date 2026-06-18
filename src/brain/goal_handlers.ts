@@ -23,7 +23,7 @@
 import { A4State } from './a4_state.js';
 import type { BrainState, PillState, BaseState, EnemyTankState } from './aindy_interface.js';
 import { macRandom, tickCount, byte } from './aindy_interface.js';
-import { directionTo } from './pathfinding.js';
+import { directionTo, computeDistanceBetween } from './pathfinding.js';
 import { navigateToCoords as _navigateToCoords, setSpeed as _setSpeed } from './navigation.js';
 // _navigateToCoords now has signature (a4, targetX, targetY, mode) — no state needed
 import {
@@ -34,8 +34,22 @@ import {
   newRefuel as _newRefuel, refuelGoTowardBase as _refuelGTB,
   placePillSurveyTerrain as _ppSurvey, placePillChoosePlacement as _ppChoose,
   placePillGotoBuildPoint as _ppGoto, placePillFinishUp as _ppFinish,
-  dropMines as _dropMines,
+  dropMines as _dropMines, treesForRepair,
 } from './building.js';
+
+/** Find the best adjacent forest tile for tree harvesting (mirrors FindTree strict mode). */
+function _findAdjacentForest(a4: A4State): { tileX: number; tileY: number } | null {
+  const cx = a4.tankTileX & 0xFF;
+  const cy = a4.tankTileY & 0xFF;
+  const dirs: [number, number][] = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+  for (const [dx, dy] of dirs) {
+    const tx = (cx + dx) & 0xFF;
+    const ty = (cy + dy) & 0xFF;
+    const terrain = a4.worldMap[((ty & 0xFF) << 8) | (tx & 0xFF)] & 0x0F;
+    if (terrain === 5) return { tileX: tx, tileY: ty };  // terrain 5 = forest
+  }
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GOAL 0 — PlacePill (0x0046ba)
@@ -122,10 +136,57 @@ export function goalExplore(a4: A4State, state: BrainState): void {
 
 /**
  * Find a new exploration target tile.
- * Up to 40 attempts so land tiles are reliably found on ocean-heavy maps
- * where 70–80% of tiles are water (rejected).
+ *
+ * Priority order:
+ *   1. Nearest uncaptured (enemy/neutral) base  — Explore acts as a long-range
+ *      fallback for GetBase when the base is too far for GetBase to beat Explore.
+ *   2. Nearest attackable (enemy/neutral) pill  — secondary objective.
+ *   3. Random land tile near the enemy CoG      — when all objectives are gone.
+ *
+ * Forest tiles (terrain 5) are rejected: tanks cannot stand on forest tiles
+ * so the tank would navigate toward them but never "arrive", looping forever.
  */
 function _findNewExploreTarget(a4: A4State, state: BrainState): void {
+  // ── Priority 1: head toward nearest uncaptured base ───────────────────────
+  let bestBaseDist = 0xFFFF;
+  let bestBaseX = -1, bestBaseY = -1;
+  for (const base of a4.bases) {
+    if (base.isAlly) continue;
+    const dist = base.distToTank >> 8;
+    if (dist < bestBaseDist) {
+      bestBaseDist = dist;
+      bestBaseX = base.tileX & 0xFF;
+      bestBaseY = base.tileY & 0xFF;
+    }
+  }
+  if (bestBaseX >= 0) {
+    a4.exploreTargetX = bestBaseX;
+    a4.exploreTargetY = bestBaseY;
+    return;
+  }
+
+  // ── Priority 2: head toward nearest attackable pill ───────────────────────
+  let bestPillDist = 0xFFFF;
+  let bestPillX = -1, bestPillY = -1;
+  for (const pill of a4.pills) {
+    if (!pill.active || !pill.attackable) continue;
+    const dist = pill.distToTank >> 8;
+    if (dist < bestPillDist) {
+      bestPillDist = dist;
+      bestPillX = pill.tileX & 0xFF;
+      bestPillY = pill.tileY & 0xFF;
+    }
+  }
+  if (bestPillX >= 0) {
+    a4.exploreTargetX = bestPillX;
+    a4.exploreTargetY = bestPillY;
+    return;
+  }
+
+  // ── Priority 3: random land tile near enemy/frontline CoG ─────────────────
+  // All objectives captured — just roam. Bias toward the enemy CoG (contested
+  // area) rather than the ally CoG. Don't bias toward the tank's current tile
+  // (removing tankDX/tankDY) so the tank actually moves to new areas.
   const startMs = Date.now();
   let bestCost = 0xFFFF;
   let bestX = 0, bestY = 0;
@@ -133,24 +194,22 @@ function _findNewExploreTarget(a4: A4State, state: BrainState): void {
   for (let attempt = 0; attempt < 40; attempt++) {
     if (Date.now() - startMs > 200) break;
 
-    // Biased random coordinate (0–255, avoid map edges)
-    let rx = Math.abs(biasedRandom()) & 0xFF;
-    let ry = Math.abs(biasedRandom()) & 0xFF;
+    const rx = Math.abs(biasedRandom()) & 0xFF;
+    const ry = Math.abs(biasedRandom()) & 0xFF;
 
-    // Edge avoidance: 18–237
     if (rx < 18 || rx > 237 || ry < 18 || ry > 237) continue;
 
-    // Water check
     const cell = a4.worldMap[((ry & 0xFF) << 8) | (rx & 0xFF)] & 0x0F;
     const penalty = EXPLORE_TERRAIN_PENALTY[cell] ?? 500;
     if (penalty >= 500) continue;
 
-    // Cost: distance from ally CoG + terrain penalty
-    const cogDX = Math.abs((rx << 8) - a4.allyCogX) >> 8;
-    const cogDY = Math.abs((ry << 8) - a4.allyCogY) >> 8;
-    const tankDX = Math.abs(rx - a4.tankTileX);
-    const tankDY = Math.abs(ry - a4.tankTileY);
-    const cost = tankDX + tankDY + cogDX + cogDY + penalty;
+    // Bias toward ENEMY CoG (binary uses enemy CoG, not frontline).
+    // The brain should explore toward the enemy to find pills/bases.
+    const targetCogX = a4.enemyCogX || a4.frontlineCogX;
+    const targetCogY = a4.enemyCogY || a4.frontlineCogY;
+    const cogDX = Math.abs((rx << 8) - targetCogX) >> 8;
+    const cogDY = Math.abs((ry << 8) - targetCogY) >> 8;
+    const cost  = cogDX + cogDY + penalty;
 
     if (cost < bestCost) {
       bestCost = cost;
@@ -175,7 +234,8 @@ const EXPLORE_TERRAIN_PENALTY: readonly number[] = [
   500,  //  2 swamp         → reject (water)
   150,  //  3 crater        → accepted but slow
   50,   //  4 road          → preferred
-  60,   //  5 forest        → slightly less preferred than road (chopping takes time)
+  500,  //  5 forest        → REJECT: tanks can't stand on forest tiles; picking
+        //                    a forest as a target causes permanent navigation loops
   150,  //  6 rubble        → ok
   75,   //  7 grass         → good
   500,  //  8 shot wall     → reject
@@ -193,69 +253,119 @@ const EXPLORE_TERRAIN_PENALTY: readonly number[] = [
 /**
  * FixPill — Repair a damaged ally pill.
  *
- * State paths:
- *   A. Unsafe pill location: find safe approach → navigate
- *   B. In-range (armed): dispatch man for repair
- *   C. Safe + close: dispatch man
- *   D. Safe + far: navigate to pill
+ * Verified from binary FixPill (0x00118e, 1312 bytes):
  *
- * See fixpill_decode.md for full 1312-byte algorithm.
+ *   Phase 1: Target change detection.
+ *   Phase 2: Safety check (danger map + blocked map on pill tile).
+ *     UNSAFE: Find safe approach via FindSafestPointFrom, navigate there.
+ *     SAFE: Continue to phase 3.
+ *   Phase 3: Distance dispatch:
+ *     dist < 512 (2 tiles): dispatch builder for repair (man.byte[2]=4,
+ *                           setGlobalsGate guard, ManCheckPathIterative check).
+ *     dist < 2080 (8 tiles): navigate toward pill, set in-range flag.
+ *     dist >= 2080: navigate toward pill.
+ *
+ *   Before dispatching, check:
+ *     - setGlobalsGate (A4[0x3240]) must be set → our setGlobalsGate=1 always
+ *     - builderInTank must be true (builder available)
+ *     - tank has enough trees (treesForRepair(pill.armour))
+ *     - if not enough trees: dispatch builder to harvest adjacent forest
  */
 export function goalFixPill(a4: A4State, state: BrainState): void {
   const pill = a4.pillToFixTarget;
   if (pill === null) return;
 
   // Target change detection
-  if (pill !== a4.fixPillPrevTarget) {
+  if (pill.index !== a4.fixPillPrevTargetIndex) {
+    a4.fixPillPrevTargetIndex = pill.index;
     a4.fixPillPrevTarget = pill;
     a4.fixPillInRange = 0;
     a4.fixPillSafePointFound = 0;
     a4.fixPillSendBroadcast = 1;
   }
 
+  if (a4.fixPillSendBroadcast) {
+    a4.fixPillSendBroadcast = 0;
+  }
+
   const pillTileX = pill.tileX;
   const pillTileY = pill.tileY;
   const tileIdx = ((pillTileY & 0xFF) << 8) | (pillTileX & 0xFF);
-
-  // Safety check: is pill tile dangerous/blocked?
   const isDangerous = a4.dangerMap[tileIdx] !== 0;
   const isBlocked   = a4.blockedMap[tileIdx] !== 0;
 
-  // Broadcast target to team (SendPillTargetMessage)
-  if (a4.fixPillSendBroadcast) {
-    a4.fixPillSendBroadcast = 0;
-    // sendPillTargetMessage(a4, pill);  // TODO Step 11
-  }
-
+  // ── Unsafe path: navigate to safe approach point ──────────────────────
   if (isDangerous || isBlocked) {
-    // ── Unsafe path: find safe approach point via FindSafestPointFrom ───
     if (!a4.fixPillSafePointFound) {
       const safe = _findSafestPointFrom(a4, state, pill.x, pill.y);
       a4.fixPillSafeX = safe.x;
       a4.fixPillSafeY = safe.y;
       a4.fixPillSafePointFound = 1;
     }
-    navigateToCoords(a4,
-      (a4.fixPillSafeX << 8) + 128,
-      (a4.fixPillSafeY << 8) + 128, 0);
+    navigateToCoords(a4, (a4.fixPillSafeX << 8) + 128, (a4.fixPillSafeY << 8) + 128, 0);
     return;
   }
 
-  // ── Safe path ──────────────────────────────────────────────────────────
   const dist = pill.distToTank;
+  const TILE = 256;   // 1 tile in BWorld
 
-  if (dist < 512) {
-    // Very close: dispatch man for repair
-    setSpeed(a4, 0);
-    if (a4.myMan !== null) {
-      // SetManTime / dispatch man here
-      a4.myMan.actionCode = 4;  // REPAIR
-      a4.fixPillInRange = 1;
-    }
-  } else {
-    // Far: navigate to pill
-    navigateToCoords(a4, pill.x, pill.y, 0);
+  // ── Frozen on pill tile: tank cannot move or turn ──────────────────────
+  // world_map.ts getTankSpeed returns 0 when pill.armour > 0 — the game
+  // engine completely freezes any tank sitting on an active pill tile.
+  // Nothing the brain can do will move the tank; just output nothing and
+  // wait for the pill to die or the tank to be killed.
+  if (dist < TILE) {
+    // Don't output any controls — avoids the ACC/spd=0 infinite loop.
+    return;
   }
+
+  // ── Close range (dist < 512): stop adjacent and dispatch builder ───────
+  // The binary approach: tank stops on the tile NEXT TO the pill, then the
+  // builder man walks the last tile to do the repair.  Never drive onto the
+  // pill tile itself (it would freeze the tank).
+  if (dist < 512) {
+    setSpeed(a4, 0, state.tank.speed);  // stop here — adjacent to pill
+    const defenderCount = a4.newGetPillDefenderCount;
+    if (a4.setGlobalsGate && !defenderCount && !a4.pendingBuilderAction) {
+      if (state.tank.builderInTank && !state.tank.onBoat) {
+        const trees = treesForRepair(pill.armour);
+        if (state.tank.resourceCount >= trees) {
+          a4.pendingBuilderAction = {
+            action: 'repair', trees,
+            tileX: pillTileX, tileY: pillTileY,
+          };
+          a4.fixPillInRange = 1;
+          a4.newGetPillAttackMode = 1;
+        } else {
+          // Not enough trees — harvest adjacent forest first
+          const forest = _findAdjacentForest(a4);
+          if (forest !== null) {
+            a4.pendingBuilderAction = {
+              action: 'forest', trees: 0,
+              tileX: forest.tileX, tileY: forest.tileY,
+            };
+            a4.newGetPillAttackMode = 1;
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // ── Medium range (dist < 2080): navigate + set in-range flag ──────────
+  if (dist < 2080) {
+    a4.fixPillInRange = 1;
+  }
+
+  // ── Navigate toward the pill — but stop ONE tile short ────────────────
+  // Offset the destination by 1 tile toward the tank so the close-range
+  // navigation (dist < 256) doesn't steer the tank directly onto the pill.
+  const dx = state.tank.x - pill.x;
+  const dy = state.tank.y - pill.y;
+  const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+  const navX = Math.round(pill.x + (dx / d) * TILE) & 0xFFFF;
+  const navY = Math.round(pill.y + (dy / d) * TILE) & 0xFFFF;
+  navigateToCoords(a4, navX, navY, 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,8 +375,25 @@ export function goalFixPill(a4: A4State, state: BrainState): void {
 /**
  * GetBase — Navigate to and capture an enemy base.
  *
- * Minimal handler: just navigate to the base.
- * Actual capture is triggered by DoCommonStuff when man is deployed.
+ * Binary (0x001716) is pure navigation (GoTo + team messages).
+ * Extension: world_map.ts freezes the tank (speed=0, turn=0) on a base tile
+ * when owner is active and armour > 9.  We block such tiles in worldMap
+ * (0x40|BASE, cost 1000) so A* routes around them; goalGetBase then shoots
+ * from an adjacent tile to chip away armour.  Key design rules:
+ *
+ *   - When ARMOURED (armour > 9, tile is blocked in worldMap):
+ *       • Far (> 1792 BWorld): navigate toward base.  A* stops at the adjacent
+ *         tile because the base is impassable.
+ *       • Close (≤ 1792): stop completely and shoot.  Do NOT call
+ *         navigateToCoords here — it sets conflicting turn bits that fight the
+ *         shoot() aim direction and prevent the gun from locking on.
+ *
+ *   - When CAPTURABLE (armour ≤ 9 or no active owner):
+ *       • The base tile is now cost 3 (passable) in worldMap.  The A* change-
+ *         detection in syncBrainState will have already set worldCostsInitDone=0
+ *         when it detected the block→passable transition, so the next
+ *         navigateToCoords will get a fresh route that goes through the tile.
+ *       • Navigate normally; Orona's findSubject() captures on drive-over.
  *
  * See getbase_decode.md.
  */
@@ -274,74 +401,48 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
   const target = a4.baseToGetTarget;
   if (target === null) return;
 
-  // Original change detection (object-ref based) — for team message flag only.
-  // NOTE: BaseState objects are recreated every tick so this fires every tick,
-  // which is fine for the team-mismatch flag but NOT for patience counters.
-  if (target !== a4.getBaseChangeDetectionPtr) {
-    a4.getBaseChangeDetectionPtr = target;
-    a4.killBaseCurrentTarget = target;  // KillBase target copy
+  // Change detection: record current target for message coordination.
+  if (target.index !== a4.getBaseChangeDetectionIndex) {
+    a4.getBaseChangeDetectionIndex = target.index;
+    a4.getBaseChangeDetectionPtr   = target;
+    a4.killBaseCurrentTarget       = target;
+  }
 
-    // Team bitmask validation (purpose: team coordination message flag)
-    const pillBitmask = a4.pillBitmaskTable[state.tank.menInGame & 0x0F] >>> 0;
-    if ((a4.teamBitmask ^ pillBitmask) !== 0) {
-      a4.getBaseTeamMismatch = 1;
+  // Check whether the worldMap actually has this base blocked right now.
+  // This reflects both the armour threshold AND the owner-active check from
+  // aindy_interface.ts (which mirrors world_map.ts line 83 exactly).
+  const tileIdx = ((target.tileY & 0xFF) << 8) | (target.tileX & 0xFF);
+  const tileIsBlocked = (a4.worldMap[tileIdx] & 0x40) !== 0;
+
+  if (tileIsBlocked) {
+    // Armoured / owner-active base — blocked tile, can't just drive over.
+    const dist = target.distToTank;
+    if (dist > 1792) {
+      // Far: approach. A* routes to the closest passable tile (adjacent).
+      navigateToCoords(a4, target.x, target.y, 0);
+    } else {
+      // Within shooting range: stop dead and aim-shoot.
+      // Do NOT call navigateToCoords here — it fights shoot()'s turn bits.
+      setSpeed(a4, 0);
+      shoot(a4, target.x, target.y, state);
     }
+    return;   // skip blacklisting while actively shooting
   }
 
-  // ── Patience timeout (index-based change detection) ────────────────────────
-  // BaseState objects are recreated each tick, so we track by INDEX.
-  // When the committed base index changes, reset patience counters.
-  if (a4.getBaseCommittedIndex !== a4.getBasePrevCommittedIndex) {
-    a4.getBasePrevCommittedIndex  = a4.getBaseCommittedIndex;
-    a4.getBaseMinDistSeen         = 0xFFFF;
-    a4.getBaseLastImprovedTick    = a4.tickCounter;
-  }
-
-  // Track the minimum tile-distance ever achieved to this base.
-  // If distance hasn't improved in 1500 ticks (~30s) AND we're still far
-  // away (> 8 tiles), the tank is circling without getting closer — abandon
-  // this commitment and let baseToGet() pick a fresher target next tick.
-  const PATIENCE_TICKS = 1500;
-  const distTiles = target.distToTank >> 8;
-  if (distTiles < a4.getBaseMinDistSeen) {
-    a4.getBaseMinDistSeen      = distTiles;
-    a4.getBaseLastImprovedTick = a4.tickCounter;
-  } else if (
-    a4.getBaseMinDistSeen > 8 &&
-    (a4.tickCounter - a4.getBaseLastImprovedTick) > PATIENCE_TICKS
-  ) {
-    // Stuck too long without progress — blacklist this base for 5000 ticks
-    // so the selector picks a different base rather than immediately retrying.
-    const failedIdx = a4.getBaseCommittedIndex;
-    if (failedIdx >= 0 && failedIdx < a4.getBaseFailedUntilTick.length) {
-      a4.getBaseFailedUntilTick[failedIdx] = (a4.tickCounter + 5000) >>> 0;
-    }
-    a4.baseToGetTarget           = null;
-    a4.getBaseCommittedIndex     = -1;
-    a4.getBasePrevCommittedIndex = -1;
-    a4.getBaseMinDistSeen        = 0xFFFF;
-    a4.noLocalRouteFlag          = 0;
-    return;
-  }
-
-  // Navigate to base — Orona captures the base automatically when the tank
-  // drives over it. No builder dispatch needed.
+  // Base is passable — navigate onto it to trigger Orona's findSubject() capture.
   navigateToCoords(a4, target.x, target.y, 0);
 
-  // If navigation signals this destination is unreachable (solid wall between
-  // tank and base, A* got ∞ for tank tile), clear the target so the selector
-  // picks a different base next tick rather than getting stuck forever.
-  // Also clear the committed index so baseToGet() does a fresh selection.
+  // On route failure: clear the flag and apply a cooldown so the brain
+  // doesn't re-select this unreachable base every tick forever.
   if (a4.noLocalRouteFlag) {
-    a4.baseToGetTarget = null;
-    a4.getBaseCommittedIndex = -1;   // force fresh selection next tick
     a4.noLocalRouteFlag = 0;
+    a4.getBaseFailedUntilTick[target.index] = a4.tickCounter + 5000;
+    a4.getBaseCommittedIndex = -1;
   }
 
   // Send team coordination message on mismatch
   if (a4.getBaseTeamMismatch && !a4.worldCostsInitDone) {
     a4.getBaseTeamMismatch = 0;
-    // sendMessage(a4, target.index, ...);  // TODO Step 11
   }
 }
 
@@ -400,6 +501,23 @@ export function goalGetMan(a4: A4State, state: BrainState): void {
     // Already dispatched: navigate to saved target
     navigateToCoords(a4, a4.getManTargetX, a4.getManTargetY, 0);
   }
+
+  // ── Unreachable-builder abandonment ───────────────────────────────────
+  // GetMan is top priority (cost 1). If the builder can't be pathed to
+  // (noLocalRouteFlag), the tank would otherwise sit idle on top of it and be
+  // shot to death — observed: armor 40→0 over ~35s while route:MISS. After the
+  // man proves unreachable for a sustained period, abandon it (cooldown forces
+  // getManGoalCost to 0xFFFF) so the next goal — typically Refuel — takes over.
+  // A fresh builder eventually parachutes back anyway. Mirrors getBaseFailedUntilTick.
+  if (a4.noLocalRouteFlag) {
+    if (a4.getManFailSinceTick === 0) a4.getManFailSinceTick = a4.tickCounter;
+    else if (a4.tickCounter - a4.getManFailSinceTick > 150) {
+      a4.getManFailedUntilTick = a4.tickCounter + 3000;  // ~60s cooldown
+      a4.getManFailSinceTick = 0;
+    }
+  } else {
+    a4.getManFailSinceTick = 0;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -424,24 +542,26 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   const pill = a4.pillToGetTarget;
   if (pill === null) return;
 
-  // Phase 0: Target change detection
-  if (pill !== a4.newGetPillTargetCopy) {
+  // Phase 0: Target change detection (index-based — PillState objects are recreated each tick)
+  if (pill.index !== a4.newGetPillTargetIndex) {
     a4.newGetPillAPChosen = 0;
     a4.newGetPillApproachModeA = 0;
     a4.newGetPillApproachModeB = 0;
     a4.newGetPillSpeedTier = 0;
     a4.newGetPillWaitPlaceChosen = 0;
     a4.newGetPillSameTarget = 0;
+    a4.newGetPillTargetIndex = pill.index;
     a4.newGetPillTargetCopy = pill;
     a4.newGetPillPillCopy = pill;
-    a4.chooseAPLastSector = -1;    // reset sector bias for fresh target
+    a4.chooseAPLastSector = -1;
+    a4.newGetPillAPFailCount = 0;  // reset failure count for new target
   }
 
-  // Same-target detection
-  if (pill === a4.prevPillTarget) {
+  // Same-target detection (index-based)
+  if (pill.index === a4.prevPillTargetIndex) {
     a4.newGetPillSameTarget = 1;
   } else {
-    a4.prevPillTarget = pill;
+    a4.prevPillTargetIndex = pill.index;
   }
 
   // Phase 1: Owner change detection
@@ -458,24 +578,98 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
     _chooseAP(a4, state, pill);
     // _chooseAP sets a4.newGetPillAPX/Y and a4.newGetPillAPChosen = 1
     a4.newGetPillSpeedTier = pill.approachSpeedTier & 0xFF;
+
+    // Validate the AP tile: reject river, impassable, and forest tiles.
+    // If the AP is on bad terrain, nudge it to the nearest good neighbor.
+    const apTileX = (a4.newGetPillAPX >> 8) & 0xFF;
+    const apTileY = (a4.newGetPillAPY >> 8) & 0xFF;
+    const apIdx = ((apTileY & 0xFF) << 8) | (apTileX & 0xFF);
+    const apRaw = a4.worldMap[apIdx];
+    const apTerrain = apRaw & 0x0F;
+    const apCost = a4.examineTerrainCostTable[apRaw];
+    if (apTerrain === 1 || apCost >= 100) {
+      const dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+      let found = false;
+      for (const [dx, dy] of dirs) {
+        const nx = (apTileX + dx) & 0xFF;
+        const ny = (apTileY + dy) & 0xFF;
+        const nIdx = ((ny & 0xFF) << 8) | (nx & 0xFF);
+        const nCost = a4.examineTerrainCostTable[a4.worldMap[nIdx]];
+        if (nCost < 100 && (a4.worldMap[nIdx] & 0x0F) !== 1) {
+          a4.newGetPillAPX = (nx << 8) + 128;
+          a4.newGetPillAPY = (ny << 8) + 128;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // No good neighbor — skip this sector, try another
+        const dirPillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY);
+        a4.chooseAPLastSector = Math.floor((dirPillToAP & 0xFF) * 40 / 256);
+        a4.newGetPillAPChosen = 0;
+        return;
+      }
+    }
   }
 
-  // Phase 4: Navigate to AP (if not already there)
-  const myTX = a4.tankTileX;
-  const myTY = a4.tankTileY;
-  const apTX = (a4.newGetPillAPX >> 8) & 0xFF;
-  const apTY = (a4.newGetPillAPY >> 8) & 0xFF;
+  // Phase 4a: If pill armour is 0, drive onto it.
+  // Orona auto-captures: world_pillbox.update() picks up the pill when
+  // tank.cell === pill.cell and armour===0. Navigate directly to the pill tile.
+  if (pill.armour === 0) {
+    navigateToCoords(a4, pill.x, pill.y, 0);
+    return;
+  }
 
-  if (myTX !== apTX || myTY !== apTY) {
-    // Not at AP: navigate
+  // Phase 4a': Opportunistic base capture.
+  // If an uncaptured base is within 2 tiles, navigate onto it before continuing
+  // to the pill AP.  GetBase (via getBaseGoalCost proximity lock-in) would normally
+  // handle this, but GetPill(≥1) ties or beats GetBase(0) only when a base is within
+  // 6 tiles AND a pill is also very close.  Checking here ensures bases on the
+  // approach route are never accidentally bypassed.
+  for (const base of a4.bases) {
+    if (base.isAlly) continue;
+    if ((base.distToTank >> 8) <= 4) {
+      navigateToCoords(a4, base.x, base.y, 0);
+      return;
+    }
+  }
+
+  // Phase 4b / Phase 5 — unified distance-based approach + attack.
+  //
+  // Binary NewGetPill (0x00ea52) uses pill distance thresholds, not AP tile equality:
+  //   dist > 0x0820 (8.1 tiles):  navigation phase — GoTo(AP)
+  //   dist ≤ 0x07C0 (7.75 tiles): attack phase — navigate toward pill, shoot
+  //
+  // Our old "at exact AP tile" check was too strict: the tank had to land on
+  // the precise tile before firing, causing it to miss and bounce around.
+  // The binary starts shooting from up to 7.75 tiles away and drives toward
+  // the pill, so it fires continuously during the final approach.
+  const pillDistPh = computeDistanceBetween(state.tank.x, state.tank.y, pill.x, pill.y);
+
+  if (pillDistPh > 0x07C0) {
+    // ── Navigation phase: approach the AP ──────────────────────────────────
     navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
 
-    // Stall detection: if stuck >10s, replan AP biased away from failed sector
+    // Fire while approaching if already in loose range (≥ 8 tiles but aimed)
+    if (pillDistPh <= 2048) {
+      const dirNav = directionTo(state.tank.x, state.tank.y, pill.x, pill.y);
+      _shootPill(a4, state, pill, dirNav & 0xFF, 0);
+    }
+
+    // AP navigation failure: replan from a different sector, never give up.
+    if (a4.noLocalRouteFlag) {
+      a4.noLocalRouteFlag = 0;
+      const dirPillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY);
+      a4.chooseAPLastSector = Math.floor((dirPillToAP & 0xFF) * 40 / 256);
+      a4.newGetPillAPChosen = 0;
+      a4.newGetPillStallTick = 0;
+      return;
+    }
+
+    // Stall detection: if stuck >10s navigating to AP, try a different sector
     if (a4.newGetPillStallTick === 0) {
       a4.newGetPillStallTick = a4.tickCounter;
     } else if (a4.tickCounter - a4.newGetPillStallTick > 600) {
-      // Record the sector of the failed AP (pill→AP direction, mapped to 0-39)
-      // so ChooseAttackPosition can penalise that sector and pick a different angle
       const dirPillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY);
       a4.chooseAPLastSector = Math.floor((dirPillToAP & 0xFF) * 40 / 256);
       a4.newGetPillAPChosen = 0;
@@ -484,23 +678,35 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
     return;
   }
 
-  // At AP: clear stall timer
+  // ── Attack phase (dist ≤ 0x07C0 ≈ 7.75 tiles from pill) ─────────────────
+  // Binary: navigate toward pill directly (not AP), fire continuously.
+  // Speed tiers (0x00f382–0x00f4dc):
+  //   dist > 0x073C (7.2 tiles): speed 24
+  //   dist > 0x0700 (7.0 tiles): speed 16
+  //   dist > 0x06E2 (6.9 tiles): speed  8
+  //   dist ≤ 0x06E2:             speed  0  — stop and concentrate fire
   a4.newGetPillStallTick = 0;
 
-  // Phase 5: Attack — aim at pill and fire using ShootPill
+  let apSpeed: number;
+  if      (pillDistPh > 0x073C) apSpeed = 24;
+  else if (pillDistPh > 0x0700) apSpeed = 16;
+  else if (pillDistPh > 0x06E2) apSpeed = 8;
+  else                           apSpeed = 0;
+
+  setSpeed(a4, apSpeed, state.tank.speed & 0xFF);
+
+  // Drive toward the pill when still moving (binary: GoTo(pill) within attack zone)
+  if (apSpeed > 0) {
+    navigateToCoords(a4, pill.x, pill.y, 0);
+  }
+
+  // Also apply CheckBarriers result from ChooseGoal (A4[13254]).
+  // If barriers > 0 the binary calls ComputeDirToShoot; we use direct
+  // DirectionTo as a simplification (matches no-barrier path).
   const dirToPill = directionTo(state.tank.x, state.tank.y, pill.x, pill.y);
   a4.shootPillDirection = dirToPill & 0xFF;
   _shootPill(a4, state, pill, dirToPill & 0xFF, 0);
   a4.pillApproachInProgress = 1;
-
-  // Phase 6: When pill is fully depleted (armor=0, captureDifficulty=0) or
-  // already neutral, dispatch the builder to capture it.
-  // Orona uses team=255 (0xFF) for neutral pills; aIndy original used 16.
-  const pillDepleted = pill.captureDifficulty === 0;   // armor shot to 0
-  const pillNeutral  = (pill.ownerByte & 0xFF) === 0xFF || (pill.ownerByte & 0xFF) === 16;
-  if ((pillDepleted || pillNeutral) && pill.distToTank < 1024 && a4.myMan !== null) {
-    a4.myMan.actionCode = 2;   // PLACE_PILL (send builder to capture)
-  }
 }
 
 // Alias for goal dispatch
@@ -529,8 +735,9 @@ export function goalKillBase(a4: A4State, state: BrainState): void {
     return;
   }
 
-  // Target changed
-  if (target !== a4.killBasePrevTarget) {
+  // Target changed (index-based — BaseState objects are recreated each tick)
+  if (target.index !== a4.killBaseTargetIndex) {
+    a4.killBaseTargetIndex = target.index;
     a4.killBaseAttackPos = 0;
     a4.killBaseFirstShotFired = 0;
     a4.killBaseInProgress = 0;
@@ -652,9 +859,20 @@ export function goalKillMan(a4: A4State, state: BrainState): void {
 /**
  * KillTank — Engage and destroy an enemy tank.
  *
- * Multi-phase with lead calculation, escape logic, stutter-step mode.
+ * Verified from binary KillTank (0x002764, 348 instructions):
  *
- * See killtank_decode.md for full 348-instruction algorithm.
+ *   Phase 1: compute enemy speed (Speed 0x017a02) and lead aim position
+ *            (LinearAimBySpeed 0x0151e6). When dist > 512, aim leads the shot.
+ *   Phase 2: escape to ally base when ammo < 4 (binary 0x002924-0x0029ac).
+ *   Phase 3: dist-based dispatch (binary 0x002a8e onwards):
+ *     > 1792: navigate toward lead position (close the distance)
+ *     ≤ 1792 (medium+close): stop and shoot at lead position
+ *     ≤ 256 (very close): always stop and shoot
+ *
+ * Simplifications vs. binary:
+ *   - No LinearAimBySpeed (we use our existing linearAim + DoCommonStuff velocity)
+ *   - No stutter-step mode (binary alternates move/stop for evasion)
+ *   - No PillToPiss (shoot protecting pills first)
  */
 export function goalKillTank(a4: A4State, state: BrainState): void {
   const target = a4.tankToKillTarget;
@@ -662,8 +880,10 @@ export function goalKillTank(a4: A4State, state: BrainState): void {
 
   const dist = target.distanceMetric;
 
-  // Escape check: low ammo and vulnerable
-  if (state.tank.ammo < 4 && state.tank.pillsCarried === 0) {
+  // Escape check (binary 0x002924): low ammo, no pills, safe base nearby.
+  // Binary gates on: ammo < 4 AND target has no pill guard AND we have no pills.
+  // Escape check: binary 0x002924 uses CMPI.B #$04, 46(A0) = raw shells < 4.
+  if (state.tank.shells < 4 && state.tank.pillsCarried === 0) {
     const safeBase = a4.closestAllyBase;
     if (safeBase !== null && safeBase.distToTank <= 1280 && safeBase.defended) {
       navigateToCoords(a4, safeBase.x, safeBase.y, 1);
@@ -671,25 +891,21 @@ export function goalKillTank(a4: A4State, state: BrainState): void {
     }
   }
 
-  // Set attack flag if within range
+  // Set attack mode flag (binary 0x0029b0: if dist < 0x0C00 = 3072)
   if (dist < 3072) {
-    a4.newGetPillAttackMode = 1;   // A4[13586]
+    a4.newGetPillAttackMode = 1;
   }
 
-  // Distance-based dispatch
+  // Distance-based dispatch (binary 0x002a8e):
   if (dist > 1792) {
-    // Far: navigate to lead position
+    // Far (> 7 tiles): close the gap — navigate toward enemy.
+    // Also try to shoot if we happen to be facing the right way already
+    // (this fires via shoot()'s onTarget check; turnTowardsDir costs nothing).
     navigateToCoords(a4, target.x, target.y, 0);
-  } else if (dist > 1024) {
-    // Medium: stop and shoot (pass state so real Shoot() runs)
-    setSpeed(a4, 0);
-    shoot(a4, target.x, target.y, state);
-  } else if (dist > 256) {
-    // Close: stop and shoot
-    setSpeed(a4, 0);
     shoot(a4, target.x, target.y, state);
   } else {
-    // Very close: stop and shoot
+    // Within 7 tiles: stop and aim-shoot.
+    // Binary 0x002bda (≤ 256) and 0x002bba/0x002b90 (256-1792): SetSpeed(0)+Shoot.
     setSpeed(a4, 0);
     shoot(a4, target.x, target.y, state);
   }
@@ -714,17 +930,16 @@ export function goalKillTank(a4: A4State, state: BrainState): void {
 export function goalRefuel(a4: A4State, state: BrainState): void {
   switch (a4.refuelState) {
     case 0:
-      // Idle → find refuel base
-      a4.refuelState = 1;
-      break;
-
     case 1:
-      // Select base — use NewRefuel (simpler direct approach)
-      goalNewRefuel(a4, state);
+      // Base is already selected by chooseRefuelBase() in chooseGoal each tick.
+      // Skip the complex waypoint-planning sub-states and go straight to navigation.
+      if (a4.refuelBaseTarget !== null) {
+        a4.refuelState = 2;
+      }
       break;
 
     case 2:
-      // Navigate waypoints
+      // Navigate to base
       _refuelNavigateToBase(a4, state);
       break;
 
@@ -757,10 +972,36 @@ function _refuelNavigateToBase(a4: A4State, state: BrainState): void {
 }
 
 function _refuelSitOnBase(a4: A4State, state: BrainState): void {
-  setSpeed(a4, 0);   // stop at base
+  const base = a4.refuelBaseTarget;
+  if (base === null) { a4.refuelState = 0; return; }
 
-  // Check if full
-  if (state.tank.armor >= 40 && state.tank.ammo >= 8) {
+  // If we drifted off the base tile, go back to navigation
+  if (a4.tankTileX !== base.tileX || a4.tankTileY !== base.tileY) {
+    a4.refuelState = 2;
+    return;
+  }
+
+  setSpeed(a4, 0);   // stop at base — Orona refuels automatically
+
+  // Done when fully fueled — OR when the base has nothing left to give that
+  // the tank still needs. The engine (world_base.ts) refuels from the base's
+  // FINITE stock (armour in +5 chunks, then shells, then mines, each to 40).
+  // Using raw `shells` (0-40), not the coarse `ammo` (shells/5), so the check
+  // is consistent with refuelGoalCost's thresholds. Without the depletion
+  // exit, a tank that arrives low at a drained base would sit on it forever
+  // (refuelGoalCost stays active while shells<7, so goal selection won't pull
+  // it away either).
+  const tank = state.tank;
+  const tankFull = tank.armor >= 40 && tank.shells >= 40;
+
+  const ob = (a4.refuelBaseTarget as any).oronaBase;
+  const baseArmour = ob?.armour ?? base.armor ?? 0;
+  const baseShells = ob?.shells ?? 0;
+  const baseCanHelp =
+    (baseArmour > 0 && tank.armor < 40) ||
+    (baseShells > 0 && tank.shells < 40);
+
+  if (tankFull || !baseCanHelp) {
     a4.refuelState = 0;
   }
 }

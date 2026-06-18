@@ -35,8 +35,10 @@ import { manstopped, stuarts_aim } from './pathfinding.js';
 export const UNVISITED   = 0x7D01;   // sentinel: unreachable / not visited
 export const VISITED_BIT = 0x8000;   // bit set when tile is in open/closed set
 const BASE_ENTRANCE_COST = 0x4001;   // special cost for base entrance tiles
-const HEAP_CAPACITY      = 4096;     // max nodes in priority queue
-const SEARCH_RADIUS      = 14;       // WorldRouteFind / InitLocalCosts ±14 tile window
+const HEAP_CAPACITY      = 16384;    // max nodes in priority queue (increased for wider searches)
+export const SEARCH_RADIUS = 20;      // WorldRouteFind ±20-tile window. Original used 14 + ExpandWorldLimits
+                                     // (adaptive growth on failure). Without that, 20 is needed.
+                                     // Water is now cost 19 (traversable) so this is sufficient.
 
 // Timeout: WorldVisit bails after this many ticks (~200ms at 50Hz)
 const WORLD_VISIT_TIMEOUT = 10;
@@ -375,12 +377,20 @@ export function worldVisit(
     a4.worldCostsInitDone = 1;
   }
 
-  // Main A* loop with timeout
+  // Main A* loop with timeout.
+  // Budget: 8ms per tick (leaves headroom in a 20ms tick at 50Hz).
+  // A* is split across multiple ticks via worldCostsInitDone continuations.
+  //
+  // CRITICAL: clear the timeout gate at the start of each call.  If a previous
+  // call timed out (gate=1) but this call completes normally (heap exhausted),
+  // the gate MUST be 0 so navigation can detect "A* done, tank not reachable"
+  // vs "A* still running".  Leaving it at 1 hides the exhausted-window condition
+  // and the tank steers against walls forever.
+  a4.worldVisitTimeoutGate = 0;
   const startMs = Date.now();
 
   while (heap.size > 0) {
-    // Timeout guard (~10 ticks @ 50Hz = 200ms)
-    if (Date.now() - startMs > 200) {
+    if (Date.now() - startMs > 8) {
       a4.worldVisitTimeoutGate = 1;
       a4.worldVisitTimeoutCounter++;
       break;
@@ -485,25 +495,33 @@ export function worldRouteFind(
   destX: number,
   destY: number,
 ): void {
-  // Snapshot
-  a4.worldRouteTickSnapshot   = a4.tickCounter;
-  a4.worldRouteDangerFlag     = a4.dangerEvalEnable;
-  a4.worldRouteTankByte47     = a4.refuelPathBudget & 0xFF;
-  a4.worldRouteResourceConstraint = a4.resourceConstraint;
+  // Snapshot state (mirrors original 0x0216ec-0x021708)
+  a4.worldRouteTickSnapshot        = a4.tickCounter;
+  a4.worldRouteDangerFlag          = a4.dangerEvalEnable;
+  a4.worldRouteTankByte47          = a4.refuelPathBudget & 0xFF;
+  a4.worldRouteResourceConstraint  = a4.resourceConstraint;
 
-  // Expand/shrink bounding box to ±14 tiles around destination
-  const minX = Math.max(0,   destX - SEARCH_RADIUS);
-  const maxX = Math.min(255, destX + SEARCH_RADIUS);
-  const minY = Math.max(0,   destY - SEARCH_RADIUS);
-  const maxY = Math.min(255, destY + SEARCH_RADIUS);
+  // Expand bounds to include dest ± SEARCH_RADIUS (original uses ±14; we use ±20).
+  // Only EXPAND — never shrink.  Caller resets to 255/0/255/0 before the first
+  // call so this behaves like a "min(current, candidate)" for minX/Y and
+  // "max(current, candidate)" for maxX/Y, matching the original's BLE/BGE logic.
+  const newMinX = Math.max(0,   destX - SEARCH_RADIUS);
+  const newMaxX = Math.min(255, destX + SEARCH_RADIUS);
+  const newMinY = Math.max(0,   destY - SEARCH_RADIUS);
+  const newMaxY = Math.min(255, destY + SEARCH_RADIUS);
 
-  // Expand box to include tank position too
-  a4.worldRouteMinX = Math.min(a4.worldRouteMinX !== 0 ? a4.worldRouteMinX : 255, minX, a4.tankTileX);
-  a4.worldRouteMaxX = Math.max(a4.worldRouteMaxX, maxX, a4.tankTileX);
-  a4.worldRouteMinY = Math.min(a4.worldRouteMinY !== 0 ? a4.worldRouteMinY : 255, minY, a4.tankTileY);
-  a4.worldRouteMaxY = Math.max(a4.worldRouteMaxY, maxY, a4.tankTileY);
+  if (newMinX < a4.worldRouteMinX) a4.worldRouteMinX = newMinX;
+  if (newMaxX > a4.worldRouteMaxX) a4.worldRouteMaxX = newMaxX;
+  if (newMinY < a4.worldRouteMinY) a4.worldRouteMinY = newMinY;
+  if (newMaxY > a4.worldRouteMaxY) a4.worldRouteMaxY = newMaxY;
 
-  // Init costs if not done this search
+  // Also ensure tank tile is always inside the search window.
+  if (a4.tankTileX < a4.worldRouteMinX) a4.worldRouteMinX = a4.tankTileX;
+  if (a4.tankTileX > a4.worldRouteMaxX) a4.worldRouteMaxX = a4.tankTileX;
+  if (a4.tankTileY < a4.worldRouteMinY) a4.worldRouteMinY = a4.tankTileY;
+  if (a4.tankTileY > a4.worldRouteMaxY) a4.worldRouteMaxY = a4.tankTileY;
+
+  // Init costs if not done this search (gate prevents double-init on timeout continuation)
   if (!a4.worldCostsInitDone) {
     initWorldCosts(a4);
   }
@@ -566,13 +584,21 @@ export function getNextStepTile(a4: A4State, destTile: number): number {
   // Follow routeLookupTable back-pointers from dest toward tank.
   // Build path: destTile → ... → tankTile, then return element at index [len-2].
   // To avoid O(n) in common cases, we walk up to 2 tiles from the tank.
-  const costs = a4.worldRouteCostTable;
+  const costs = a4.useLocalRouteForNav ? a4.localRouteCostTable : a4.worldRouteCostTable;
 
-  // Check if tank tile was visited (route exists)
-  if (costs[tankTile] === UNVISITED) return destTile;
+  // If A* hasn't reached the tank tile yet (UNVISITED — A* still computing or just
+  // restarted), the cost table is empty but routeLookupTable still holds the OLD
+  // backpointers from the previous run.  Use them rather than falling back to
+  // destTile directly: the old route avoids obstacles even if it points toward a
+  // slightly different destination.  This prevents the tank from steering straight
+  // through forest/water during the 2-5 tick A* restart window.
+  if (costs[tankTile] === UNVISITED) {
+    const oldBP = a4.routeLookupTable[tankTile];
+    if (oldBP && oldBP !== tankTile) return oldBP;  // old route still valid
+    return destTile;                                  // no prior route: unavoidable direct steer
+  }
 
-  // Find the step closest to the tank along the route.
-  // routeLookupTable[tankTile] = tile that leads toward dest.
+  // A* has reached tank tile: use fresh backpointer.
   const nextTile = a4.routeLookupTable[tankTile];
   if (!nextTile || nextTile === tankTile) return destTile;
 
@@ -705,6 +731,95 @@ const _MAN_Y = new Int16Array(256).map((_, i) =>
 // Convenience: A4State doesn't store heap directly (heap is passed as arg).
 // Callers should create one heap per A4State and pass it through.
 // See navigation.ts which creates a4.heap and passes it to all routing calls.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TANK LOCAL ROUTE FIND — two-phase routing Phase 2
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LOCAL_ROUTE_RADIUS = 14;  // Binary: LocalVisit uses ±14 tile window
+
+/**
+ * TankLocalRouteFind — Fine-navigation A* for the last ≤14 tiles (binary 0x021e6c).
+ *
+ * Phase 2 of NavigateToCoords' two-phase routing.  WorldRouteFind covers the
+ * global path; this refines the local segment every 120 ticks when the tank is
+ * within 14 tiles of the destination.
+ *
+ * Writes results to localRouteCostTable (separate from worldRouteCostTable) and
+ * the shared routeLookupTable.  After a successful run, FindCheapestSquare reads
+ * from localRouteCostTable via a4.useLocalRouteForNav = true.
+ *
+ * @param destX  Destination tile X
+ * @param destY  Destination tile Y
+ */
+export function tankLocalRouteFind(
+  a4: A4State,
+  heap: RoutingHeap,
+  destX: number,
+  destY: number,
+): void {
+  const tx = a4.tankTileX & 0xFF;
+  const ty = a4.tankTileY & 0xFF;
+  const dx = Math.abs(tx - destX);
+  const dy = Math.abs(ty - destY);
+
+  // Only run within LOCAL_ROUTE_RADIUS tiles of destination
+  if (dx > LOCAL_ROUTE_RADIUS || dy > LOCAL_ROUTE_RADIUS) {
+    a4.useLocalRouteForNav = false;
+    return;
+  }
+
+  const minX = Math.max(0, tx - LOCAL_ROUTE_RADIUS);
+  const maxX = Math.min(255, tx + LOCAL_ROUTE_RADIUS);
+  const minY = Math.max(0, ty - LOCAL_ROUTE_RADIUS);
+  const maxY = Math.min(255, ty + LOCAL_ROUTE_RADIUS);
+
+  const costs = a4.localRouteCostTable;
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      costs[((y & 0xFF) << 8) | (x & 0xFF)] = UNVISITED;
+    }
+  }
+  heapEmpty(heap);
+
+  const startIdx  = ((destY & 0xFF) << 8) | (destX & 0xFF);
+  const tankTile  = ((ty & 0xFF) << 8) | (tx & 0xFF);
+
+  costs[startIdx]                    = VISITED_BIT;
+  a4.routeLookupTable[startIdx]      = startIdx & 0xFFFF;
+  a4.routeIterCountTable[startIdx]   = 0;
+
+  heapInsert(heap, 0, 0, startIdx, startIdx);
+
+  const startMs = Date.now();
+  while (heap.size > 0) {
+    if (Date.now() - startMs > 4) {
+      // Timed out: leave useLocalRouteForNav unchanged (use old result if any)
+      return;
+    }
+    const node = heapDeleteMin(heap);
+    if (!node) break;
+    const { cost: nodeCost, currTile } = node;
+
+    costs[currTile] &= ~VISITED_BIT;
+
+    if (currTile === tankTile) break;  // route found
+
+    const cx = currTile & 0xFF;
+    const cy = (currTile >> 8) & 0xFF;
+    const prevCost = a4.routeIterCountTable[currTile] & 0x7FFF;
+
+    if (cx > minX) examine(a4, heap, costs, currTile - 1,     currTile, prevCost, tankTile, minX, maxX, minY, maxY);
+    if (cx < maxX) examine(a4, heap, costs, currTile + 1,     currTile, prevCost, tankTile, minX, maxX, minY, maxY);
+    if (cy > minY) examine(a4, heap, costs, currTile - 0x100, currTile, prevCost, tankTile, minX, maxX, minY, maxY);
+    if (cy < maxY) examine(a4, heap, costs, currTile + 0x100, currTile, prevCost, tankTile, minX, maxX, minY, maxY);
+  }
+
+  // Success if tank tile was visited
+  if ((costs[tankTile] & ~VISITED_BIT) < UNVISITED || (costs[tankTile] & VISITED_BIT)) {
+    a4.useLocalRouteForNav = true;
+  }
+}
 
 // A4State already has: worldRouteCostTable, localRouteCostTable, routeLookupTable,
 // routeIterCountTable, routeIterCountTable2 (all Uint16Array 65536).

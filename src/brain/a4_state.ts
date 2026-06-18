@@ -170,18 +170,90 @@ export class A4State {
   tankSpeed = 0;
 
   // ── NavigateToCoords route cache ──────────────────────────────────────────
-  // A* is expensive — only re-run when tank tile or destination changes.
+  // Re-run A* only when tank moves >10 tiles, dest changes, or >1000 ticks.
+  // Matches original: 0x020b96 checks 1000-tick timeout + 10-tile movement.
 
-  /** Tank tile X when route was last computed */
+  /** Tank tile X at last A* run */
   navCacheTankTileX = -1;
-  /** Tank tile Y when route was last computed */
+  /** Tank tile Y at last A* run */
   navCacheTankTileY = -1;
-  /** Destination tile X when route was last computed */
+  /** Destination tile X at last A* run */
   navCacheDestTileX = -1;
-  /** Destination tile Y when route was last computed */
+  /** Destination tile Y at last A* run */
   navCacheDestTileY = -1;
+  /** Tick counter at last A* run */
+  navCacheTickStamp = 0;
   /** 1 = cached route is valid; 0 = must recompute */
   navCacheValid = 0;
+  /** Whether the tank was on a boat at the last A* run.
+   *  Boat transitions change water tile costs (19 ↔ 1000), invalidating A*. */
+  navCachePrevOnBoat = false;
+
+  /** Whether the tank is currently on a boat (synced from BrainState each tick) */
+  tankOnBoat = false;
+
+  // ── Full-map A* path state ────────────────────────────────────────────────
+
+  /** Current computed path (packed tile indices y<<8|x, start to dest) */
+  navPath: Uint16Array | null = null;
+
+  /** Current index into navPath (next waypoint to steer toward) */
+  navPathIndex = 0;
+
+  /** A* working memory: g-cost per tile (0xFFFF = unvisited) */
+  navGCost: Uint16Array = new Uint16Array(65536);
+
+  /** A* working memory: parent backpointer per tile (packed tile index) */
+  navParent: Uint16Array = new Uint16Array(65536);
+
+  /** A* working memory: binary min-heap (packed f<<16|tileIdx) */
+  navHeap: Uint32Array = new Uint32Array(65536);
+
+  // ── Boat detection ────────────────────────────────────────────────────────
+
+  /** True when a water route is significantly shorter than the dry route */
+  boatNeeded = false;
+
+  /** Tile X where the boat should be built (first river tile on the wet path) */
+  boatBuildTileX = 0;
+
+  /** Tile Y where the boat should be built */
+  boatBuildTileY = 0;
+
+  /** Tick when boat acquisition (GetBoat sub-goal) was latched; 0 = not acquiring.
+   *  Used to time out acquisition and fall back to the dry route if the tank
+   *  can never board (e.g. unreachable boat point, no trees to build). */
+  boatAcquireSinceTick = 0;
+
+  /** Tick until which boat acquisition is suppressed after a timeout. Prevents
+   *  re-latching boatNeeded every recompute (which made the tank repeatedly wade
+   *  to an unreachable boat point, draining shells). Mirrors getManFailedUntilTick. */
+  boatFailedUntilTick = 0;
+
+  /** Total cost of the current dry path (for comparison) */
+  navDryPathCost = 0;
+
+  /** Total cost of the wet path (rivers cheap) — 0 if not computed */
+  navWetPathCost = 0;
+
+  // ── Two-phase routing: tank LocalRouteFind state (binary 0x021e6c) ──────────
+
+  /**
+   * When true, FindCheapestSquare uses localRouteCostTable (fine local route)
+   * instead of worldRouteCostTable.  Set by tankLocalRouteFind when it completes
+   * successfully; cleared when destination changes or tank moves > 10 tiles from
+   * the last local route point.
+   */
+  useLocalRouteForNav = false;
+
+  /** Tick counter when tankLocalRouteFind last ran successfully. */
+  localNavLastTick = -1200;   // force first run
+
+  /** Tank tile X when tankLocalRouteFind last ran (±10 tile check). */
+  localNavTankX = -1;
+
+  /** Tank tile Y when tankLocalRouteFind last ran. */
+  localNavTankY = -1;
 
   // ── Control words (brain output, written end of each tick) ────────────────
 
@@ -191,49 +263,24 @@ export class A4State {
   /** A4[11682] long — tank firing/mines control word */
   firingWord = 0;
 
-  // ── Borg flags ─────────────────────────────────────────────────────────────
-
-  /** A4[11658] byte — Borg navigation enable */
-  borgNavEnable = 0;
-
-  /** A4[11659] byte — Borg pill-drop enable */
-  borgPillDropEnable = 0;
-
-  /** A4[11660] byte — Borg aim/shoot enable */
-  borgAimEnable = 0;
-
-  /** A4[11661] byte — Borg KillMan enable */
-  borgKillManEnable = 0;
-
-  /** A4[11662] byte — Borg DropMines enable */
-  borgDropMinesEnable = 0;
-
-  /** A4[11663] byte — Borg building enable */
-  borgBuildEnable = 0;
-
-  /** A4[11657] byte — Build: Borg enable flag (pill-navigate and tree-harvest modes) */
-  borgBuildMode = 0;
-
-  /** A4[12858] byte — borg_active flag */
-  borgActive = 0;
-
   /** A4[12859] byte — DropMines activation flag */
   dropMinesActive = 0;
 
-  /** A4[12860] byte — Borg nav-commit flag */
-  borgNavCommitFlag = 0;
+  /** A4[12862] word — SetGlobals computation gate (1 = enabled) */
+  setGlobalsGate = 1;
 
-  /** A4[12861] byte — Borg proximity gate flag (0 = brain not enabled → abort) */
-  borgProximityGate = 0;
+  /**
+   * Builder dispatch command set by doBuilding/goalFixPill this tick.
+   * Cleared at the start of each tick by aIndy_Think, then returned in
+   * BrainControls so _runBrainTick can call buildOrder().
+   */
+  pendingBuilderAction: { action: string; trees: number; tileX: number; tileY: number } | null = null;
 
-  /** A4[12862] word — SetGlobals: computation gate flag (also Borg nav-commit from TankRecord+169) */
-  setGlobalsGate = 0;
-
-  /** A4[12863] byte — SetGlobals: Borg pill-drop flag check */
-  setGlobalsBorgPillDrop = 0;
-
-  /** A4[12864] byte — SetGlobals: Borg nav-commit flag check */
-  setGlobalsBorgNavCommit = 0;
+  /**
+   * Tracks whether the builder was deployed on the previous tick.
+   * Used to detect the deployed→in-tank transition and clear newGetPillAttackMode.
+   */
+  prevBuilderWasDeployed = 0;
 
   /** A4[11669] byte — RefuelDoManStuff: mine-deploy enabled */
   refuelMineDeployEnabled = 0;
@@ -244,8 +291,6 @@ export class A4State {
   /** A4[11671] byte — RefuelDoManStuff: alternate man pickup */
   refuelAltManPickup = 0;
 
-  /** A4[11674] byte — ReceiveAnyMessages: Borg message mode flag */
-  borgMessageMode = 0;
 
   // ── Goal system ────────────────────────────────────────────────────────────
 
@@ -297,6 +342,24 @@ export class A4State {
 
   /** A4[12946] ptr — previous pill target (change-detection) */
   prevPillTarget: PillState | null = null;
+
+  // ── Goal hysteresis / pill commitment (ChooseGoal binary logic) ───────────
+
+  /**
+   * The goal index that was active at the end of the last tick.
+   * Corresponds to D3 (prev goal) in ChooseGoal (0x0073ee).
+   * Used for:
+   *   - pill commitment: "was prev goal GetPill?"
+   *   - goal hysteresis: only switch to a cheaper goal (binary SANE comparison)
+   */
+  currentGoal: number = 12; // 12 = NO_GOAL
+
+  /**
+   * A4[12982] — index of the pill we committed to last tick while in GetPill.
+   * When the new PillToGet selection differs but has equal cost, we revert to
+   * this committed pill. -1 = no commitment.
+   */
+  prevCommittedPillIndex: number = -1;
 
   // ── Tick scheduler ─────────────────────────────────────────────────────────
 
@@ -356,6 +419,15 @@ export class A4State {
 
   /** A4[13024] byte — myTank.byte[25] (team saved at BrainOpen) */
   myTeam = 0;
+
+  /** myTank armor (TankRecord+44) — synced each tick for SetRouteCosts */
+  myTankArmor = 40;
+
+  /** myTank raw shell count (0-40) — synced each tick for SetRouteCosts (secondary route mode) */
+  myTankShells = 40;
+
+  /** myTank raw mine count (0-40) — synced each tick for SetRouteCosts (secondary route mode) */
+  myTankMines = 40;
 
   /** A4[13717] byte — myTank.byte[21] (saved at BrainOpen) */
   tankByte21 = 0;
@@ -475,6 +547,9 @@ export class A4State {
   /** A4[7542] long — FollowRoute/FindCheapestSquare: fallback waypoint cost */
   fallbackWaypointCost = 0;
 
+  /** A4[7548] byte — ExpandWorldLimits: 1 = bounds already expanded this route */
+  worldExpandedFlag = 0;
+
   /** A4[8122] word — FollowRoute: FP result (estimated ticks to waypoint) */
   followRouteTicks = 0;
 
@@ -484,11 +559,20 @@ export class A4State {
   /** A4[13026] word — next path tile for NavigateToAP */
   navigateToAPNextTile = 0;
 
-  /** Navigation stall detection: last tile when A* was running */
+  /** Navigation stall detection: last reference tile (updated only on 2+ tile movement) */
   navStallTileX = -1;
   navStallTileY = -1;
   /** Tick count when tank was last at navStallTileX/Y during active A* navigation */
   navStallSinceTick = 0;
+
+  /** Packed tile index (y<<8|x) temporarily blocked after stall. 0xFFFF = none. */
+  navStallBlockedTile = 0xFFFF;
+
+  /** Progress timeout: BWorld distance to destination when progress was last measured */
+  navProgressDist = 0xFFFF;
+  /** Tick count when navProgressDist was last updated (2-tile improvement required) */
+  navProgressTick = 0;
+
 
   /** A4[7546] byte — WorldVisit/LocalVisit: terrain modifier flag (1 = base entrance tile) */
   visitTerrainModifierFlag = 0;
@@ -532,9 +616,9 @@ export class A4State {
   /** A* priority queue — one instance, reset before each search (HeapEmpty/Insert/DeleteMin) */
   routingHeap: RoutingHeap = {
     size: 0,
-    costs: new Int32Array(4096),
-    prevs: new Uint16Array(4096),
-    currs: new Uint16Array(4096),
+    costs: new Int32Array(16384),
+    prevs: new Uint16Array(16384),
+    currs: new Uint16Array(16384),
   };
 
   // ── Routing cost parameters (written by InitializeCosts, A4[7582-7608]) ──
@@ -639,6 +723,9 @@ export class A4State {
   /** A4[13928] ptr — KillBase: previous target */
   killBasePrevTarget: BaseState | null = null;
 
+  /** KillBase: previous target index (index-based change detection) */
+  killBaseTargetIndex: number = -1;
+
   // ── KillTank state ─────────────────────────────────────────────────────────
 
   /** A4[13932] byte — KillTank: stutter-step timer active */
@@ -666,6 +753,9 @@ export class A4State {
   /** A4[13870] ptr — GetBase: BaseToGet change-detection ptr */
   getBaseChangeDetectionPtr: BaseState | null = null;
 
+  /** GetBase: change-detection index (index-based, replaces ptr equality) */
+  getBaseChangeDetectionIndex: number = -1;
+
   /** A4[13923] byte — GetBase: team-mismatch flag */
   getBaseTeamMismatch = 0;
 
@@ -691,6 +781,14 @@ export class A4State {
   getBaseMinDistSeen = 0xFFFF;
 
   /**
+   * Per-base "was blocked last tick" flags (1 bit per base, indexed by base.index).
+   * Used to detect passability changes (armour crosses the 9-threshold, or owner
+   * appears/disappears) so the A* can be invalidated before the tank enters a
+   * newly-blocked tile or misses a newly-passable shortcut.
+   */
+  prevBaseBlockedBits: Uint8Array = new Uint8Array(32);
+
+  /**
    * Tick when getBaseMinDistSeen last improved (got smaller).
    * If (tickCounter - getBaseLastImprovedTick) > PATIENCE_LIMIT ticks
    * and we're still far away, the commitment is abandoned.
@@ -712,6 +810,14 @@ export class A4State {
    */
   getBaseFailedUntilTick: Uint32Array = new Uint32Array(16);
 
+  /**
+   * Per-pill navigation failure timer. When the pill at index i is unreachable
+   * (noLocalRouteFlag fires), getPillFailedUntilTick[i] is set to tickCounter + 2000.
+   * pillToGet() skips pills where tickCounter < getPillFailedUntilTick[pill.index].
+   * Size 64: Everard Island and other maps can have more than 16 pills.
+   */
+  getPillFailedUntilTick: Uint32Array = new Uint32Array(64);
+
   // ── GetMan state ───────────────────────────────────────────────────────────
 
   /** A4[13046] byte — GetMan: man-dispatched flag */
@@ -725,6 +831,14 @@ export class A4State {
 
   /** A4[13878] long — GetMan: last-event tick timestamp */
   getManLastEventTick = 0;
+
+  /** Tick when GetMan navigation first started failing (route MISS); 0 = not failing.
+   *  Used to abandon an unreachable builder instead of sitting idle under fire. */
+  getManFailSinceTick = 0;
+
+  /** Tick until which GetMan is abandoned (cost forced 0xFFFF) — set after the
+   *  builder proves unreachable, so the tank refuels/retreats instead of dying. */
+  getManFailedUntilTick = 0;
 
   /** A4[13882] word — GetMan: armor threshold */
   getManArmorThreshold = 0;
@@ -745,6 +859,9 @@ export class A4State {
 
   /** A4[13874] ptr — FixPill: previous pill target */
   fixPillPrevTarget: PillState | null = null;
+
+  /** FixPill: previous target index (index-based change detection) */
+  fixPillPrevTargetIndex: number = -1;
 
   /** A4[13909] byte — FixPill: "send pill target broadcast" flag */
   fixPillSendBroadcast = 0;
@@ -839,6 +956,9 @@ export class A4State {
   /** A4[13524] long — NewGetPill: stall-detection tick timestamp */
   newGetPillStallTick = 0;
 
+  /** Count of consecutive AP navigation failures for current pill (not in original) */
+  newGetPillAPFailCount = 0;
+
   /** A4[13586] byte — attack mode / man-dispatched flag */
   newGetPillAttackMode = 0;
 
@@ -851,11 +971,17 @@ export class A4State {
   /** A4[13708] ptr — NewGetPill: target copy */
   newGetPillTargetCopy: PillState | null = null;
 
+  /** NewGetPill: target index (index-based change detection) */
+  newGetPillTargetIndex: number = -1;
+
   /** A4[13712] ptr — NewGetPill: pill ptr copy */
   newGetPillPillCopy: PillState | null = null;
 
   /** A4[13716] byte — NewGetPill: same-as-previous-target flag */
   newGetPillSameTarget = 0;
+
+  /** NewGetPill: previous pill index for same-target detection */
+  prevPillTargetIndex: number = -1;
 
   /** A4[13490] ptr[] — barrier pills array base (up to 16 entries) */
   barrierPills: (PillState | null)[] = new Array(16).fill(null);
