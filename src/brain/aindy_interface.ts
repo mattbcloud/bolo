@@ -615,20 +615,23 @@ export function buildBrainState(
   }
 
   // Overlay base tiles.
-  // Binary Examine (0x022596): ally bases get quality penalty 5000 → effectively
-  // impassable for A*.  We use the building flag (0x40) on ally base tiles so
-  // examineTerrainCostTable[0x40|BASE] = 1000 → same impassable effect.
+  // ALLY bases must stay PASSABLE: the tank has to drive ONTO its own base to refuel
+  // (refuel requires tank.cell === base.cell). Marking them 0x40 (cost 1000, impassable)
+  // made A* unable to route to a refuel target → Refuel showed route:MISS/noRoute and the
+  // tank drifted off the map past its bases instead of reaching one (observed live on
+  // SlugfestVII). The binary used a quality PENALTY (~5000, avoid routing THROUGH), not a
+  // hard block — a penalty still lets a base be a reachable DESTINATION. We keep it simple:
+  // ally + neutral bases are plain passable BASE (driving over your own base is harmless).
   //
-  // Enemy bases with armour > 9 AND an active owner: world_map.ts
-  // getTankSpeed/getTankTurn return 0 on that tile (tank completely frozen).
-  // Block these in worldMap so A* routes around; goalGetBase shoots from adjacent.
-  // Threshold matches world_map.ts:83 exactly: `owner != null && armour > 9`.
-  // Using owner (not just team) is critical: when a team leaves, owner becomes
-  // null and the base is passable even if team persists.
+  // Only ENEMY bases with armour > 9 AND an active owner are blocked: world_map.ts
+  // getTankSpeed/getTankTurn return 0 on that tile (a tank that lands there is frozen), so
+  // A* must route around; goalGetBase shoots them from adjacent. Threshold matches
+  // world_map.ts:83 (`owner != null && armour > 9`); using owner (not just team) matters —
+  // when a team leaves, owner becomes null and the base is passable even if team persists.
   for (const base of oronaMap.bases) {
     const isAlly = base.team != null && base.team === myTank.team;
     const isEnemyArmoured = !isAlly && base.owner != null && (base.armour ?? 0) > 9;
-    const terrain = (isAlly || isEnemyArmoured) ? (0x40 | Terrain.BASE) : Terrain.BASE;
+    const terrain = isEnemyArmoured ? (0x40 | Terrain.BASE) : Terrain.BASE;
     if (base.cell) {
       worldMap[(base.cell.y << 8) | base.cell.x] = terrain;
     } else if (base.x != null && base.y != null) {

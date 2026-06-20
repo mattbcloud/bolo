@@ -1209,34 +1209,41 @@ function _refuelSitOnBase(a4: A4State, state: BrainState): void {
   const base = a4.refuelBaseTarget;
   if (base === null) { a4.refuelState = 0; return; }
 
-  // If we drifted off the base tile, go back to navigation
-  if (a4.tankTileX !== base.tileX || a4.tankTileY !== base.tileY) {
-    a4.refuelState = 2;
-    return;
-  }
-
-  setSpeed(a4, 0);   // stop at base — Orona refuels automatically
-
-  // Done when fully fueled — OR when the base has nothing left to give that
-  // the tank still needs. The engine (world_base.ts) refuels from the base's
-  // FINITE stock (armour in +5 chunks, then shells, then mines, each to 40).
-  // Using raw `shells` (0-40), not the coarse `ammo` (shells/5), so the check
-  // is consistent with refuelGoalCost's thresholds. Without the depletion
-  // exit, a tank that arrives low at a drained base would sit on it forever
-  // (refuelGoalCost stays active while shells<7, so goal selection won't pull
-  // it away either).
   const tank = state.tank;
-  const tankFull = tank.armor >= 40 && tank.shells >= 40;
 
-  const ob = (a4.refuelBaseTarget as any).oronaBase;
+  // Done when fully fueled — OR when the base has nothing left to give that the tank
+  // still needs (engine refuels from FINITE base stock: armour +5/46t, then shells/mines
+  // +1/7t, each to 40). Checked first so a drained base releases the tank even if it
+  // never perfectly settles. Without it a tank at a drained base would sit forever
+  // (refuelGoalCost stays active while low, so goal selection won't pull it away).
+  const ob = (base as any).oronaBase;
   const baseArmour = ob?.armour ?? base.armor ?? 0;
   const baseShells = ob?.shells ?? 0;
-  const baseCanHelp =
-    (baseArmour > 0 && tank.armor < 40) ||
-    (baseShells > 0 && tank.shells < 40);
+  const tankFull = tank.armor >= 40 && tank.shells >= 40;
+  const baseCanHelp = (baseArmour > 0 && tank.armor < 40) || (baseShells > 0 && tank.shells < 40);
+  // Stay until BOTH armour and ammo are FULL (user directive). If this base drains before
+  // the tank is full, don't give up — renavigate (chooseRefuelBase picks another stocked
+  // ally base, or returns null → refuel naturally yields and the tank resumes once the
+  // base regenerates), so it keeps topping up instead of leaving half-full.
+  if (tankFull) { a4.refuelState = 0; return; }
+  if (!baseCanHelp) { a4.refuelState = 2; return; }
 
-  if (tankFull || !baseCanHelp) {
-    a4.refuelState = 0;
+  const offTiles = Math.max(Math.abs(a4.tankTileX - base.tileX), Math.abs(a4.tankTileY - base.tileY));
+
+  if (offTiles === 0) {
+    // ON the exact base cell → brake to a DEAD stop and hold so the ~46-tick refuel timer
+    // runs. Brake ONLY (no navigate): the engine's accelerate() treats accelerating===braking
+    // as ZERO acceleration, so mixing a navigate (accel bit) with a brake bit FREEZES the
+    // speed and the tank creeps off the cell (that was the slight drift-over). Also pass the
+    // current speed — setSpeed(a4,0) with no `current` sets no brake bit at all (0 > NaN).
+    setSpeed(a4, 0, tank.speed & 0xFF);
+  } else if (offTiles <= 2) {
+    // Just off the cell → let the FOLLOWER ease back on and land it: its final-approach
+    // slowdown caps speed to 4 within ~2.5 tiles and its landing brake stops the tank on
+    // the cell. No manual setSpeed (that conflicts with the follower's accel → frozen creep).
+    navigateToCoords(a4, base.x, base.y, 1);
+  } else {
+    a4.refuelState = 2;   // wandered far → full renavigate
   }
 }
 

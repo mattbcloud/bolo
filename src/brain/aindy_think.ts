@@ -128,6 +128,23 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
   // ── Step 13: DoCommonStuff (0x008212) ─────────────────────────────────────
   doCommonStuff(a4, state);
 
+  // ── Step 13b: Refuel hold override ────────────────────────────────────────
+  // When parked ON a base to refuel, doCommonStuff's opportunistic forward/forward-fire
+  // bits (shooting nearby enemies) get OR'd in AFTER the sit-brake. The engine treats
+  // accelerating===braking as ZERO acceleration, so those bits cancel the brake and the
+  // tank creeps/twitches off the base cell — which resets the engine's ~46-tick refuel
+  // timer (it fuels far slower and never looks settled). Force a dead stop here: clear the
+  // translation/accel bits (hard-accel 0x01, forward 0x10, forward-fire 0x40; gentle-accel
+  // firing 0x01) and set the hard brake. Turning (aim) and stationary fire bits are kept,
+  // so the tank can still rotate and shoot from the spot — it just won't drive off.
+  const rbt = a4.refuelBaseTarget;
+  if (currentGoal === Goal.REFUEL && a4.refuelState === 4 && rbt !== null &&
+      a4.tankTileX === rbt.tileX && a4.tankTileY === rbt.tileY) {
+    a4.steeringWord &= ~0x51;   // ~(ACCEL_HARD 0x01 | FORWARD 0x10 | FORWARD_FIRE 0x40)
+    a4.firingWord   &= ~0x01;   // ~ACCEL_GENTLE
+    a4.steeringWord |= 0x02;    // BRAKE_HARD
+  }
+
   // ── Step 14: SetSpeed (0x017810) ──────────────────────────────────────────
   // setSpeed stub (full impl Step 8)
 

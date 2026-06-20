@@ -399,6 +399,16 @@ export function exploreGoalCost(a4: A4State, _state: BrainState): number {
 export function fixPillGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.pillToFixTarget;
   if (target === null) return 0xFFFF;
+
+  // Don't commit to a repair the tank CANNOT perform. Repairing costs trees
+  // (treesForRepair: armour≥11→1, ≥7→2, ≥3→3, else 4) and the brain has no FixPill
+  // tree-gathering path, so with too few trees goalFixPill just parks the tank idle
+  // next to the pill FOREVER — and FixPill stays the cheapest goal so it never yields
+  // to GetPill/GetBase. (Observed live: a full-armour "frozen" tank stuck on FixPill(1)
+  // with 0 trees.) Require the trees up front; otherwise yield to an achievable goal.
+  const treesNeeded = target.armour >= 11 ? 1 : target.armour >= 7 ? 2 : target.armour >= 3 ? 3 : 4;
+  if (state.tank.resourceCount < treesNeeded) return 0xFFFF;
+
   return fixPillCostForPill(a4, state, target);
 }
 
@@ -563,17 +573,22 @@ export function refuelGoalCost(a4: A4State, state: BrainState): number {
   // hold traps the tank idling against an UNREACHABLE base (route:miss) for ~1000 ticks;
   // when not on a base, normal cost logic (incl. the <16 emergency below) applies and the
   // tank stays free to pursue reachable objectives.
-  // Hold to 30 (the binary's own "topped-up" threshold below), NOT 40: topping past
-  // 30 means long sits on a slow-regen base (+5 armour / 46 ticks) and craters captures
-  // (N=30: hold-to-38 → 0.07 vs hold-to-30 → ~0.34, baseline 0.27). 30 is reached fast
-  // and is enough armour to survive the point-blank drive-ONTO-pill that a capture needs.
-  const FULL_ARMOR = 30;
+  // Hold to FULL (per user directive): once the tank is parked ON a refuel base, keep
+  // refuel strictly winning (cost 0) until BOTH armour and ammo are topped all the way
+  // up (armour 40 AND shells 40) — don't let a pill/other goal pull it off the base at
+  // ~25-30. Only holds while ON the base and the base still has something the tank needs;
+  // when not on a base, normal cost logic (incl. the <16 emergency below) applies, so a
+  // far/unreachable base can't trap the tank idling. (Trade-off: full top-offs are long
+  // sits on a slow-regen base — +5 armour/46 ticks — which reduces aggression/throughput;
+  // this is the requested behaviour.)
   const rbase = a4.refuelBaseTarget;
-  if (rbase !== null && tank.armor < FULL_ARMOR) {
+  if (rbase !== null && (tank.armor < 40 || tank.shells < 40)) {
     const atBase = a4.tankTileX === rbase.tileX && a4.tankTileY === rbase.tileY;
     const ob = (rbase as any).oronaBase;
     const baseArmour = ob?.armour ?? (rbase as any).armor ?? 0;
-    if (atBase && baseArmour > 0) return 0;   // top up to full before re-engaging
+    const baseShells = ob?.shells ?? 0;
+    const baseCanHelp = (baseArmour > 0 && tank.armor < 40) || (baseShells > 0 && tank.shells < 40);
+    if (atBase && baseCanHelp) return 0;   // stay and top up to FULL before leaving
   }
 
   // Binary threshold (0x0079f8): armor >= 30 AND shells >= 7 → no refuel needed.
