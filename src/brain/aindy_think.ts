@@ -146,6 +146,30 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
   // ── Step 20: TickCount → A4[13722] ───────────────────────────────────────
   a4.wallClockTick = tickCount();
 
+  // ── [PHASE-0 DEBUG] turn-bit conflict detection ──────────────────────────
+  // Both CCW (0x04) and CW (0x08) set → applyControls sets turningClockwise AND
+  // turningCounterClockwise → tank.ts cancels the turn (turnSpeedup=0) and the
+  // tank plows straight off its planned route. Toggle: window.__BRAIN_DBG__=false
+  if ((globalThis as any).__BRAIN_DBG__ !== false) {
+    const ccw = !!(a4.steeringWord & 0x04) || !!(a4.firingWord & 0x04);
+    const cw  = !!(a4.steeringWord & 0x08) || !!(a4.firingWord & 0x08);
+    const conflict = ccw && cw;
+    const dbg = ((globalThis as any).__bdbg__ ??= { prev: false, last: -999 });
+    if (conflict && (!dbg.prev || a4.tickCounter - dbg.last > 90)) {
+      const GOALS = ['PlacePill', 'Explore', 'FixPill', 'GetBase', 'GetMan', 'GetPill',
+                     'KillBase', 'KillMan', 'KillTank', 'Refuel', 'TourBases'];
+      console.log(
+        `[TURN-CONFLICT] t=${a4.tickCounter} goal=${GOALS[a4.currentGoal] ?? a4.currentGoal} ` +
+        `tank(${a4.tankTileX},${a4.tankTileY}) dir=${a4.tankDirection} ` +
+        `CCW+CW both set -> NO TURN. steer=0x${a4.steeringWord.toString(16)} ` +
+        `fire=0x${a4.firingWord.toString(16)} (combat overrode nav steering toward waypoint)`,
+      );
+      dbg.last = a4.tickCounter;
+    }
+    dbg.prev = conflict;
+  }
+  // ── [/PHASE-0 DEBUG] ─────────────────────────────────────────────────────
+
   return {
     steeringWord:  a4.steeringWord,
     firingWord:    a4.firingWord,

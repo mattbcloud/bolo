@@ -481,6 +481,23 @@ export function navigateToCoords(
 
   // ── Fine-steering: within 1 tile, steer directly to target ────────────────
   if (dist < CLOSE_RANGE) {
+    // ARRIVED — already standing in the destination tile. Arrival/capture is
+    // tile-based (tank.cell === target.cell), so the tank does NOT need to reach
+    // the exact tile centre. Chasing the centre is in fact the bug: once the tank
+    // crosses the centre the bearing flips 180°, it turns back, overshoots the
+    // other way, and oscillates across the tile boundary forever (the "drives in
+    // circles / never lands to capture" failure). Standing anywhere in the tile is
+    // success — stop and let arrival happen. (Boats keep momentum: a disembark
+    // needs speed to climb onto the shore — fix 41.)
+    if (!a4.tankOnBoat) {
+      const destTileX = (targetX >> 8) & 0xFF;
+      const destTileY = (targetY >> 8) & 0xFF;
+      if (a4.tankTileX === destTileX && a4.tankTileY === destTileY) {
+        setSpeed(a4, 0, currentSpd);
+        return;
+      }
+    }
+
     turnTowardsXY(a4, fromX, fromY, targetX, targetY, currentDir);
     const dirToTgt = directionTo(fromX, fromY, targetX, targetY);
     const angErrToTgt = computeDirectionDelta(currentDir, dirToTgt);
@@ -584,6 +601,40 @@ export function navigateToCoords(
     a4.navCacheDestTileY = destTileY;
     a4.worldCostsInitDone = 1;
     a4.navCacheValid = 1;
+
+    // ── [PHASE-0 DEBUG] planned-path inspection ──────────────────────────────
+    // Fires only on a fresh path compute. Toggle off live: window.__BRAIN_DBG__ = false
+    if ((globalThis as any).__BRAIN_DBG__ !== false) {
+      const GOALS = ['PlacePill', 'Explore', 'FixPill', 'GetBase', 'GetMan', 'GetPill',
+                     'KillBase', 'KillMan', 'KillTank', 'Refuel', 'TourBases'];
+      const moves = path.length - 1;
+      const cheb  = Math.max(Math.abs(destTileX - tankTileX), Math.abs(destTileY - tankTileY));
+      // Count heading changes along the route — a straight line has 0-1, a route
+      // bending around terrain has several.
+      let bends = 0, pdx = 0, pdy = 0;
+      for (let i = 1; i < path.length; i++) {
+        const ax = path[i] & 0xFF,     ay = (path[i] >> 8) & 0xFF;
+        const bx = path[i - 1] & 0xFF, by = (path[i - 1] >> 8) & 0xFF;
+        const sdx = Math.sign(ax - bx), sdy = Math.sign(ay - by);
+        if (i > 1 && (sdx !== pdx || sdy !== pdy)) bends++;
+        pdx = sdx; pdy = sdy;
+      }
+      const ratio = moves / Math.max(1, cheb);
+      const verdict = (bends <= 1 && ratio <= 1.05)
+        ? 'STRAIGHT (no detour — terrain ignored or path clear)'
+        : (bends >= 2 || ratio > 1.15)
+          ? 'DETOUR (routing around terrain)'
+          : 'slight bend';
+      const wps = Array.from(path.slice(0, 8))
+        .map((t) => `(${t & 0xFF},${(t >> 8) & 0xFF})`).join(' ');
+      console.log(
+        `[PATH] t=${a4.tickCounter} goal=${GOALS[a4.currentGoal] ?? a4.currentGoal} ` +
+        `from(${tankTileX},${tankTileY})->dst(${destTileX},${destTileY}) ` +
+        `moves=${moves} cheb=${cheb} ratio=${ratio.toFixed(2)} bends=${bends} :: ${verdict}\n` +
+        `        wps: ${wps}${path.length > 8 ? ' ...' : ''}`,
+      );
+    }
+    // ── [/PHASE-0 DEBUG] ─────────────────────────────────────────────────────
   }
 
   // Clear route-failure flag (we have a valid path)
@@ -613,42 +664,46 @@ export function navigateToCoords(
     }
   }
 
-  // ── Waypoint following ────────────────────────────────────────────────────
+  // ── Waypoint following: PURE-PURSUIT CARROT ───────────────────────────────
+  // Replaces the old exact-tile / waypoint-count follower, which orbited
+  // mid-path: it advanced idx only when path[idx] === the tank's EXACT tile, so a
+  // turning arc that skirted a waypoint without landing on it froze idx and the
+  // tank flip-flopped between two adjacent tiles forever (heading locked, no turn
+  // command, idx frozen — the mid-path orbit). This follower is robust BY
+  // CONSTRUCTION: (1) advance idx by PROJECTION (closest waypoint, forward-only)
+  // so a skirted waypoint can never freeze it, and (2) steer toward a CARROT at a
+  // fixed look-ahead DISTANCE along the path — decoupling steering from waypoint
+  // spacing, the standard cure for orbiting. The landing/approach blocks (the
+  // banked win, dist < CLOSE_RANGE above; final-approach slowdown below) are
+  // untouched.
   const path = a4.navPath!;
   let idx = a4.navPathIndex;
 
-  // Advance past tiles the tank has already reached or passed
-  const tankIdx = ((tankTileY & 0xFF) << 8) | (tankTileX & 0xFF);
-  while (idx < path.length - 1 && path[idx] === tankIdx) {
-    idx++;
-  }
-
-  // Also skip waypoints that are behind us (tank may have cut a corner)
-  while (idx < path.length - 2) {
-    const wpTile = path[idx];
-    const wpX = wpTile & 0xFF;
-    const wpY = (wpTile >> 8) & 0xFF;
-    const dxWp = Math.abs(tankTileX - wpX);
-    const dyWp = Math.abs(tankTileY - wpY);
-    // If we're already adjacent to or past the next-next waypoint, skip this one
-    if (dxWp <= 1 && dyWp <= 1) {
-      const nextWp = path[idx + 1];
-      const nwX = nextWp & 0xFF;
-      const nwY = (nextWp >> 8) & 0xFF;
-      const dnX = Math.abs(tankTileX - nwX);
-      const dnY = Math.abs(tankTileY - nwY);
-      if (dnX <= 1 && dnY <= 1) {
-        idx++;
-        continue;
-      }
+  // (1) Project the tank onto the path: the waypoint closest to the tank, scanned
+  // FORWARD only from the current idx within a small window. Forward-only stops it
+  // snapping back to an earlier loop of a winding route; the window bounds cost and
+  // stops a far-future tile (where the route doubles back) from stealing the
+  // projection. Monotonic by construction, so idx never freezes on a skirt.
+  const PROJ_WINDOW = 8;            // waypoints to scan ahead for the closest
+  {
+    let bestIdx = idx;
+    let bestDist = Infinity;
+    const hi = Math.min(path.length - 1, idx + PROJ_WINDOW);
+    for (let i = idx; i <= hi; i++) {
+      const px = ((path[i] & 0xFF) << 8) + 128;
+      const py = (((path[i] >> 8) & 0xFF) << 8) + 128;
+      const d = computeDistanceBetween(fromX, fromY, px, py);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
-    break;
+    idx = bestIdx;
   }
-
   a4.navPathIndex = idx;
 
-  // Check if current waypoint needs special handling
-  const wpTile = path[idx];
+  // The immediate target waypoint (tile just ahead of the projection) drives the
+  // impassable / wall-shoot / speed checks — they care about the very next tile,
+  // not the smoothed carrot.
+  const tgtIdx = Math.min(idx + 1, path.length - 1);
+  const wpTile = path[tgtIdx];
   const wpRaw = a4.worldMap[wpTile];
   const wpTerrain = wpRaw & 0x0F;
   const wpCost = a4.examineTerrainCostTable[wpRaw];
@@ -676,22 +731,44 @@ export function navigateToCoords(
     }
   }
 
-  // ── Look-ahead steering ────────────────────────────────────────────────
-  // Steer toward a point further along the path based on current speed.
-  // At high speed, look further ahead so turns start early and are smooth.
-  // At low speed, steer toward the immediate next tile for precision.
-  const lookAhead = Math.max(1, Math.min(Math.floor(currentSpd / 4), path.length - 1 - idx));
-  const lookIdx = idx + lookAhead;
-  const lookTile = path[lookIdx];
-  const lookX = lookTile & 0xFF;
-  const lookY = (lookTile >> 8) & 0xFF;
-  const lookBWorldX = (lookX << 8) + 128;
-  const lookBWorldY = (lookY << 8) + 128;
+  // (2) Carrot: walk forward along the path from the projected waypoint,
+  // accumulating segment lengths until LOOKAHEAD BWorld units are covered,
+  // interpolating within the final segment. The carrot rides at a fixed distance
+  // regardless of waypoint spacing, so the heading command stays smooth and never
+  // flips 180° at a tile centre. Near the route's end the carrot collapses onto
+  // the final waypoint (the destination tile), where the fine-steering/landing
+  // block (dist < CLOSE_RANGE, above) and the final-approach slowdown (below) take
+  // over.
+  // ~1.5 tiles of BWorld (tunable, capture-gated). Sweepable from the headless
+  // harness via PP_LOOKAHEAD; `typeof process` is undefined in the browser build,
+  // so live play always uses the 384 default.
+  const LOOKAHEAD = (typeof process !== 'undefined' && process.env.PP_LOOKAHEAD)
+    ? Number(process.env.PP_LOOKAHEAD) : 384;
+  let carrotX = ((path[idx] & 0xFF) << 8) + 128;
+  let carrotY = (((path[idx] >> 8) & 0xFF) << 8) + 128;
+  {
+    let remaining = LOOKAHEAD;
+    let px = carrotX, py = carrotY;
+    for (let i = idx; i < path.length - 1; i++) {
+      const nx = ((path[i + 1] & 0xFF) << 8) + 128;
+      const ny = (((path[i + 1] >> 8) & 0xFF) << 8) + 128;
+      const segLen = computeDistanceBetween(px, py, nx, ny);
+      if (segLen >= remaining) {
+        const t = segLen > 0 ? remaining / segLen : 0;
+        carrotX = px + Math.round((nx - px) * t);
+        carrotY = py + Math.round((ny - py) * t);
+        break;
+      }
+      remaining -= segLen;
+      px = nx; py = ny;
+      carrotX = nx; carrotY = ny;     // ran past the end → last waypoint
+    }
+  }
 
-  turnTowardsXY(a4, fromX, fromY, lookBWorldX, lookBWorldY, currentDir);
+  turnTowardsXY(a4, fromX, fromY, carrotX, carrotY, currentDir);
 
-  // Speed control uses the immediate next waypoint (not the look-ahead point)
-  // so getTurnSpeed can detect water/terrain transitions close ahead.
+  // Speed control uses the immediate next waypoint (not the carrot) so
+  // getTurnSpeed can detect water/terrain transitions close ahead.
   const wpX = (wpTile & 0xFF);
   const wpY = ((wpTile >> 8) & 0xFF);
   const speed = getTurnSpeed(a4, wpX, wpY);

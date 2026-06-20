@@ -28,7 +28,8 @@ import { navigateToCoords as _navigateToCoords, setSpeed as _setSpeed } from './
 // _navigateToCoords now has signature (a4, targetX, targetY, mode) — no state needed
 import {
   shoot as _shoot, aimAt as _aimAt, chooseAttackPosition as _chooseAP, shootPill as _shootPill,
-  findSafestPointFrom as _findSafestPointFrom,
+  findSafestPointFrom as _findSafestPointFrom, shootPillFromCover as _shootPillFromCover,
+  checkBarriers as _checkBarriers,
 } from './combat.js';
 import {
   newRefuel as _newRefuel, refuelGoTowardBase as _refuelGTB,
@@ -49,6 +50,59 @@ function _findAdjacentForest(a4: A4State): { tileX: number; tileY: number } | nu
     if (terrain === 5) return { tileX: tx, tileY: ty };  // terrain 5 = forest
   }
   return null;
+}
+
+// 8-neighbour tile offsets indexed by direction/32 (0=E,2=N,4=W,6=S; screen Y-down).
+const DIR8_OFFSETS: readonly [number, number][] = [
+  [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1],
+];
+function _dir8(direction: number): readonly [number, number] {
+  return DIR8_OFFSETS[Math.round((direction & 0xFF) / 32) & 7];
+}
+
+const COVER_WALL_TREES = 2;   // builder 'building' cost for one wall tile
+
+/**
+ * Cover method (validated in __sim__: maintained wall + edge-aim → kill pill taking
+ * ~0 damage). Keep a wall between the tank and the target pill, on the pill's
+ * neighbour tile toward the tank. shootPillFromCover then grazes shells past it.
+ * Dispatches the builder to BUILD/maintain that wall; if out of trees, harvests an
+ * adjacent forest tile first. Graceful no-op when no cover is buildable. Runs in
+ * PARALLEL with the aggressive charge — the builder works while the tank advances.
+ */
+function _maintainCover(a4: A4State, state: BrainState, pill: PillState): void {
+  const tank = state.tank;
+  // Gate purely on builder availability: if it is out of the tank, it is already
+  // deploying/building — wait. (Do NOT gate on newGetPillAttackMode: that flag can
+  // get stuck at 1 when a prior dispatch never deployed, permanently blocking cover.)
+  if (!tank.builderInTank || tank.onBoat) return;
+
+  // Cover tile = pill neighbour toward the tank (between tank and pill).
+  const bearing = directionTo(pill.x, pill.y, tank.x, tank.y) & 0xFF; // pill→tank
+  const [dx, dy] = _dir8(bearing);
+  const cnx = (pill.tileX + dx) & 0xFF, cny = (pill.tileY + dy) & 0xFF;
+  const cRaw = a4.worldMap[((cny & 0xFF) << 8) | (cnx & 0xFF)];
+  const cTerrain = cRaw & 0x0F;
+
+  // Already shell-blocking (wall/forest/shot-wall/live pill) → cover present.
+  if (cTerrain === 0 || cTerrain === 5 || cTerrain === 8 || cTerrain === 12) return;
+
+  if (tank.resourceCount >= COVER_WALL_TREES) {
+    // Only build on buildable land (not water/base); else skip rather than deadlock
+    // the dispatch gate on an order the builder can't fulfil.
+    const buildable = !(cRaw & 0x80) && cTerrain !== 11; // not water, not base
+    if (!buildable) return;
+    a4.pendingBuilderAction = { action: 'building', trees: COVER_WALL_TREES, tileX: cnx, tileY: cny };
+    a4.newGetPillAttackMode = 1;
+    a4.coverBuilderDispatchTick = a4.tickCounter;   // suppress GetMan during cover build
+  } else {
+    const tree = _findAdjacentForest(a4);
+    if (tree) {
+      a4.pendingBuilderAction = { action: 'forest', trees: 0, tileX: tree.tileX, tileY: tree.tileY };
+      a4.newGetPillAttackMode = 1;
+      a4.coverBuilderDispatchTick = a4.tickCounter;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,13 +241,13 @@ function _findNewExploreTarget(a4: A4State, state: BrainState): void {
   // All objectives captured — just roam. Bias toward the enemy CoG (contested
   // area) rather than the ally CoG. Don't bias toward the tank's current tile
   // (removing tankDX/tankDY) so the tank actually moves to new areas.
-  const startMs = Date.now();
   let bestCost = 0xFFFF;
   let bestX = 0, bestY = 0;
 
+  // Fixed iteration cap (was also gated by a Date.now() 200ms budget — removed:
+  // wall-clock gating makes brain behaviour machine-speed-dependent and
+  // non-deterministic; the 40-attempt cap already bounds the work).
   for (let attempt = 0; attempt < 40; attempt++) {
-    if (Date.now() - startMs > 200) break;
-
     const rx = Math.abs(biasedRandom()) & 0xFF;
     const ry = Math.abs(biasedRandom()) & 0xFF;
 
@@ -687,6 +741,11 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   //   dist ≤ 0x06E2:             speed  0  — stop and concentrate fire
   a4.newGetPillStallTick = 0;
 
+  // COVER LAYER: build/maintain a wall on the pill-neighbour while the tank charges
+  // (the builder works in parallel; this does NOT slow the aggressive approach).
+  // Verified to lift captures ~2× over baseline (0.13→0.27) at equal deaths.
+  _maintainCover(a4, state, pill);
+
   let apSpeed: number;
   if      (pillDistPh > 0x073C) apSpeed = 24;
   else if (pillDistPh > 0x0700) apSpeed = 16;
@@ -700,12 +759,18 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
     navigateToCoords(a4, pill.x, pill.y, 0);
   }
 
-  // Also apply CheckBarriers result from ChooseGoal (A4[13254]).
-  // If barriers > 0 the binary calls ComputeDirToShoot; we use direct
-  // DirectionTo as a simplification (matches no-barrier path).
   const dirToPill = directionTo(state.tank.x, state.tank.y, pill.x, pill.y);
   a4.shootPillDirection = dirToPill & 0xFF;
-  _shootPill(a4, state, pill, dirToPill & 0xFF, 0);
+
+  // Fire: when cover sits on the centre line, edge-aim around it (damage-free);
+  // otherwise the unchanged aggressive centre fire (preserves capture behaviour).
+  const pillCx = ((pill.tileX & 0xFF) << 8) + 128;
+  const pillCy = ((pill.tileY & 0xFF) << 8) + 128;
+  if (_checkBarriers(a4, state.tank.x, state.tank.y, pillCx, pillCy) > 0) {
+    _shootPillFromCover(a4, state, pill);
+  } else {
+    _shootPill(a4, state, pill, dirToPill & 0xFF, 0);
+  }
   a4.pillApproachInProgress = 1;
 }
 

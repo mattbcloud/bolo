@@ -212,6 +212,17 @@ export class BoloLocalWorld extends NetLocalWorld {
     // Apply the resulting control word bits to the tank's boolean flags
     applyControls(this.player, controls);
 
+    // Dispatch a builder action if the brain requested one. (Local play has no
+    // network round-trip, so no queue-dispatch guard is needed.) Without this the
+    // brain's builderAction was silently ignored in local games — the builder
+    // never built walls/pillboxes/boats. Only dispatch when the builder is in-tank.
+    const builderObj = this.player?.builder?.$ ?? null;
+    if (builderObj && controls.builderAction && builderObj.order === builderObj.states.inTank) {
+      const { action, trees, tileX, tileY } = controls.builderAction;
+      const cell = this.map?.cellAtTile(tileX, tileY);
+      if (cell) this.buildOrder(action, trees, cell);
+    }
+
     // ── Console debug dump (once per second) ─────────────────────────────────
     if (a4.tickCounter % 50 === 0) {
       const GOAL_NAMES: Record<number, string> = {

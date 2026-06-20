@@ -39,11 +39,10 @@ function barrierCount(a4: A4State, fromX: number, fromY: number, toX: number, to
     const y = (fromY + Math.round(sdy * i / steps)) & 0xFFFF;
     const cell = a4.worldMap[(((y >> 8) & 0xFF) << 8) | ((x >> 8) & 0xFF)];
     const t = cell & 0x0F;
-    // Count only terrain that stops shots: forest (5) absorbs shells.
-    // Walls (0) and shot-walls (8) are NOT barriers — shots pass through them.
-    // Water (0x80) is also excluded here since this function scores line-of-fire
-    // for pill approach cost, and water is handled separately by navigation.
-    if (t === 5) count++;
+    // Terrain that stops a shell — must match the engine (shell.ts collide()):
+    // wall(0), shot-wall(8), forest(5), boat(9), live pillbox(12). Shots do NOT
+    // pass through walls, so a wall in the line-of-fire is a real barrier.
+    if (t === 0 || t === 5 || t === 8 || t === 9 || t === 12) count++;
   }
   return count;
 }
@@ -460,6 +459,16 @@ export function getManGoalCost(a4: A4State, state: BrainState): number {
   // an unreachable man. Checked before the override so it can't be starved.
   if (a4.tickCounter < a4.getManFailedUntilTick) return 0xFFFF;
 
+  // Cover method: the builder was just deployed on purpose to build pill cover.
+  // Don't let GetMan drag the tank off its GetPill engagement to fetch it — the
+  // builder returns to the tank on its own after building. Times out (grace) so a
+  // stranded/dead builder can still be retrieved afterwards.
+  const COVER_BUILD_GRACE = 500;
+  if (a4.coverBuilderDispatchTick > 0 &&
+      a4.tickCounter - a4.coverBuilderDispatchTick < COVER_BUILD_GRACE) {
+    return 0xFFFF;
+  }
+
   // Priority override flag
   if (a4.getManCostPriorityOverride) return 1;
 
@@ -554,9 +563,13 @@ export function refuelGoalCost(a4: A4State, state: BrainState): number {
   // (GetPill/KillTank/KillBase cost 1-9) so the tank breaks off and flees to a
   // base instead of fighting a defended target to the death. Observed: tank
   // ground armor 40→0 attacking defended pills because GetPill always won.
-  // Cost 1 = top priority; once armor recovers ≥30 this returns 0xFFFF and the
-  // tank resumes — i.e. hit-and-run.
-  if (tank.armor < 16) return 1;
+  // Must be cost 0, NOT 1: GetPill's cost floors at Math.max(1, …)=1, and the
+  // ChooseGoal tie-break (strict `<` min scan + index order: GetPill=5 < Refuel=9,
+  // plus equal-cost hysteresis) makes GetPill WIN a 1-vs-1 tie — so cost 1 never
+  // actually disengaged and the tank pressed close-range pill charges to death
+  // (death diagnostic: ~66% of deaths on GetPill). Cost 0 strictly beats GetPill.
+  // Recovers to 0xFFFF once armor ≥30, i.e. hit-and-run.
+  if (tank.armor < 16) return 0;
 
   // Binary cost formula (0x007a6c): armor + raw_shells×8 + 40.
   // Lower = higher priority; critically depleted tank refuels before any other goal.

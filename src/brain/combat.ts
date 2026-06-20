@@ -205,10 +205,12 @@ export function checkBarriers(
     const cell  = a4.worldMap[((tileY & 0xFF) << 8) | (tileX & 0xFF)];
     const terrain = cell & 0x0F;
 
-    // Barrier terrain for shots: only forest (5) and water (0x80 flag).
-    // Walls (0) and shot-walls (8) are NOT barriers — tank shots pass through
-    // them in Bolo.  Forest is kept as a soft barrier because it absorbs shots.
-    if (terrain === 5 || (cell & 0x80)) {
+    // Barrier terrain for shots — MUST match the engine (shell.ts collide()):
+    // a shell is stopped by wall(0='|'), shot-wall(8='}'), forest(5='#'),
+    // boat(9='b'), and any live pillbox tile(12). Shots do NOT pass through walls
+    // (walls must be destroyed first). Earlier "wall-penetration" model was wrong:
+    // it made the brain fire through walls the engine blocks → wasted shots / misses.
+    if (terrain === 0 || terrain === 5 || terrain === 8 || terrain === 9 || terrain === 12) {
       barriers++;
     }
   }
@@ -388,8 +390,11 @@ export function shoot(
     a4.steeringWord |= 0x40;   // FORWARD_FIRE
     a4.shotFiredThisTick = 1;
   } else {
-    // Rate-limited: max 1 shot per 60 ticks (1.2 seconds at 50 Hz)
-    const now = tickCount();
+    // Rate-limited: max 1 shot per 60 ticks (1.2 seconds at 50 Hz).
+    // Use the SIM tick counter, not wall-clock tickCount(): wall-clock made the
+    // fire rate machine-speed-dependent (fewer shots under CPU load) and
+    // non-deterministic. a4.tickCounter advances exactly once per sim tick.
+    const now = a4.tickCounter;
     a4.shootTickSnapshot = now;
     if ((now - a4.lastShotTick) > 60) {
       a4.firingWord  |= 0x40;   // rate-limited fire
@@ -438,9 +443,17 @@ export function shootPill(
   }
 
   if (aligned) {
-    // Already facing correct direction: fire immediately
-    a4.steeringWord |= 0x40;   // FORWARD_FIRE
-    return 1;
+    // Aligned — but only fire with a clear LINE OF SIGHT. The engine stops shells
+    // at walls/shot-walls/forest/boats/pillboxes (shell.ts), so firing through
+    // them just wastes shells (measured: ~53% of shots had no LOS → all wasted).
+    const pillX = ((pill.tileX & 0xFF) << 8) + 128;
+    const pillY = ((pill.tileY & 0xFF) << 8) + 128;
+    if (skipCheck !== 0 || checkBarriers(a4, tank.x, tank.y, pillX, pillY) === 0) {
+      a4.steeringWord |= 0x40;   // FORWARD_FIRE
+      return 1;
+    }
+    a4.steeringWord |= 0x10;     // no LOS: advance to clear the shot instead of wasting it
+    return 0;
   }
 
   // Phase 2: Skip if flag set
@@ -476,14 +489,93 @@ export function shootPill(
       return 1;
     }
 
-    // Shots pass through walls (terrain 0) and shot-walls (terrain 8) in Bolo.
-    // Only forest (5) and water (0x80) stop the simulated trajectory.
+    // Shell trajectory is stopped by wall(0), shot-wall(8), forest(5), boat(9),
+    // and live pillbox tiles(12) — matches the engine (shell.ts collide()). Shots
+    // do NOT pass through walls. (The target pill's own tile is the hit check above.)
     const cell    = a4.worldMap[((sty & 0xFF) << 8) | (stx & 0xFF)];
     const terrain = cell & 0x0F;
-    if (terrain === 5 || (cell & 0x80)) break;
+    if (terrain === 0 || terrain === 5 || terrain === 8 || terrain === 9 || terrain === 12) break;
   }
 
   return 0;   // shot does not reach pill
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ShootPillFromCover — edge-aim around cover (the validated cover method)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Cover-method fire. When a barrier (built wall / forest / owned pill) sits on the
+ * straight line to the pill CENTER, the engine blocks a centre-aimed shot — but a
+ * shot aimed at the pill's near EDGE can graze PAST the cover and still land within
+ * the 127-unit collision radius of the pill, while the pill (aiming at the tank's
+ * centre) keeps putting its shells into the cover. This is the asymmetry that lets
+ * the tank neutralise a pill while taking ~zero damage (validated in __sim__:
+ * dealt 15 / taken 0 with a maintained wall).
+ *
+ * Self-correcting geometry: if centre LOS is clear, fire centre (no cover needed).
+ * If centre is blocked, try a perpendicular edge offset to EACH side and fire at
+ * the first side whose LOS is clear. Aim/fire are STATIONARY (firingWord SHOOT bit,
+ * not FORWARD_FIRE) so the tank holds behind the cover instead of driving into the
+ * open. Returns 1 if it fired, 0 otherwise.
+ *
+ * @param edgeOffset  perpendicular aim offset in BWorld units (< 127 collision
+ *                    radius; ~112 leaves margin for direction quantisation).
+ * @param fireTolerance  alignment tolerance for the fire gate (0 = exact; the edge
+ *                    aim needs tight alignment or the shell misses the pill).
+ */
+export function shootPillFromCover(
+  a4: A4State,
+  state: BrainState,
+  pill: PillState,
+  edgeOffset = 112,
+  hitRadius = 3,   // angular fire tolerance in direction units (0-255)
+): number {
+  const tank = state.tank;
+  if (!pill.attackable) return 0;
+
+  const pillX = ((pill.tileX & 0xFF) << 8) + 128;
+  const pillY = ((pill.tileY & 0xFF) << 8) + 128;
+
+  // Aim point to STEER toward: pill centre if LOS is clear, else the pill edge on
+  // whichever perpendicular side has a clear line (graze past the cover).
+  let aimX = pillX, aimY = pillY;
+  if (checkBarriers(a4, tank.x, tank.y, pillX, pillY) > 0) {
+    const dx = signedWord(pillX - tank.x);
+    const dy = signedWord(pillY - tank.y);
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;        // unit tank→pill (screen space)
+    const cands = [
+      { x: (pillX + Math.round(-uy * edgeOffset)) & 0xFFFF, y: (pillY + Math.round(ux * edgeOffset)) & 0xFFFF },
+      { x: (pillX + Math.round(uy * edgeOffset)) & 0xFFFF, y: (pillY + Math.round(-ux * edgeOffset)) & 0xFFFF },
+    ];
+    let chosen: { x: number; y: number } | null = null;
+    for (const c of cands) {
+      if (checkBarriers(a4, tank.x, tank.y, c.x, c.y) === 0) { chosen = c; break; }
+    }
+    if (!chosen) return 0;   // no clear edge — hold fire (caller may reposition)
+    aimX = chosen.x; aimY = chosen.y;
+  }
+
+  // Steer the hull toward the aim point (keeps rotating; tolerance 0 = aim true).
+  const fireDir = directionTo(tank.x, tank.y, aimX, aimY);
+  turnTowardsDir(a4, tank.facingDir, fireDir, 0);
+
+  // FIRE GATE decoupled from turnTowardsDir's "aligned" return (which, with
+  // tolerance 0, oscillates ±1 forever in the live loop and never fires). Fire
+  // whenever the hull is within a small angular tolerance of the aim AND the shot
+  // along the CURRENT facing actually clears the cover (no barrier to the pill's
+  // range along facing). hitRadius is the angular tolerance in direction units.
+  if ((tank.shellCount & 0xFF) < 14) return 0;
+  const delta = computeDirectionDelta(tank.facingDir, fireDir);
+  if (delta > hitRadius) return 0;
+  const projDist = computeDistanceBetween(tank.x, tank.y, pillX, pillY);
+  const shot = locationFromDir(tank.facingDir & 0xFF, projDist, tank.x, tank.y);
+  if (checkBarriers(a4, tank.x, tank.y, shot.x & 0xFFFF, shot.y & 0xFFFF) === 0) {
+    a4.firingWord |= 0x10;   // stationary fire (no forced forward motion)
+    return 1;
+  }
+  return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

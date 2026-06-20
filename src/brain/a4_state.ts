@@ -840,6 +840,12 @@ export class A4State {
    *  builder proves unreachable, so the tank refuels/retreats instead of dying. */
   getManFailedUntilTick = 0;
 
+  /** Tick at which the builder was deliberately deployed to build/maintain pill
+   *  cover (cover method). While within COVER_BUILD_GRACE of this, GetMan is
+   *  suppressed so fetching the man doesn't abandon the GetPill engagement that
+   *  dispatched it. 0 = not in a cover-build window. */
+  coverBuilderDispatchTick = 0;
+
   /** A4[13882] word — GetMan: armor threshold */
   getManArmorThreshold = 0;
 

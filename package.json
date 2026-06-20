@@ -24,6 +24,8 @@
     "dev:server": "tsx watch src/server/command.ts config.json",
     "start": "tsx src/server/command.ts config.railway.json",
     "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -41,8 +43,10 @@
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/ws": "^8.5.10",
+    "jsdom": "^25.0.1",
     "typescript": "^5.5.0",
-    "vite": "^5.3.0"
+    "vite": "^5.3.0",
+    "vitest": "^2.1.9"
   },
   "bin": {
     "bolo-server": "./dist/server/server/command.js"

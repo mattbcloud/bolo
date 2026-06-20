@@ -86,9 +86,11 @@ export const TERRAIN_ASCII_TO_ID: Record<string, Terrain> = {
 
 /** Builder action command emitted by the brain and handled by _runBrainTick. */
 export interface BuilderActionCommand {
-  /** Orona BuilderAction string: 'forest' to harvest, 'repair' to fix pill, 'boat' to build boat on water. */
-  action: 'forest' | 'repair' | 'boat';
-  /** Number of trees to consume (0 for forest harvest; 1-4 for repair). */
+  /** Orona BuilderAction (engine: builder.ts). 'forest' harvest, 'repair' fix pill,
+   *  'boat' build boat on water, 'building' build a wall (cover), 'pillbox' plant a
+   *  carried pillbox (cover/support), 'road' build road, 'mine' lay a mine. */
+  action: 'forest' | 'repair' | 'boat' | 'building' | 'pillbox' | 'road' | 'mine';
+  /** Number of trees to consume (0 for forest/mine/pillbox; walls/road/repair cost trees). */
   trees: number;
   /** Target tile X coordinate (0-255). */
   tileX: number;
@@ -521,6 +523,16 @@ let _staticTerrainMap: Uint8Array | null = null;
 let _waterTileList: Uint16Array | null = null;   // tiles with isTrueWater
 let _waterTileCount = 0;
 let _staticTerrainBuilt = false;
+
+/** Reset the cached static-terrain layer. Used by the headless harness so each
+ *  boot rebuilds terrain from its own (fresh) map — prevents cross-boot state
+ *  leaking between simulation trials. No effect on the live game (single map). */
+export function _resetStaticTerrainCache(): void {
+  _staticTerrainMap = null;
+  _waterTileList = null;
+  _waterTileCount = 0;
+  _staticTerrainBuilt = false;
+}
 
 /** Reset the static terrain cache (call when joining a new game/map). */
 export function resetStaticTerrainCache(): void {
