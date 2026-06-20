@@ -552,6 +552,30 @@ export function killTankGoalCost(a4: A4State, state: BrainState): number {
 export function refuelGoalCost(a4: A4State, state: BrainState): number {
   const tank = state.tank;
 
+  // Refuel-to-FULL hold (port addition). The binary cost balloons the instant armour
+  // clears 16 (cost = armor + shells*8 + 40 ≥ 56), so a nearby pill (GetPill cost ~1-9)
+  // wins goal selection and yanks the tank OFF the base at ~16-30 armour — i.e. "the
+  // tank doesn't stay long enough to refuel," and it re-engages pills well below full.
+  // The doctrine is: always engage a hostile pill at FULL armour. Fix: while the tank
+  // is PHYSICALLY ON a refuel base that still has armour to give, keep refuel strictly
+  // winning (cost 0) until armour tops back to full — don't let a pill pull it off
+  // mid-refuel. Gating on atBase+stock (not just armour<16) is critical: an unconditional
+  // hold traps the tank idling against an UNREACHABLE base (route:miss) for ~1000 ticks;
+  // when not on a base, normal cost logic (incl. the <16 emergency below) applies and the
+  // tank stays free to pursue reachable objectives.
+  // Hold to 30 (the binary's own "topped-up" threshold below), NOT 40: topping past
+  // 30 means long sits on a slow-regen base (+5 armour / 46 ticks) and craters captures
+  // (N=30: hold-to-38 → 0.07 vs hold-to-30 → ~0.34, baseline 0.27). 30 is reached fast
+  // and is enough armour to survive the point-blank drive-ONTO-pill that a capture needs.
+  const FULL_ARMOR = 30;
+  const rbase = a4.refuelBaseTarget;
+  if (rbase !== null && tank.armor < FULL_ARMOR) {
+    const atBase = a4.tankTileX === rbase.tileX && a4.tankTileY === rbase.tileY;
+    const ob = (rbase as any).oronaBase;
+    const baseArmour = ob?.armour ?? (rbase as any).armor ?? 0;
+    if (atBase && baseArmour > 0) return 0;   // top up to full before re-engaging
+  }
+
   // Binary threshold (0x0079f8): armor >= 30 AND shells >= 7 → no refuel needed.
   // shells is the raw 0-40 count; 7 shells = ~17% of max capacity.
   if (tank.armor >= 30 && tank.shells >= 7) return 0xFFFF;
@@ -569,7 +593,12 @@ export function refuelGoalCost(a4: A4State, state: BrainState): number {
   // actually disengaged and the tank pressed close-range pill charges to death
   // (death diagnostic: ~66% of deaths on GetPill). Cost 0 strictly beats GetPill.
   // Recovers to 0xFFFF once armor ≥30, i.e. hit-and-run.
-  if (tank.armor < 16) return 0;
+  // Close-the-kill suppression: if the tank is finishing a nearly-dead pill from
+  // CONFIRMED cover (coverFinishHold), don't break off to refuel above a hard safety
+  // floor — covered means ~no incoming damage, and breaking off here is exactly what
+  // leaves pills stuck at ~3 armour. Below the floor (armour<6) always retreat, in
+  // case the cover read was stale/wrong.
+  if (tank.armor < 16 && !(a4.coverFinishHold && tank.armor >= 6)) return 0;
 
   // Binary cost formula (0x007a6c): armor + raw_shells×8 + 40.
   // Lower = higher priority; critically depleted tank refuels before any other goal.
@@ -661,8 +690,13 @@ export function chooseRefuelBase(a4: A4State, state: BrainState): BaseState | nu
     if (!base.isAlly) continue;
     if (base.isEnemy) continue;
 
-    // Binary (0x00c5b0): tank must have armor >= 5 to approach a refuel base
-    if (state.tank.armor < 5) continue;
+    // NO armour floor here. The binary gated this on armour ≥ 5 (0x00c5b0), but in this
+    // port it DEADLOCKS: at armour < 5 every ally base is skipped → refuelBaseTarget=null
+    // → refuelGoalCost returns 0xFFFF → Refuel can't be chosen → the tank can't recover
+    // armour → it stays < 5 forever, frozen idle (observed live on SlugfestVII at armour 0
+    // with allied bases right there). A critically-low tank must be allowed to flee to the
+    // nearest safe ally base — that is exactly when refuel matters most. The cost below
+    // already biases toward the closest, lowest-danger base.
 
     // Binary (0x00c71e): base must have meaningful stock.
     // ChooseRefuelBaseCost returns 0xFFFF when base.armour ≤ 14 (< 40% stock).

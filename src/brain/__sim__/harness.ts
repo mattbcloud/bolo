@@ -15,7 +15,7 @@ import EverardIsland from '../../client/everard';
 import { decodeBase64 } from '../../client/base64';
 import { Tank } from '../../objects/tank';
 import { brainOpen, syncBrainState } from '../brain_init';
-import { buildBrainState, applyControls, _resetStaticTerrainCache } from '../aindy_interface';
+import { buildBrainState, applyControls, _resetStaticTerrainCache, resetStaticTerrainCache } from '../aindy_interface';
 import { navigateToCoords } from '../navigation';
 
 const TILE = 256; // BWorld units per tile
@@ -74,7 +74,11 @@ export function bootHeadlessWorld(seed = 0x9e3779b9): any {
   // call — so the no-op is required.
   world.map.world = {
     get tanks() { return world.tanks ?? []; },
-    mapChanged() { /* no-op (BoloLocalWorld.mapChanged is also a no-op) */ },
+    // Invalidate the brain's cached static-terrain layer on any terrain change so a
+    // BUILT WALL (or harvested forest / built road) becomes visible to the brain's
+    // worldMap. Without this the brain (and checkBarriers/cover) can never see cover it
+    // builds — terrain was wrongly assumed static. Mirrors local.ts mapChanged.
+    mapChanged() { resetStaticTerrainCache(); },
   };
   // No-op renderer: the sim tick calls renderer.playSound() (and friends) for
   // sound/visual effects. Headless has no renderer, so any method is a no-op.

@@ -1075,6 +1075,13 @@ export class A4State {
   /** A4[7462] byte — Refuel: state machine variable */
   refuelState = 0;
 
+  /** Close-the-kill latch (port addition). Set while the tank is finishing a nearly
+   *  dead pill (armour ≤ a few) from CONFIRMED cover: it holds still and edge-fires,
+   *  and refuelGoalCost suppresses the emergency break-off so the tank lands the last
+   *  hits instead of retreating and leaving the pill stuck at ~3 armour forever. Only
+   *  set when checkBarriers confirms the pill→tank shot is blocked (so staying is safe). */
+  coverFinishHold = 0;
+
   /** A4[13895] byte — NewRefuel: sub-state machine variable */
   newRefuelState = 0;
 

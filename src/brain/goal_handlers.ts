@@ -23,7 +23,7 @@
 import { A4State } from './a4_state.js';
 import type { BrainState, PillState, BaseState, EnemyTankState } from './aindy_interface.js';
 import { macRandom, tickCount, byte } from './aindy_interface.js';
-import { directionTo, computeDistanceBetween } from './pathfinding.js';
+import { directionTo, computeDistanceBetween, locationFromDir, turnTowardsDir } from './pathfinding.js';
 import { navigateToCoords as _navigateToCoords, setSpeed as _setSpeed } from './navigation.js';
 // _navigateToCoords now has signature (a4, targetX, targetY, mode) — no state needed
 import {
@@ -52,6 +52,26 @@ function _findAdjacentForest(a4: A4State): { tileX: number; tileY: number } | nu
   return null;
 }
 
+/** Nearest forest tile (terrain 5) to the tank within a tile radius, by Chebyshev
+ *  distance. Used by the tree-gathering phase to go stock cover materials. */
+function _findNearestForestTile(a4: A4State, maxR = 24): { tileX: number; tileY: number } | null {
+  const cx = a4.tankTileX & 0xFF;
+  const cy = a4.tankTileY & 0xFF;
+  for (let r = 1; r <= maxR; r++) {
+    let best: { tileX: number; tileY: number } | null = null;
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;   // perimeter of ring r
+        const tx = (cx + dx) & 0xFF, ty = (cy + dy) & 0xFF;
+        if ((a4.worldMap[((ty & 0xFF) << 8) | (tx & 0xFF)] & 0x0F) === 5) { best = { tileX: tx, tileY: ty }; break; }
+      }
+      if (best) break;
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
 // 8-neighbour tile offsets indexed by direction/32 (0=E,2=N,4=W,6=S; screen Y-down).
 const DIR8_OFFSETS: readonly [number, number][] = [
   [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1],
@@ -60,15 +80,20 @@ function _dir8(direction: number): readonly [number, number] {
   return DIR8_OFFSETS[Math.round((direction & 0xFF) / 32) & 7];
 }
 
-const COVER_WALL_TREES = 2;   // builder 'building' cost for one wall tile
+const COVER_WALL_TREES = 2;       // builder 'building' cost for one wall tile
+const COVER_FINISH_ARMOUR = 8;    // finish a pill from cover once its armour drops to this
+const COVER_TREE_TARGET = 6;      // stock this many trees before engaging (≈3 walls for rebuilds)
 
 /**
  * Cover method (validated in __sim__: maintained wall + edge-aim → kill pill taking
- * ~0 damage). Keep a wall between the tank and the target pill, on the pill's
- * neighbour tile toward the tank. shootPillFromCover then grazes shells past it.
- * Dispatches the builder to BUILD/maintain that wall; if out of trees, harvests an
- * adjacent forest tile first. Graceful no-op when no cover is buildable. Runs in
- * PARALLEL with the aggressive charge — the builder works while the tank advances.
+ * ~0 damage). Build a wall between the tank and the target pill, on the TANK's
+ * neighbour tile toward the pill — i.e. right in front of the tank. This blocks the
+ * pill→tank shell (which must cross that tile) while being a SHORT (~1-tile) builder
+ * trip the builder can actually complete — building at the PILL's neighbour instead is
+ * an ~8-tile trip from firing range that the builder never finishes (it parachutes the
+ * whole game). shootPillFromCover then grazes shells past the wall's edge. NOTE: the
+ * brain only perceives this wall because mapChanged now invalidates the cached static
+ * terrain (without that fix the built wall is invisible in worldMap and never used).
  */
 function _maintainCover(a4: A4State, state: BrainState, pill: PillState): void {
   const tank = state.tank;
@@ -77,10 +102,10 @@ function _maintainCover(a4: A4State, state: BrainState, pill: PillState): void {
   // get stuck at 1 when a prior dispatch never deployed, permanently blocking cover.)
   if (!tank.builderInTank || tank.onBoat) return;
 
-  // Cover tile = pill neighbour toward the tank (between tank and pill).
-  const bearing = directionTo(pill.x, pill.y, tank.x, tank.y) & 0xFF; // pill→tank
+  // Cover tile = the TANK's neighbour toward the pill (right in front of the tank).
+  const bearing = directionTo(tank.x, tank.y, pill.x, pill.y) & 0xFF; // tank→pill
   const [dx, dy] = _dir8(bearing);
-  const cnx = (pill.tileX + dx) & 0xFF, cny = (pill.tileY + dy) & 0xFF;
+  const cnx = (a4.tankTileX + dx) & 0xFF, cny = (a4.tankTileY + dy) & 0xFF;
   const cRaw = a4.worldMap[((cny & 0xFF) << 8) | (cnx & 0xFF)];
   const cTerrain = cRaw & 0x0F;
 
@@ -596,6 +621,9 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   const pill = a4.pillToGetTarget;
   if (pill === null) return;
 
+  // Cleared every tick; only the close-the-kill branch below re-sets it.
+  a4.coverFinishHold = 0;
+
   // Phase 0: Target change detection (index-based — PillState objects are recreated each tick)
   if (pill.index !== a4.newGetPillTargetIndex) {
     a4.newGetPillAPChosen = 0;
@@ -701,6 +729,54 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   const pillDistPh = computeDistanceBetween(state.tank.x, state.tank.y, pill.x, pill.y);
 
   if (pillDistPh > 0x07C0) {
+    // ── TREE-GATHERING phase: stock cover materials BEFORE engaging ─────────
+    // Walls (the cover that lets the tank finish a hot pill — see the close-the-kill
+    // block below) cost trees; the tank starts with 0 and the builder can only harvest
+    // forest the tank is parked NEXT TO. The engine harvest works (4 trees/trip) only
+    // when the tank holds still — which it can't do mid-charge — so the tank never
+    // accrued trees and cover was never built (capfloor.test.ts: walls=0/30). Fix: while
+    // still at a SAFE distance (nav phase) and short on materials, divert to the nearest
+    // forest, hold, and harvest to a tree target, THEN approach. Skips cleanly if no
+    // forest is reachable (engage without cover) or if already carrying a pill (Method 2).
+    // ⚠️ WIP, default OFF (COVER_GATHER env). Stock cover materials and ensure the
+    // builder is FREE *before* entering attack range, so it can build a wall during the
+    // finish. Sequencing matters: if gathering overlaps the approach the builder is out
+    // on harvest trips (~80% of ticks) and _maintainCover's `!builderInTank` gate bails →
+    // no wall (buildDispatch=0). So we HOLD in the nav phase until trees≥target AND the
+    // builder is back in the tank, then release to engage. Skips if carrying a pill
+    // (Method 2) or no forest is reachable (engage without cover).
+    // TREE-GATHERING: stock cover materials before engaging. A wall (the cover that
+    // lets the tank finish a hot pill) costs trees; the tank starts with 0 and the
+    // builder only harvests forest the tank is parked next to, and only completes a trip
+    // when the tank holds still. So at this safe distance, if short on trees, divert to
+    // the nearest forest and harvest to a target, THEN approach. The wall itself is built
+    // CLOSE (tank-neighbour) at firing range by _maintainCover in the attack phase. Skips
+    // if carrying a pill (Method 2) or no forest reachable (engage without cover).
+    const COVER_GATHER = typeof process !== 'undefined' && !!process.env.COVER_GATHER;
+    const carryingPill = (state.tank.pillsCarried & 0xFF) > 0;
+    if (COVER_GATHER && !carryingPill && pill.armour > COVER_FINISH_ARMOUR &&
+        !state.tank.onBoat && state.tank.resourceCount < COVER_TREE_TARGET) {
+      if (!state.tank.builderInTank) {
+        // builder out harvesting/returning — hold still so the trip completes
+        setSpeed(a4, 0, state.tank.speed & 0xFF);
+        a4.coverBuilderDispatchTick = a4.tickCounter;
+        return;
+      }
+      const adj = _findAdjacentForest(a4);
+      if (adj) {
+        setSpeed(a4, 0, state.tank.speed & 0xFF);
+        a4.pendingBuilderAction = { action: 'forest', trees: 0, tileX: adj.tileX, tileY: adj.tileY };
+        a4.coverBuilderDispatchTick = a4.tickCounter;
+        return;
+      }
+      const forest = _findNearestForestTile(a4);
+      if (forest) {
+        navigateToCoords(a4, (forest.tileX << 8) + 128, (forest.tileY << 8) + 128, 0);
+        return;
+      }
+      // no forest reachable → fall through and engage without cover.
+    }
+
     // ── Navigation phase: approach the AP ──────────────────────────────────
     navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
 
@@ -746,6 +822,102 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   // Verified to lift captures ~2× over baseline (0.13→0.27) at equal deaths.
   _maintainCover(a4, state, pill);
 
+  // CLOSE-THE-KILL (capfloor.test.ts root cause): the tank grinds pills to ~3 armour
+  // then can't land the final hits — by then the pill is fully heated (fires every 6
+  // ticks) and the tank breaks off to refuel before closing, leaving it stuck at 3.
+  // When the pill is nearly dead AND the pill→tank shot is CONFIRMED blocked by cover,
+  // stop moving and edge-fire to finish it; coverFinishHold tells refuelGoalCost to
+  // suppress the emergency break-off (covered = not taking damage, so staying is safe).
+  const pillCenterX = ((pill.tileX & 0xFF) << 8) + 128;
+  const pillCenterY = ((pill.tileY & 0xFF) << 8) + 128;
+  // Default OFF (env CLOSEKILL=1): unvalidated and inert without built cover; gated to
+  // keep the shipped path = refuel-30 only (the one capture-neutral, real-bug fix).
+  const CLOSEKILL = typeof process !== 'undefined' && !!process.env.CLOSEKILL;
+  if (CLOSEKILL && pill.armour > 0 && pill.armour <= COVER_FINISH_ARMOUR &&
+      pillDistPh <= 1984 &&
+      _checkBarriers(a4, state.tank.x, state.tank.y, pillCenterX, pillCenterY) > 0) {
+    // Only HOLD if the edge-fire is actually viable (a clear grazing edge exists).
+    // Forest-enclosed pills satisfy checkBarriers>0 but have NO clear edge → shootPill-
+    // FromCover returns 0; holding there wastes thousands of ticks (capfloor: holdTicks
+    // up to 4136 with zero progress). If no viable shot, fall through to reposition.
+    a4.shootPillDirection = directionTo(state.tank.x, state.tank.y, pill.x, pill.y) & 0xFF;
+    const fired = _shootPillFromCover(a4, state, pill);
+    if (fired) {
+      a4.coverFinishHold = 1;
+      setSpeed(a4, 0, state.tank.speed & 0xFF);   // hold still → stable edge-aim geometry
+      a4.pillApproachInProgress = 1;
+      return;
+    }
+  }
+
+  // ── PUSH-THROUGH THE KILL ───────────────────────────────────────────────
+  // The tank reliably chips a pill 15→~3 while stationary-firing, then RETREATS at
+  // low armour (emergency refuel <16) and leaves it at 3 — the dominant capture floor
+  // (capfloor: nearKill 19/30 but captured 7/30). Since pill damage PERSISTS across
+  // tank death, the highest-leverage move at the very end is the opposite of dodging:
+  // when the pill is nearly dead and in range, PUSH THROUGH — suppress the retreat
+  // (coverFinishHold, honoured by refuelGoalCost above the armour-6 safety floor) and
+  // concentrate aggressive fire to land the last hits. Even a death leaves the pill at
+  // ~0 to finish next life.
+  // ⚠️ DEFAULT OFF (env PUSH=1 to enable): A/B (4×N=30 each) gave PUSH 0.168 cap / 2.69
+  // deaths vs OFF 0.133 / 2.62 — a faint capture gain at a faint death cost, both deep
+  // inside the heisenbug band (0.03–0.37 on identical code). capfloor shows +2 pills→0.
+  // Not a CLEAR N=30 win, so off pending more validation; principled (don't abandon a
+  // 90%-dead pill — damage persists across death) and the most capture-aligned lever found.
+  const PUSH_ARMOUR = 3;
+  const PUSH = typeof process !== 'undefined' && !!process.env.PUSH;
+  if (PUSH && pill.armour > 0 && pill.armour <= PUSH_ARMOUR && pillDistPh <= 1984) {
+    a4.coverFinishHold = 1;                       // suppress the emergency break-off
+    setSpeed(a4, 0, state.tank.speed & 0xFF);     // stop and concentrate fire
+    const d = directionTo(state.tank.x, state.tank.y, pill.x, pill.y) & 0xFF;
+    a4.shootPillDirection = d;
+    _shootPill(a4, state, pill, d, 0);
+    a4.pillApproachInProgress = 1;
+    return;
+  }
+
+  const dirToPill = directionTo(state.tank.x, state.tank.y, pill.x, pill.y);
+  const pillCx = ((pill.tileX & 0xFF) << 8) + 128;
+  const pillCy = ((pill.tileY & 0xFF) << 8) + 128;
+
+  // ── CIRCLE-STRAFE PUMP ──────────────────────────────────────────────────
+  // Stationary fire = death: the hot pill (fires every ~6 ticks) leads the tank by
+  // ~63 ticks, so a still tank is shredded — which is why the close stalls at ~3
+  // armour. The hull-fixed gun can't fire while moving laterally, so ALTERNATE a FIRE
+  // window (face the pill, shoot) with a DODGE window (drive at ±40° to the pill line
+  // to break the pill's lead). Maintain a ~6-tile firing radius.
+  // ⚠️ DEFAULT OFF (env STRAFE=1 to enable): MEASURED to crater damage output — with the
+  // hull-fixed gun, dodging time is not-firing time, so pills barely drop to armour 8–11
+  // (vs 3 stationary) and captures→0. Dodging trades away the fire the close needs.
+  const STRAFE = typeof process !== 'undefined' && !!process.env.STRAFE;
+  if (STRAFE) {
+    const cyc = a4.tickCounter % 80;
+    const dodging = cyc >= 40;                 // ~40t fire, ~40t dodge
+    const tooClose = pillDistPh < 0x0500;      // < 5 tiles
+    const tooFar   = pillDistPh > 0x0740;      // > 7.25 tiles
+    if (dodging && !tooFar) {
+      // Weave at ±40° to the pill bearing; alternate side each cycle (dodge both ways).
+      // Angle outward a bit when too close so the orbit radius holds.
+      const ccw = (Math.floor(a4.tickCounter / 80) & 1) === 0;
+      const off = (tooClose ? 56 : 40) * (ccw ? 1 : -1);
+      const moveDir = (dirToPill + off + 256) & 0xFF;
+      turnTowardsDir(a4, state.tank.facingDir, moveDir & 0xFF, 0);
+      setSpeed(a4, 20, state.tank.speed & 0xFF);
+    } else {
+      // FIRE window: face the pill and shoot; creep in only if a little far.
+      setSpeed(a4, tooFar ? 16 : (tooClose ? 0 : 6), state.tank.speed & 0xFF);
+      a4.shootPillDirection = dirToPill & 0xFF;
+      if (_checkBarriers(a4, state.tank.x, state.tank.y, pillCx, pillCy) > 0) {
+        _shootPillFromCover(a4, state, pill);
+      } else {
+        _shootPill(a4, state, pill, dirToPill & 0xFF, 0);
+      }
+    }
+    a4.pillApproachInProgress = 1;
+    return;
+  }
+
+  // ── Original stop-and-fire approach (NO_STRAFE) ─────────────────────────
   let apSpeed: number;
   if      (pillDistPh > 0x073C) apSpeed = 24;
   else if (pillDistPh > 0x0700) apSpeed = 16;
@@ -759,13 +931,10 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
     navigateToCoords(a4, pill.x, pill.y, 0);
   }
 
-  const dirToPill = directionTo(state.tank.x, state.tank.y, pill.x, pill.y);
   a4.shootPillDirection = dirToPill & 0xFF;
 
   // Fire: when cover sits on the centre line, edge-aim around it (damage-free);
   // otherwise the unchanged aggressive centre fire (preserves capture behaviour).
-  const pillCx = ((pill.tileX & 0xFF) << 8) + 128;
-  const pillCy = ((pill.tileY & 0xFF) << 8) + 128;
   if (_checkBarriers(a4, state.tank.x, state.tank.y, pillCx, pillCy) > 0) {
     _shootPillFromCover(a4, state, pill);
   } else {

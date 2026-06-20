@@ -17,7 +17,7 @@ import BoloClientWorldMixin, { IBoloClientWorldMixin } from './mixin';
 // Brain imports
 import { brainOpen, syncBrainState } from '../../brain/brain_init';
 import { aIndy_Think } from '../../brain/aindy_think';
-import { buildBrainState, applyControls } from '../../brain/aindy_interface';
+import { buildBrainState, applyControls, resetStaticTerrainCache } from '../../brain/aindy_interface';
 import { A4State } from '../../brain/a4_state';
 
 // Visual effects
@@ -363,7 +363,11 @@ export class BoloLocalWorld extends NetLocalWorld {
   }
 
   mapChanged(cell: any, oldType: string, hadMine: boolean, oldLife: number): void {
-    // No-op in local mode
+    // Terrain changed (a wall/road/boat built, forest harvested, wall destroyed, …).
+    // Invalidate the brain's cached static-terrain layer so the change becomes visible
+    // in its worldMap next tick. Terrain was wrongly assumed static; without this the
+    // brain can never perceive cover it builds (checkBarriers reads the stale worldMap).
+    resetStaticTerrainCache();
   }
 
   // ── Input handlers ────────────────────────────────────────────────────────

@@ -57,13 +57,43 @@ function computePath(
   waterMode = false,
 ): Uint16Array | null {
   const startIdx = ((startTileY & 0xFF) << 8) | (startTileX & 0xFF);
-  const destIdx  = ((destTileY & 0xFF) << 8) | (destTileX & 0xFF);
+  let   destIdx  = ((destTileY & 0xFF) << 8) | (destTileX & 0xFF);
 
   if (startIdx === destIdx) return new Uint16Array([startIdx]);
 
   const costs = a4.examineTerrainCostTable;
   const worldMap = a4.worldMap;
   const blockedTile = a4.navStallBlockedTile;
+
+  // If the destination tile is itself IMPASSABLE (a live pillbox=12 or armoured
+  // enemy base=11, cost ≥1000), A* can never relax it → null → a permanent noRoute
+  // freeze (~1250 ticks idle, the dominant capture-killer). The brain legitimately
+  // routes navigateToCoords() AT such targets (to attack/capture them), so retarget
+  // the path to the cheapest PASSABLE tile ADJACENT to the dest, on the tank's side
+  // (min Chebyshev to start). The tank stops adjacent and the attack/landing/capture
+  // logic takes the final tile; it does NOT grind point-blank into the live target.
+  // ⚠️ DEFAULT OFF (env NOROUTE_FIX=1 to enable). Routing to the adjacent passable tile
+  // eliminates the ~1250-tick noRoute freezes and cuts deaths (~2.77→2.45), BUT it
+  // rewires EVERY approach to a pill/base (not just stuck cases) and REGRESSES captures
+  // ~40% (A/B ~20 runs: refuel-only 0.23 vs +noRoute 0.14). Captures are the priority,
+  // so it's off. Revisit with a more surgical trigger (only fire on a genuine stall).
+  const NOROUTE_FIX = typeof process !== 'undefined' && !!process.env.NOROUTE_FIX;
+  if (NOROUTE_FIX && costs[worldMap[destIdx]] >= 1000) {
+    let bestN = -1, bestH = 0x7FFF;
+    for (let d = 0; d < 8; d++) {
+      const ax = destTileX + DIRS[d][0], ay = destTileY + DIRS[d][1];
+      if (ax < 0 || ax > 255 || ay < 0 || ay > 255) continue;
+      const aIdx = ((ay & 0xFF) << 8) | (ax & 0xFF);
+      if (costs[worldMap[aIdx]] >= 1000) continue;
+      const h = Math.max(Math.abs(ax - startTileX), Math.abs(ay - startTileY));
+      if (h < bestH) { bestH = h; bestN = aIdx; }
+    }
+    if (bestN < 0) return null;          // target fully walled in — genuinely unreachable
+    destIdx = bestN;
+    if (startIdx === destIdx) return new Uint16Array([startIdx]);
+  }
+  const destReTileX = destIdx & 0xFF;
+  const destReTileY = (destIdx >> 8) & 0xFF;
 
   // g-cost for each tile (0xFFFF = unvisited)
   const gCost = a4.navGCost;
@@ -79,7 +109,7 @@ function computePath(
   const heap = a4.navHeap;
   let heapSize = 0;
 
-  const h0 = Math.max(Math.abs(startTileX - destTileX), Math.abs(startTileY - destTileY));
+  const h0 = Math.max(Math.abs(startTileX - destReTileX), Math.abs(startTileY - destReTileY));
   heap[heapSize++] = (h0 << 16) | startIdx;
 
   while (heapSize > 0) {
@@ -110,7 +140,7 @@ function computePath(
     const currentG = gCost[currentIdx];
 
     // Already found a better path to this node (stale heap entry)
-    if (((top >>> 16) - Math.max(Math.abs(cx - destTileX), Math.abs(cy - destTileY))) > currentG) {
+    if (((top >>> 16) - Math.max(Math.abs(cx - destReTileX), Math.abs(cy - destReTileY))) > currentG) {
       continue;
     }
 
@@ -164,10 +194,14 @@ function computePath(
       gCost[nIdx] = newG;
       parent[nIdx] = currentIdx;
 
-      const h = Math.max(Math.abs(nx - destTileX), Math.abs(ny - destTileY));
+      const h = Math.max(Math.abs(nx - destReTileX), Math.abs(ny - destReTileY));
       const f = newG + h;
 
-      // Insert into heap
+      // Insert into heap. Guard against overflow: this A* uses lazy deletion
+      // (re-pushes improved nodes), so pushes can exceed the tile count; an
+      // out-of-bounds typed-array write is silently dropped and would corrupt
+      // the heap. Dropping a push is safe (lazy entries are redundant).
+      if (heapSize >= heap.length) continue;
       let pos = heapSize++;
       heap[pos] = (f << 16) | nIdx;
       while (pos > 0) {
