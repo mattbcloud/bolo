@@ -1153,6 +1153,11 @@ export class A4State {
 
   // ── PlacePill state ────────────────────────────────────────────────────────
 
+  /** PlacePill: 1 when holding a dead stop (farming a tree / planting the pill) — tells
+   *  aindy_think to strip doCommonStuff's forward bits so the brake isn't cancelled
+   *  (accelerating+braking = coast → the tank drifts instead of holding still). */
+  placePillHold = 0;
+
   /** A4[13884] byte — PlacePill: BaseToBuild tile X */
   placePillBaseTileX = 0;
 

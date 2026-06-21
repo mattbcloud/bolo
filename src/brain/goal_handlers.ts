@@ -72,6 +72,23 @@ function _findNearestForestTile(a4: A4State, maxR = 24): { tileX: number; tileY:
   return null;
 }
 
+/** A buildable tile adjacent to `base` for planting a carried pillbox. The engine
+ *  (builder.ts pillbox action) refuses pill/base/boat/deep-sea/forest/wall/shot-wall/
+ *  water tiles, so only return tiles clear of those (grass/road/swamp/crater/rubble). */
+function _findPillPlacementTile(a4: A4State, base: BaseState): { tileX: number; tileY: number } | null {
+  const bx = base.tileX & 0xFF, by = base.tileY & 0xFF;
+  const dirs: [number, number][] = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+  for (const [dx, dy] of dirs) {
+    const nx = (bx + dx) & 0xFF, ny = (by + dy) & 0xFF;
+    const raw = a4.worldMap[((ny & 0xFF) << 8) | (nx & 0xFF)];
+    if (raw & 0x80) continue;                                  // water-flagged
+    const t = raw & 0x0F;
+    if (t === 0 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
+    return { tileX: nx, tileY: ny };                            // wall/forest/shot-wall/boat/sea/base/pill excluded
+  }
+  return null;
+}
+
 // 8-neighbour tile offsets indexed by direction/32 (0=E,2=N,4=W,6=S; screen Y-down).
 const DIR8_OFFSETS: readonly [number, number][] = [
   [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1],
@@ -80,6 +97,7 @@ function _dir8(direction: number): readonly [number, number] {
   return DIR8_OFFSETS[Math.round((direction & 0xFF) / 32) & 7];
 }
 
+const PLACE_PILL_TREES = 1;       // builder 'pillbox' cost: plant a carried pill (engine consumes this many trees)
 const COVER_WALL_TREES = 2;       // builder 'building' cost for one wall tile
 const COVER_FINISH_ARMOUR = 8;    // finish a pill from cover once its armour drops to this
 const COVER_TREE_TARGET = 6;      // stock this many trees before engaging (≈3 walls for rebuilds)
@@ -146,23 +164,48 @@ function _maintainCover(a4: A4State, state: BrainState, pill: PillState): void {
  * See refuel_placepill_substates_decode.md for full algorithm.
  */
 export function goalPlacePill(a4: A4State, state: BrainState): void {
-  const target = a4.baseToBuildTarget;
-  if (target === null) return;
+  a4.placePillHold = 0;                     // default: not holding (navigating)
+  const base = a4.baseToBuildTarget;
+  if (base === null) return;
+  const tank = state.tank;
+  if (!tank.pillsCarried) return;          // nothing to place
 
-  // Load BaseToBuild coordinates
-  a4.placePillBaseTileX = target.tileX;
-  a4.placePillBaseTileY = target.tileY;
-  a4.placePillBaseBWorldX = target.x;
-  a4.placePillBaseBWorldY = target.y;
+  // Deploy a CAPTURED pillbox to DEFEND a friendly base: farm a tree if short, drive next
+  // to the base, then dispatch the builder to plant the carried pill (armour 15, costs 1
+  // tree). The old flow drove the builder via myMan.actionCode — a field the engine NEVER
+  // reads (only pendingBuilderAction → performOrder does anything), so it never actually
+  // placed; and it required 4 trees (the engine consumes the `trees` arg = 1).
 
-  switch (a4.placePillSubState) {
-    case 0: placePillSurveyTerrain(a4, state); break;
-    case 1: placePillChoosePlacement(a4, state); break;
-    case 2: placePillGotoBuildPoint(a4, state); break;
-    case 3: placePillFinishUp(a4, state); break;
-    default:
-      a4.placePillSubState = 0;
-      break;
+  // 1. Need ≥1 tree (performOrder('pillbox') aborts if tank.trees < trees). Farm forest.
+  if (tank.resourceCount < PLACE_PILL_TREES) {
+    if (!tank.builderInTank || tank.onBoat) { setSpeed(a4, 0, tank.speed & 0xFF); a4.placePillHold = 1; return; }
+    const adj = _findAdjacentForest(a4);
+    if (adj) {
+      setSpeed(a4, 0, tank.speed & 0xFF);   // hold so the builder's harvest trip completes
+      a4.placePillHold = 1;
+      a4.pendingBuilderAction = { action: 'forest', trees: 0, tileX: adj.tileX, tileY: adj.tileY };
+      return;
+    }
+    const forest = _findNearestForestTile(a4);
+    if (forest) { navigateToCoords(a4, (forest.tileX << 8) + 128, (forest.tileY << 8) + 128, 0); return; }
+    setSpeed(a4, 0, tank.speed & 0xFF); a4.placePillHold = 1;
+    return;   // no forest reachable — hold (forest regrows; selectBaseToBuild won't pick unplaceable bases)
+  }
+
+  // 2. A buildable tile next to the base (selectBaseToBuild already ensured one exists).
+  const spot = _findPillPlacementTile(a4, base);
+  if (!spot) { setSpeed(a4, 0, tank.speed & 0xFF); a4.placePillHold = 1; return; }
+
+  // 3. Drive adjacent to the placement tile, then plant the carried pill.
+  const dCheb = Math.max(Math.abs(a4.tankTileX - spot.tileX), Math.abs(a4.tankTileY - spot.tileY));
+  if (dCheb > 1) {
+    navigateToCoords(a4, (spot.tileX << 8) + 128, (spot.tileY << 8) + 128, 0);
+    return;
+  }
+  setSpeed(a4, 0, tank.speed & 0xFF);       // hold adjacent; the builder walks the last tile to plant
+  a4.placePillHold = 1;
+  if (tank.builderInTank && !a4.pendingBuilderAction) {
+    a4.pendingBuilderAction = { action: 'pillbox', trees: PLACE_PILL_TREES, tileX: spot.tileX, tileY: spot.tileY };
   }
 }
 

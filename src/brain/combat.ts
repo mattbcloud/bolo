@@ -432,82 +432,60 @@ export function shootPill(
 ): number {
   const tank = state.tank;
 
-  // Phase 1: Turn toward direction + armor gate
-  const aligned = turnTowardsDir(a4, tank.facingDir, direction);
+  const dir = direction & 0xFF;
 
-  // STATIONARY mode: fire via the firingWord (sets tank.shooting but NOT
-  // tank.accelerating) so the tank can hold a DEAD STOP while firing. The default
-  // forward-fire path (steeringWord 0x40/0x10 → accelerating) fights setSpeed's brake:
-  // the engine reads accelerating+braking as ZERO net accel, so the tank COASTS onward
-  // into the pillbox instead of stopping (the same failure as the refuel "won't stop on
-  // base" bug). In stationary mode we also do NOT creep forward to clear a blocked shot.
+  // The gun is HULL-FIXED: the shell flies in tank.direction, so the hull must FACE the
+  // pill to hit it. Turn with a TIGHT tolerance (1) — the default 5 let the hull STOP
+  // turning while still 3-5 units off the true bearing, and at 7 tiles a 3-unit error is a
+  // ~130-unit miss (just past the pill's 127 collision radius), so it fired and missed.
+  // A tight tolerance keeps the hull fine-tuning until it's near-exactly on the bearing.
+  turnTowardsDir(a4, tank.facingDir, dir, 1);
 
-  // Binary gate: myTank.byte[52] (shellCount / firingRange×2) must be ≥ 14.
-  // shellCount = firingRange × 2; at max range (7) shellCount=14 → always passes.
-  // Checking armor here was wrong — it incorrectly blocked firing when armor < 14.
+  // STATIONARY mode fires via the firingWord (sets shooting, NOT accelerating) so the tank
+  // can hold a dead stop while firing; the forward-fire path (steeringWord 0x40/0x10 →
+  // accelerating) would fight setSpeed's brake (accelerating+braking = coast). Off-target
+  // or blocked, we only creep forward in NON-stationary mode.
+
+  // Ammo / firing-range gate (shellCount = firingRange×2; 14 = max range 7).
   if ((tank.shellCount & 0xFF) < 14) {
-    if (!stationary) a4.steeringWord |= 0x10;   // set forward bit (low-priority fire)
+    if (!stationary) a4.steeringWord |= 0x10;
     return 0;
   }
 
-  if (aligned) {
-    // Aligned — but only fire with a clear LINE OF SIGHT. The engine stops shells
-    // at walls/shot-walls/forest/boats/pillboxes (shell.ts), so firing through
-    // them just wastes shells (measured: ~53% of shots had no LOS → all wasted).
-    const pillX = ((pill.tileX & 0xFF) << 8) + 128;
-    const pillY = ((pill.tileY & 0xFF) << 8) + 128;
-    if (skipCheck !== 0 || checkBarriers(a4, tank.x, tank.y, pillX, pillY) === 0) {
-      if (stationary) a4.firingWord |= 0x40;   // fire in place (shoot, no accelerate)
-      else            a4.steeringWord |= 0x40;  // FORWARD_FIRE
-      return 1;
-    }
-    if (!stationary) a4.steeringWord |= 0x10;   // no LOS: advance to clear the shot
+  const pillX = ((pill.tileX & 0xFF) << 8) + 128;
+  const pillY = ((pill.tileY & 0xFF) << 8) + 128;
+  const dist  = computeDistanceBetween(tank.x, tank.y, pillX, pillY);
+
+  // Falling short → the shell can't reach; close in.
+  const shotRange = (tank.shellCount & 0xFF) << 7;
+  if (dist > shotRange) {
+    if (!stationary) a4.steeringWord |= 0x10;
     return 0;
   }
 
-  // Phase 2: Skip if flag set
-  if (skipCheck !== 0) return 0;
-
-  // Phase 3: Direction delta validation (≤ 3 tolerance)
-  const delta = computeDirectionDelta(direction, tank.facingDir);
-  if (delta >= 4) return 0;
-
-  // Phase 4: Tile-by-tile trajectory simulation (GetDestinationOfShot).
-  // Trace the shot along `direction` one tile-step at a time; stop at barriers.
-  // If the shot's path reaches the pill's tile the shot will hit.
-  // This allows firing at pills through partial cover or around corners.
-  if (!pill.attackable) return 0;
-
-  const shotRange = (tank.shellCount & 0xFF) << 7;   // byte[52] × 128
-  if (shotRange < 128) return 0;   // no ammo / zero range
-
-  // Number of DDA steps: 1 per tile, minimum 2
-  const steps = Math.max(2, Math.ceil(shotRange / 256));
-  const pillTX = pill.tileX & 0xFF;
-  const pillTY = pill.tileY & 0xFF;
-
-  for (let s = 1; s <= steps; s++) {
-    const projDist = Math.round(s * shotRange / steps);
-    const { x: sx, y: sy } = locationFromDir(direction, projDist, tank.x, tank.y);
-    const stx = (sx >> 8) & 0xFF;
-    const sty = (sy >> 8) & 0xFF;
-
-    // Reached pill tile: shot will hit
-    if (stx === pillTX && sty === pillTY) {
-      if (stationary) a4.firingWord |= 0x40;   // fire in place (shoot, no accelerate)
-      else            a4.steeringWord |= 0x40;  // FORWARD_FIRE
-      return 1;
-    }
-
-    // Shell trajectory is stopped by wall(0), shot-wall(8), forest(5), boat(9),
-    // and live pillbox tiles(12) — matches the engine (shell.ts collide()). Shots
-    // do NOT pass through walls. (The target pill's own tile is the hit check above.)
-    const cell    = a4.worldMap[((sty & 0xFF) << 8) | (stx & 0xFF)];
-    const terrain = cell & 0x0F;
-    if (terrain === 0 || terrain === 5 || terrain === 8 || terrain === 9 || terrain === 12) break;
+  // ACCURACY GATE: the shell lands ~`dist × sin(facingErr)` off the true bearing and hits
+  // only if that offset is within the pill's ~127-unit collision radius. Convert that to a
+  // facing tolerance in 0-255 dir units (using 115 for margin); it TIGHTENS with distance
+  // (~6 units at 3 tiles, ~2 at 7). Fire only when the hull's ACTUAL facing is within it,
+  // so the shell lands ON the pill instead of grazing past. (The old gate fired at a fixed
+  // ≤3-unit error AND simulated the shot along the intended bearing, not the real facing —
+  // so at range the real shell flew off-angle and missed.)
+  const tolUnits  = Math.max(1, Math.floor(Math.asin(Math.min(1, 115 / Math.max(1, dist))) * 256 / (2 * Math.PI)));
+  const facingErr = computeDirectionDelta(tank.facingDir, dir);
+  if (facingErr > tolUnits) {
+    if (!stationary && skipCheck === 0) a4.steeringWord |= 0x10;   // close in: wider cone up close
+    return 0;
   }
 
-  return 0;   // shot does not reach pill
+  // On target → require a clear LINE OF SIGHT (engine stops shells at walls/forest/etc).
+  if (skipCheck === 0 && checkBarriers(a4, tank.x, tank.y, pillX, pillY) !== 0) {
+    if (!stationary) a4.steeringWord |= 0x10;   // blocked: advance to clear the shot
+    return 0;
+  }
+
+  if (stationary) a4.firingWord |= 0x40;   // fire in place (no accelerate)
+  else            a4.steeringWord |= 0x40;  // forward-fire
+  return 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

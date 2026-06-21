@@ -371,17 +371,16 @@ export function fixPillCostForPill(a4: A4State, _state: BrainState, pill: PillSt
  * Cost: BuildBaseCost (based on difficulty tier / CoG distance).
  */
 export function placePillGoalCost(a4: A4State, state: BrainState): number {
-  const target = a4.baseToBuildTarget;
-  if (target === null) return 0xFFFF;
+  if (a4.baseToBuildTarget === null) return 0xFFFF;
 
-  // BuildBaseCost: 4 tiers by difficulty
-  const diff = target.difficulty & 0xFF;
-  const distTiles = target.distToTank >> 8;
-
-  if (diff === 0) return u16(distTiles + 20);
-  if (diff === 1) return u16(distTiles + 50);
-  if (diff === 2) return u16(distTiles + 100);
-  return u16(distTiles + 200);     // diff 3 = hardest
+  // Carrying a captured pillbox → PLACE it at a friendly base before hunting more pills
+  // (doctrine: deploy captured pills to DEFEND refuel bases). The binary's distance/
+  // difficulty cost (20-200) always lost to GetPill (1-9), so captured pills were never
+  // deployed. Cost 1 beats GetPill (PlacePill is goal index 0, so it wins a cost-1 tie)
+  // yet still yields to emergency Refuel / close base-capture / tank-kill (cost 0).
+  // selectBaseToBuild already picks the nearest BUILDABLE ally base, so distance need not
+  // enter the goal cost.
+  return 1;
 }
 
 /**
@@ -769,6 +768,21 @@ export function chooseRefuelBase(a4: A4State, state: BrainState): BaseState | nu
   return best ?? fallback;
 }
 
+/** True if `base` has a buildable neighbour tile for a carried pillbox (engine rejects
+ *  pill/base/boat/deep-sea/forest/wall/shot-wall/water). Mirrors _findPillPlacementTile. */
+function baseHasBuildableNeighbor(a4: A4State, base: BaseState): boolean {
+  const bx = base.tileX & 0xFF, by = base.tileY & 0xFF;
+  const dirs: [number, number][] = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+  for (const [dx, dy] of dirs) {
+    const raw = a4.worldMap[((((by + dy) & 0xFF)) << 8) | ((bx + dx) & 0xFF)];
+    if (raw & 0x80) continue;
+    const t = raw & 0x0F;
+    if (t === 0 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
+    return true;
+  }
+  return false;
+}
+
 /**
  * BaseToBuild selector — find best base to build a pill at.
  * Simplified version of BaseToBuild (0x00bf60).
@@ -784,6 +798,10 @@ export function selectBaseToBuild(a4: A4State, state: BrainState): BaseState | n
 
     // Check if base needs a defensive pill (no ally pills nearby)
     if (base.allyPillMask !== 0) continue;
+
+    // Must have a buildable neighbour to actually plant the pill — otherwise PlacePill
+    // (now top priority while carrying) would lock the tank on an unplaceable base.
+    if (!baseHasBuildableNeighbor(a4, base)) continue;
 
     const distTiles = base.distToTank >> 8;
     const cost = u16(distTiles + base.difficulty * 20);

@@ -145,6 +145,17 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
     a4.steeringWord |= 0x02;    // BRAKE_HARD
   }
 
+  // ── PlacePill hold override ───────────────────────────────────────────────
+  // Same fix for PlacePill: while holding still to farm a tree or plant the carried pill,
+  // doCommonStuff's opportunistic forward bits cancel the brake (accelerating+braking =
+  // coast) so the tank drifts off its spot instead of holding. Strip the drive/accel bits
+  // and force the brake; turning + stationary fire are kept.
+  if (currentGoal === Goal.PLACE_PILL && a4.placePillHold) {
+    a4.steeringWord &= ~0x51;
+    a4.firingWord   &= ~0x01;
+    a4.steeringWord |= 0x02;
+  }
+
   // ── Step 14: SetSpeed (0x017810) ──────────────────────────────────────────
   // setSpeed stub (full impl Step 8)
 
