@@ -564,13 +564,27 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
     } else {
       // Within shooting range: stop dead and aim-shoot.
       // Do NOT call navigateToCoords here — it fights shoot()'s turn bits.
-      setSpeed(a4, 0);
+      // Pass current speed: setSpeed(0) WITHOUT it defaults current to 0, so the
+      // brake bit (desired < current-3) is never set and the tank coasts instead of
+      // stopping (the same "won't stop" bug as the refuel-on-base fix).
+      setSpeed(a4, 0, state.tank.speed & 0xFF);
       shoot(a4, target.x, target.y, state);
     }
     return;   // skip blacklisting while actively shooting
   }
 
-  // Base is passable — navigate onto it to trigger Orona's findSubject() capture.
+  // Base is passable (armour ≤ 9 / unowned). If we're already ON the base tile, STOP
+  // and HOLD so the engine's findSubject() (which runs each tick a tank shares the base
+  // cell) claims it. Continuously re-navigating to the tile CENTRE makes the tank
+  // oscillate across the tile boundary and never settle on the cell, so the capture
+  // never fires — the base then looks like it "reverts to its old colour" because the
+  // tank just slides off a tile it never actually captured. A dead stop = clean capture.
+  if (a4.tankTileX === (target.tileX & 0xFF) && a4.tankTileY === (target.tileY & 0xFF)) {
+    setSpeed(a4, 0, state.tank.speed & 0xFF);
+    return;
+  }
+
+  // Otherwise approach and drive onto it.
   navigateToCoords(a4, target.x, target.y, 0);
 
   // On route failure: clear the flag and apply a cooldown so the brain
@@ -619,28 +633,25 @@ export function goalGetMan(a4: A4State, state: BrainState): void {
     }
   }
 
-  // ── Dispatch state machine ────────────────────────────────────────────
+  // ── Navigate to the man's CURRENT position ────────────────────────────
+  // The builder MOVES: a deployed builder walks, and a killed one parachutes to a
+  // random spot and walks home. Navigating to a FROZEN saved target (the old
+  // dispatched-branch behaviour) goes stale — the tank drives to where the man WAS,
+  // arrives, and the landing fix stops it (spd 0, ctrl:idle) while the man is tiles
+  // away and route:ok (so the unreachable-abandonment never fires). It sits idle
+  // forever, ignoring nearby pills. Always chase the live position so it actually
+  // reaches the man, retrieves it, and frees the tank to resume GetPill.
+  navigateToCoords(a4, man.x, man.y, 0);
+
   if (!a4.getManDispatched) {
-    // Not yet dispatched: navigate to man position
-    navigateToCoords(a4, man.x, man.y, 0);
-
-    // Check dispatch conditions
-    const altX = state.tank.altX;
-    const altY = state.tank.altY;
-
-    // If close enough: dispatch man
     const dx = Math.abs((a4.tankTileX << 8) - man.x);
     const dy = Math.abs((a4.tankTileY << 8) - man.y);
-
     if (dx < 512 && dy < 512) {
       a4.getManDispatched = 1;
       a4.getManTargetX = man.x & 0xFFFF;
       a4.getManTargetY = man.y & 0xFFFF;
       a4.getManLastEventTick = a4.tickCounter;
     }
-  } else {
-    // Already dispatched: navigate to saved target
-    navigateToCoords(a4, a4.getManTargetX, a4.getManTargetY, 0);
   }
 
   // ── Unreachable-builder abandonment ───────────────────────────────────
@@ -979,12 +990,22 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
     return;
   }
 
-  // ── Original stop-and-fire approach (NO_STRAFE) ─────────────────────────
+  // ── Stop-and-fire approach (NO_STRAFE) ──────────────────────────────────
+  // Only HOLD (dead stop) when the shot is actually CLEAR. If the tank is at standoff
+  // distance but a barrier (forest, etc.) blocks the line to the pill, it CANNOT fire
+  // from here — holding just sits idle (ctrl:idle) while the pill grinds it down and it
+  // refuel-loops (observed live). When the shot is blocked, keep advancing toward the
+  // firing slot to clear the line of sight instead of stopping.
+  const hasLOS = _checkBarriers(a4, state.tank.x, state.tank.y, pillCx, pillCy) === 0;
+
   let apSpeed: number;
   if      (pillDistPh > 0x073C) apSpeed = 24;
   else if (pillDistPh > 0x0700) apSpeed = 16;
   else if (pillDistPh > 0x06E2) apSpeed = 8;
   else                           apSpeed = 0;
+
+  // Blocked shot at the standoff ring → advance to clear it rather than idling.
+  if (apSpeed === 0 && !hasLOS) apSpeed = 8;
 
   setSpeed(a4, apSpeed, state.tank.speed & 0xFF);
 
@@ -1014,13 +1035,19 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
 
   a4.shootPillDirection = dirToPill & 0xFF;
 
-  // Fire: when cover sits on the centre line, edge-aim around it (damage-free);
-  // otherwise the unchanged aggressive centre fire (preserves capture behaviour).
-  if (_checkBarriers(a4, state.tank.x, state.tank.y, pillCx, pillCy) > 0) {
-    _shootPillFromCover(a4, state, pill);
-  } else {
-    _shootPill(a4, state, pill, dirToPill & 0xFF, 0);
-  }
+  // Fire: ALWAYS centre-aim. Edge-aim (shootPillFromCover) is correct ONLY when grazing
+  // past MAINTAINED cover right next to the pill; the old branch used it whenever
+  // checkBarriers saw ANY barrier terrain on the centre line — which on a forested map is
+  // constant incidental forest, NOT cover — so the tank aimed at the pill's edge and
+  // missed. _shootPill self-gates on line-of-sight (fires at centre only when clear).
+  //
+  // DEAD STOP at the standoff ring: once stopped (apSpeed 0) fire STATIONARY (firingWord,
+  // no accelerate bit) so the shot doesn't set tank.accelerating and fight setSpeed's
+  // brake — otherwise accelerating+braking = zero net accel and the tank COASTS into the
+  // pillbox (the "won't come to a dead stop" creep). While still approaching (apSpeed > 0)
+  // forward-fire is fine — it SHOULD be moving in then.
+  const holdFire = apSpeed === 0 ? 1 : 0;
+  _shootPill(a4, state, pill, dirToPill & 0xFF, 0, holdFire);
   a4.pillApproachInProgress = 1;
 }
 

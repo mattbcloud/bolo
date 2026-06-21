@@ -538,9 +538,18 @@ export function navigateToCoords(
     const aligned = (angErrToTgt <= 1);
 
     if (a4.tankOnBoat) {
-      // On a boat: keep momentum to climb onto the shore when disembarking
-      // (fix 41). Precision landing isn't needed/possible on water.
-      setSpeed(a4, aligned ? 24 : 12, currentSpd);
+      // On a boat: keep FULL momentum to climb onto the shore. Disembarking requires
+      // engine speed >= 16 at the instant the tank crosses from water onto land
+      // (tank.ts moveStep: on a boat the tank only advances onto a non-water cell when
+      // speed >= 16; below that it stalls floating against the bank and never lands).
+      // So when the destination tile is LAND, command full speed REGARDLESS of
+      // alignment — the old `aligned ? 24 : 12` dropped to 12 while turning and stalled
+      // the disembark. Precision landing isn't possible on water, so no reason to creep.
+      const dTX = (targetX >> 8) & 0xFF, dTY = (targetY >> 8) & 0xFF;
+      const dRaw = a4.worldMap[((dTY & 0xFF) << 8) | (dTX & 0xFF)];
+      const destIsLand = !(dRaw & 0x80) && (dRaw & 0x0F) !== 1 && (dRaw & 0x0F) !== 9 &&
+                         (dRaw & 0x0F) !== 10 && a4.examineTerrainCostTable[dRaw] < 1000;
+      setSpeed(a4, (destIsLand || aligned) ? 24 : 12, currentSpd);
     } else if (aligned) {
       // CREEP on final approach. The old tiers (up to 24 at dist 128-256) were
       // far too fast: the tank would burst forward inside 1 tile, overshoot the

@@ -697,9 +697,31 @@ export function selectTankToKill(a4: A4State, state: BrainState): EnemyTankState
  *   - OR base.armour > 14 (0x0E) with lower urgency thresholds
  *   The base must have meaningful stock; cost scales with distance.
  */
+/** Effective pillbox fire range, world_pillbox.ts: shell 1792 + collision 127 = 1919
+ *  world units (center-to-center, ~7.5 tiles). */
+const PILL_FIRE_RANGE = 1919;
+
+/** True if this base sits within a HOSTILE live pillbox's firing range. A pill shoots
+ *  the tank iff it is active, armour > 0, and attackable (enemy/neutral — an ally pill
+ *  won't fire at us). Refueling on such a base means sitting still under its guns. */
+function baseUnderHostilePill(a4: A4State, base: BaseState): boolean {
+  for (const pill of a4.pills) {
+    if (!pill.active) continue;
+    if (pill.armour <= 0) continue;       // dead pill doesn't fire
+    if (!pill.attackable) continue;       // ally pill won't shoot us
+    if (bwDist(base.x, base.y, pill.x, pill.y) <= PILL_FIRE_RANGE) return true;
+  }
+  return false;
+}
+
 export function chooseRefuelBase(a4: A4State, state: BrainState): BaseState | null {
   let best: BaseState | null = null;
   let bestCost = 0xFFFF;
+  // Last-resort target: the best stocked base even if pill-covered. Only used when NO
+  // safe base exists, so a critically-low tank can still flee somewhere instead of
+  // freezing at armour 0 with no target.
+  let fallback: BaseState | null = null;
+  let fallbackCost = 0xFFFF;
 
   for (const base of a4.bases) {
     if (!base.isAlly) continue;
@@ -727,13 +749,24 @@ export function chooseRefuelBase(a4: A4State, state: BrainState): BaseState | nu
     const dangerPenalty = a4.dangerMap[idx] * 10;
     const cost = u16(distTiles + dangerPenalty);
 
+    // Track the best stocked base unconditionally as the deadlock fallback.
+    if (cost < fallbackCost) {
+      fallbackCost = cost;
+      fallback = base;
+    }
+
+    // RULE: never refuel at a base within a hostile pillbox's firing range — the tank
+    // would sit still on the cell and get shredded. Exclude it from the primary pick;
+    // it remains eligible only via `fallback` if no safe base exists.
+    if (baseUnderHostilePill(a4, base)) continue;
+
     if (cost < bestCost) {
       bestCost = cost;
       best = base;
     }
   }
 
-  return best;
+  return best ?? fallback;
 }
 
 /**

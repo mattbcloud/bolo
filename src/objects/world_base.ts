@@ -137,11 +137,19 @@ export class WorldBase extends BoloObject {
   }
 
   update(): void {
-    // Base resource regeneration (server authority only).
-    // All three resources regenerate independently in parallel so a depleted
-    // base is playable again within ~90 seconds (1 unit/sec × 90 max capacity).
-    // REGEN_INTERVAL: 50 ticks × 20 ms/tick = 1 unit per second per resource.
-    if (this.world.authority) {
+    // ALL base logic — resource regen, claiming (findSubject), and refuel transfer —
+    // mutates authoritative game state and must run ONLY on the server. The client
+    // receives team / owner / armour / refueling via serialization. Without this gate
+    // the client (authority=false) also ran findSubject() each tick and independently
+    // claimed the base, then got corrected by the next server sync → the base ownership
+    // rapidly FLICKERED between the claimer's colour and the real owner. (Regen was
+    // already authority-gated; the claim + transfer were not — that was the bug.)
+    if (!this.world.authority) return;
+
+    // Base resource regeneration. All three resources regenerate independently in
+    // parallel so a depleted base is playable again within ~90 seconds (1 unit/sec ×
+    // 90 max capacity). REGEN_INTERVAL: 50 ticks × 20 ms/tick = 1 unit per second.
+    {
       const REGEN_INTERVAL = 50;
       const MAX_ARMOUR = 90;
       const MAX_SHELLS = 90;

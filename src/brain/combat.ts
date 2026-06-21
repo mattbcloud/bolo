@@ -428,17 +428,25 @@ export function shootPill(
   pill: PillState,
   direction: number,
   skipCheck: number,
+  stationary = 0,
 ): number {
   const tank = state.tank;
 
   // Phase 1: Turn toward direction + armor gate
   const aligned = turnTowardsDir(a4, tank.facingDir, direction);
 
+  // STATIONARY mode: fire via the firingWord (sets tank.shooting but NOT
+  // tank.accelerating) so the tank can hold a DEAD STOP while firing. The default
+  // forward-fire path (steeringWord 0x40/0x10 → accelerating) fights setSpeed's brake:
+  // the engine reads accelerating+braking as ZERO net accel, so the tank COASTS onward
+  // into the pillbox instead of stopping (the same failure as the refuel "won't stop on
+  // base" bug). In stationary mode we also do NOT creep forward to clear a blocked shot.
+
   // Binary gate: myTank.byte[52] (shellCount / firingRange×2) must be ≥ 14.
   // shellCount = firingRange × 2; at max range (7) shellCount=14 → always passes.
   // Checking armor here was wrong — it incorrectly blocked firing when armor < 14.
   if ((tank.shellCount & 0xFF) < 14) {
-    a4.steeringWord |= 0x10;   // set forward bit (low-priority fire)
+    if (!stationary) a4.steeringWord |= 0x10;   // set forward bit (low-priority fire)
     return 0;
   }
 
@@ -449,10 +457,11 @@ export function shootPill(
     const pillX = ((pill.tileX & 0xFF) << 8) + 128;
     const pillY = ((pill.tileY & 0xFF) << 8) + 128;
     if (skipCheck !== 0 || checkBarriers(a4, tank.x, tank.y, pillX, pillY) === 0) {
-      a4.steeringWord |= 0x40;   // FORWARD_FIRE
+      if (stationary) a4.firingWord |= 0x40;   // fire in place (shoot, no accelerate)
+      else            a4.steeringWord |= 0x40;  // FORWARD_FIRE
       return 1;
     }
-    a4.steeringWord |= 0x10;     // no LOS: advance to clear the shot instead of wasting it
+    if (!stationary) a4.steeringWord |= 0x10;   // no LOS: advance to clear the shot
     return 0;
   }
 
@@ -485,7 +494,8 @@ export function shootPill(
 
     // Reached pill tile: shot will hit
     if (stx === pillTX && sty === pillTY) {
-      a4.steeringWord |= 0x40;   // FORWARD_FIRE
+      if (stationary) a4.firingWord |= 0x40;   // fire in place (shoot, no accelerate)
+      else            a4.steeringWord |= 0x40;  // FORWARD_FIRE
       return 1;
     }
 
