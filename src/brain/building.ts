@@ -687,6 +687,12 @@ export function placePillFinishUp(a4: A4State, state: BrainState): void {
 
   // Pill placed: loop back to choose next placement
   if (!tank.pillsCarried) {
+    // Record this as a self-placed pill so FixPill (repair-in-place) targets only
+    // pills we placed; teammates'/captured pills are reclaimed instead. Keyed by
+    // tile — a placed pill sits on its tile until collected or destroyed.
+    if (a4.placePillManDispatched) {
+      a4.selfPlacedPillTiles.add(((a4.placePillPlacementY & 0xFF) << 8) | (a4.placePillPlacementX & 0xFF));
+    }
     a4.placePillSubState = 2;
   }
 }

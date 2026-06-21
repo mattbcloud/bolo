@@ -869,6 +869,18 @@ export class A4State {
   /** FixPill: previous target index (index-based change detection) */
   fixPillPrevTargetIndex: number = -1;
 
+  /**
+   * Packed tiles ((tileY<<8)|tileX) of pillboxes THIS tank placed. The brain only
+   * sees pill ownership by TEAM (ownerByte = team), so it cannot otherwise tell a
+   * pill it placed from a teammate's. Populated when PlacePill finishes a drop;
+   * used to gate FixPill (repair-in-place) to self-placed pills only — non-self-placed
+   * damaged ally pills are RECLAIMED (shot to 0 + collected) instead of welded in place.
+   */
+  selfPlacedPillTiles: Set<number> = new Set();
+
+  /** Reclaim sub-mode: 1 once goalFixPill commits to picking up (not repairing) the target. */
+  reclaimInProgress = 0;
+
   /** A4[13909] byte — FixPill: "send pill target broadcast" flag */
   fixPillSendBroadcast = 0;
 
@@ -1342,6 +1354,18 @@ export class A4State {
   // In the original 68k code these were pointer arithmetic into heap blocks.
   // Here: bounds-checked array lookups.
   // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * True if this pill is one THIS tank placed (and is still a friendly pill).
+   * Tile-keyed against selfPlacedPillTiles; AND-ed with "currently an ally pill"
+   * (!attackable) so a tile whose pill was captured by the enemy, or collected
+   * away, does not falsely match. Repair-in-place (FixPill) is gated on this;
+   * non-self-placed damaged ally pills are reclaimed instead.
+   */
+  isSelfPlacedPill(pill: PillState): boolean {
+    if (pill.attackable) return false;   // enemy/neutral — never "ours to fix"
+    return this.selfPlacedPillTiles.has(((pill.tileY & 0xFF) << 8) | (pill.tileX & 0xFF));
+  }
 
   /**
    * GetPillFromXY: return pill at tile (x, y), or null.

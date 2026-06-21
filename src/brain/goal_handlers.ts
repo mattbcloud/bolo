@@ -330,6 +330,52 @@ const EXPLORE_TERRAIN_PENALTY: readonly number[] = [
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Reclaim a friendly pill the tank did NOT place: shoot it down to armour 0, then
+ * drive onto its cell so the engine collects it (world_pillbox.update: armour 0 +
+ * tank on cell → inTank). The carried pill is then re-deployed by PlacePill. A
+ * friendly pill never fires back (engine: a team pillbox targets only enemies), so
+ * the whole approach is damage-free. Never navigate ONTO a live pill (tankSpeed 0 →
+ * noRoute, the same trap the GetPill attack phase hit) — approach one tile short and
+ * fire from range until armour 0, then collect.
+ */
+function _reclaimPill(a4: A4State, state: BrainState, pill: PillState): void {
+  a4.reclaimInProgress = 1;
+  const TILE = 256;
+
+  // armour 0 → collect by driving onto the cell.
+  if (pill.armour === 0) {
+    navigateToCoords(a4, pill.x, pill.y, 0);
+    return;
+  }
+
+  const dist = pill.distToTank;
+  const dir = directionTo(state.tank.x, state.tank.y, pill.x, pill.y) & 0xFF;
+
+  // One tile short of the pill, toward the tank — a passable approach/fire slot
+  // (never the live pill's own tile).
+  const dx = state.tank.x - pill.x, dy = state.tank.y - pill.y;
+  const d = Math.sqrt(dx * dx + dy * dy) || 1;
+  const navX = Math.round(pill.x + (dx / d) * TILE) & 0xFFFF;
+  const navY = Math.round(pill.y + (dy / d) * TILE) & 0xFFFF;
+
+  // In range: stop (or creep) and shoot the pill down — damage-free (no return fire).
+  if (dist <= 0x07C0) {
+    let spd: number;
+    if      (dist > 0x073C) spd = 16;
+    else if (dist > 0x06E2) spd = 8;
+    else                    spd = 0;
+    setSpeed(a4, spd, state.tank.speed & 0xFF);
+    if (spd > 0) navigateToCoords(a4, navX, navY, 0);
+    a4.shootPillDirection = dir;
+    _shootPill(a4, state, pill, dir, 0);
+    return;
+  }
+
+  // Far: approach to one tile short of the pill.
+  navigateToCoords(a4, navX, navY, 0);
+}
+
+/**
  * FixPill — Repair a damaged ally pill.
  *
  * Verified from binary FixPill (0x00118e, 1312 bytes):
@@ -353,6 +399,22 @@ const EXPLORE_TERRAIN_PENALTY: readonly number[] = [
 export function goalFixPill(a4: A4State, state: BrainState): void {
   const pill = a4.pillToFixTarget;
   if (pill === null) return;
+
+  // ── RECLAIM branch ──────────────────────────────────────────────────────
+  // A damaged ally pill we did NOT place: don't weld it in place — pick it up and
+  // relocate/redeploy it. The brain only knows pill ownership by team, so "ours to
+  // repair" = isSelfPlacedPill (tile recorded when WE dropped it). Everything else
+  // that FixPill would target is reclaimed. Safe because a friendly pill never fires
+  // at us (engine: a team pillbox shoots only enemies), so shooting it down to 0 and
+  // driving onto its cell to collect costs no armour.
+  // Env-gated for clean A/B on one binary (RECLAIM=1 on; default off reproduces the
+  // exact baseline FixPill path for all ally pills). Flip to default-on once validated.
+  const RECLAIM = typeof process === 'undefined' || process.env.RECLAIM !== '0';
+  if (RECLAIM && !a4.isSelfPlacedPill(pill)) {
+    _reclaimPill(a4, state, pill);
+    return;
+  }
+  a4.reclaimInProgress = 0;
 
   // Target change detection
   if (pill.index !== a4.fixPillPrevTargetIndex) {
@@ -926,9 +988,28 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
 
   setSpeed(a4, apSpeed, state.tank.speed & 0xFF);
 
-  // Drive toward the pill when still moving (binary: GoTo(pill) within attack zone)
+  // Drive toward the firing slot when still moving (binary: GoTo within attack zone).
+  // ⚠️ Steer to the AP, NOT the pill centre. A LIVE pill has engine tankSpeed 0
+  // (world_map.ts getTankSpeed: pill.armour>0 → 0) — you genuinely cannot move onto
+  // it, so its tile is cost 1000 and A* returns null → `route:MISS noRoute:1`. The
+  // old `navigateToCoords(pill.x, pill.y)` stalled the tank at ~6 tiles, where it got
+  // ground down → refuel → re-charge → repeat (the refuel⇄GetPill oscillation loop,
+  // never capturing). The AP (a4.newGetPillAPX/Y) is the passable firing slot already
+  // chosen + validated in Phase 2; routing there always succeeds. Firing below is
+  // distance/barrier-gated and independent of the move target, so the tank keeps
+  // firing the whole approach. Scoped to the pill target — NOT the global NOROUTE_FIX
+  // (which rewired every approach and regressed captures ~40%). You never drive onto a
+  // live pill; you shoot it from the adjacent slot until armour 0, then Phase 4a lands.
   if (apSpeed > 0) {
-    navigateToCoords(a4, pill.x, pill.y, 0);
+    navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
+    // If even the AP is unreachable this tick, re-pick a firing slot from a
+    // different sector (the nav phase does the same) rather than silently stall.
+    if (a4.noLocalRouteFlag) {
+      a4.noLocalRouteFlag = 0;
+      const dirPillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY);
+      a4.chooseAPLastSector = Math.floor((dirPillToAP & 0xFF) * 40 / 256);
+      a4.newGetPillAPChosen = 0;
+    }
   }
 
   a4.shootPillDirection = dirToPill & 0xFF;
