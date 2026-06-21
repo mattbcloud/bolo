@@ -105,6 +105,25 @@ export class WorldBase extends BoloObject {
   }
 
   /**
+   * True if the base's owning team currently has at least one live tank in the game.
+   *
+   * When FALSE the base is effectively abandoned (its team disconnected / has no members):
+   * per the Bolo rule the armour gate is lifted so ANY tank can drive across and claim it,
+   * without first shooting it down. Relying on the `owner` ref being nulled on disconnect was
+   * fragile — a base that kept a stale owner ref stayed gated forever (one base un-claimable
+   * while siblings claimed fine). Checking live team membership directly is robust to that.
+   */
+  ownerTeamHasMembers(): boolean {
+    const t = this._team;
+    if (t == null || t === 255) return false;
+    const tanks = this.world?.tanks ?? this.map?.world?.tanks ?? [];
+    for (const tank of tanks) {
+      if (tank.armour !== 255 && tank.team === t) return true;
+    }
+    return false;
+  }
+
+  /**
    * Helper for common stuff to do when the owner changes.
    */
   updateOwner(): void {

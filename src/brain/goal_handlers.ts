@@ -896,10 +896,16 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
     // ── Navigation phase: approach the AP ──────────────────────────────────
     navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
 
-    // Fire while approaching if already in loose range (≥ 8 tiles but aimed)
+    // Fire while approaching ONLY if the hull is ALREADY aimed at the pill (≤1 dir unit, so
+    // _shootPill's turnTowardsDir issues no turn). Otherwise navigation SOLELY owns the hull:
+    // letting the shot's aim hijack the turn steers the tank straight at the pill — through any
+    // obstacle on the direct line (e.g. ANOTHER pill, impassable) — instead of taking the A*
+    // detour, so it drives into the obstacle and freezes at spd=0 (live nav-phase GetPill stall).
     if (pillDistPh <= 2048) {
-      const dirNav = directionTo(state.tank.x, state.tank.y, pill.x, pill.y);
-      _shootPill(a4, state, pill, dirNav & 0xFF, 0);
+      const dirNav = directionTo(state.tank.x, state.tank.y, pill.x, pill.y) & 0xFF;
+      const facing = state.tank.facingDir & 0xFF;
+      const facingErr = Math.min((dirNav - facing + 256) & 0xFF, (facing - dirNav + 256) & 0xFF);
+      if (facingErr <= 1) _shootPill(a4, state, pill, dirNav, 0);
     }
 
     // AP navigation failure: replan from a different sector, never give up.
@@ -1064,10 +1070,27 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   // firing the whole approach. Scoped to the pill target — NOT the global NOROUTE_FIX
   // (which rewired every approach and regressed captures ~40%). You never drive onto a
   // live pill; you shoot it from the adjacent slot until armour 0, then Phase 4a lands.
-  if (apSpeed > 0) {
+  // CRITICAL: nav (steer toward AP) and combat (aim at the pill) must NEVER both issue a turn
+  // in the same tick — they target DIFFERENT bearings (the AP is a firing slot off to the side
+  // of the pill), so both turn bits get set (CCW+CW) and the engine cancels the turn → the hull
+  // can't align → the tank freezes at the standoff (live "ctrl:ACC|CCW|CW|FWD spd=0" deadlock).
+  // Split strictly on line-of-sight:
+  if (hasLOS) {
+    // Clear shot → aim at the pill and fire; _shootPill turns the hull to the pill and creeps
+    // forward (0x10) when not yet aligned/in range, then fires. Do NOT navigate (no AP steer)
+    // so combat solely owns the hull. The pill is in range here, so we don't need the AP route.
+    a4.shootPillDirection = dirToPill & 0xFF;
+    // DEAD STOP at the standoff ring: once stopped (apSpeed 0) fire STATIONARY (firingWord, no
+    // accelerate bit) so the shot doesn't fight setSpeed's brake (accel+brake = coast into the
+    // pill). While still approaching (apSpeed > 0) forward-fire/creep is fine.
+    const holdFire = apSpeed === 0 ? 1 : 0;
+    _shootPill(a4, state, pill, dirToPill & 0xFF, 0, holdFire);
+  } else if (apSpeed > 0) {
+    // Blocked shot → reposition to the firing slot (AP) to clear the line; nav SOLELY owns the
+    // hull (no combat aim this tick). Steer to the AP, NOT the pill centre: a live pill is
+    // engine-impassable (getTankSpeed 0) so routing onto it returns null → stall.
     navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
-    // If even the AP is unreachable this tick, re-pick a firing slot from a
-    // different sector (the nav phase does the same) rather than silently stall.
+    // If even the AP is unreachable this tick, re-pick a firing slot from a different sector.
     if (a4.noLocalRouteFlag) {
       a4.noLocalRouteFlag = 0;
       const dirPillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY);
@@ -1075,22 +1098,6 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
       a4.newGetPillAPChosen = 0;
     }
   }
-
-  a4.shootPillDirection = dirToPill & 0xFF;
-
-  // Fire: ALWAYS centre-aim. Edge-aim (shootPillFromCover) is correct ONLY when grazing
-  // past MAINTAINED cover right next to the pill; the old branch used it whenever
-  // checkBarriers saw ANY barrier terrain on the centre line — which on a forested map is
-  // constant incidental forest, NOT cover — so the tank aimed at the pill's edge and
-  // missed. _shootPill self-gates on line-of-sight (fires at centre only when clear).
-  //
-  // DEAD STOP at the standoff ring: once stopped (apSpeed 0) fire STATIONARY (firingWord,
-  // no accelerate bit) so the shot doesn't set tank.accelerating and fight setSpeed's
-  // brake — otherwise accelerating+braking = zero net accel and the tank COASTS into the
-  // pillbox (the "won't come to a dead stop" creep). While still approaching (apSpeed > 0)
-  // forward-fire is fine — it SHOULD be moving in then.
-  const holdFire = apSpeed === 0 ? 1 : 0;
-  _shootPill(a4, state, pill, dirToPill & 0xFF, 0, holdFire);
   a4.pillApproachInProgress = 1;
 }
 
@@ -1429,16 +1436,29 @@ export function goalTourBases(a4: A4State, state: BrainState): void {
   }
 
   if (best === null) {
-    // Cycle complete: reset candidate flags from reset table
+    // Cycle complete (or first run): re-mark every ALLY base as a candidate so the patrol
+    // repeats. The reset TABLE was never populated (all zero), so the old code reset every
+    // flag to 0 → all bases stayed "visited" → TourBases idled forever (the live freeze:
+    // it's the endgame fallback when every combat goal is ∞, so a broken tour = dead-stop).
+    // candidateFlags also start all-zero, so on the very first call best is null and this
+    // is what actually seeds the tour.
     for (const base of a4.bases) {
       const idx = base.index & 0x0F;
-      a4.tourBasesCandidateFlags[idx] = a4.tourBasesResetTable[idx];
+      a4.tourBasesCandidateFlags[idx] = base.isAlly ? 1 : 0;
     }
     return;
   }
 
   // Navigate to nearest unvisited base
   navigateToCoords(a4, best.x, best.y, 0);
+
+  // Unreachable base → skip it (mark visited) so the tour moves on instead of idling
+  // forever at route:MISS on one base.
+  if (a4.noLocalRouteFlag) {
+    a4.noLocalRouteFlag = 0;
+    a4.tourBasesCandidateFlags[best.index & 0x0F] = 0;
+    return;
+  }
 
   // Check if arrived
   if (a4.tankTileX === best.tileX && a4.tankTileY === best.tileY) {

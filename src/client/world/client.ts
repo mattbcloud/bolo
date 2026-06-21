@@ -19,7 +19,7 @@ import BoloClientWorldMixin, { IBoloClientWorldMixin } from './mixin';
 // Brain imports
 import { brainOpen } from '../../brain/brain_init';
 import { aIndy_Think } from '../../brain/aindy_think';
-import { buildBrainState, applyControls } from '../../brain/aindy_interface';
+import { buildBrainState, applyControls, resetStaticTerrainCache } from '../../brain/aindy_interface';
 import { A4State } from '../../brain/a4_state';
 
 // Visual effects
@@ -242,8 +242,10 @@ export class BoloClientWorld extends ClientWorld {
 
   // Brain HUD overlay element
   private _brainIndicator: HTMLElement | null = null;
-  private _builderQueueDispatched: boolean = false;
+  private _lastBuilderOrderKey: string = '';
+  private _lastBuilderOrderTick: number = -999;
   private _brainWasIdle: boolean = false;
+  private _lastOnWaterTick: number = -999;
 
   // Respawn detection
   private _brainPrevArmour: number = 40;
@@ -2037,6 +2039,16 @@ export class BoloClientWorld extends ClientWorld {
    * server updates.
    */
   mapChanged(cell: any, oldType: string, hadMine: boolean, oldLife: number): void {
+    // Invalidate the brain's cached static-terrain map on ANY terrain change — local
+    // builds AND server-driven changes (forest harvested→grass, walls built/destroyed,
+    // craters). cell.setType() fires this for every change (incl. MAPCHANGE_MESSAGE and
+    // the reconciliation restore below), so resetting here keeps the brain's worldMap in
+    // sync. Without this, a harvested-forest tile stays `forest` in the brain's view, so
+    // it dispatches the builder to harvest a treeless tile → the order is rejected, the
+    // builder never leaves, trees never accrue, and PlacePill/GetPill freeze forever.
+    // NOTE: must run BEFORE the processingServerMessages guard — server changes (the
+    // common case) arrive with that flag set, and they are precisely what we must catch.
+    resetStaticTerrainCache();
     if (this.processingServerMessages) return;
     if (this.mapChanges[cell.idx] == null) {
       cell._net_oldType = oldType;
@@ -2203,19 +2215,49 @@ export class BoloClientWorld extends ClientWorld {
     // (reference may be unresolved on the first few ticks).
     const builderObj = this.player?.builder?.$ ?? null;
     if (builderObj) {
-      if (controls.builderAction) {
-        if (builderObj.order === builderObj.states.inTank && !this._builderQueueDispatched) {
-          const { action, trees, tileX, tileY } = controls.builderAction;
-          const cell = this.map?.cellAtTile(tileX, tileY);
-          if (cell) {
-            this.buildOrder(action, trees, cell);
-            this._builderQueueDispatched = true;
+      const ba = controls.builderAction;
+      // Never deploy the builder while the tank is on a boat OR sitting on a water cell
+      // (deep sea / river): the engine's performOrder (builder.ts:107) skips its passability
+      // check when onBoat, so it sends the builder onto open water as the boat drives off —
+      // stranding it (a ~2500-tick parachute recovery). The builder can only cross water while
+      // the TANK is onBoat (builder.ts:214); the instant the tank disembarks it loses that, so
+      // a deploy fired DURING the sea→land transition (onBoat just flipped but the tank is
+      // still climbing off the shoreline) drops the builder at/over water where it's instantly
+      // stuck — the live "dispatches as soon as it comes ashore, builder trapped in water" bug.
+      // Guard: not on water now, AND off water for a short SETTLE so the tank is fully ashore.
+      const tankCell = this.player?.cell;
+      const onWater = !!this.player?.onBoat || !!tankCell?.isType?.(' ', '^');
+      if (onWater) this._lastOnWaterTick = this.brainTickCount;
+      const DISEMBARK_SETTLE = 15;   // ~0.3s after coming ashore before the builder may deploy
+      const settledAshore = (this.brainTickCount - this._lastOnWaterTick) >= DISEMBARK_SETTLE;
+      if (ba && builderObj.order === builderObj.states.inTank && !onWater && settledAshore) {
+        const cell = this.map?.cellAtTile(ba.tileX, ba.tileY);
+        if (ba.action === 'forest' && cell && !cell.isType('#')) {
+          // Defense at the authoritative-data boundary: never send a harvest to a tile that
+          // isn't live forest. The builder would walk there, harvest nothing (builder.ts:288),
+          // and return empty — wasting the trip and stalling PlacePill. A mismatch means the
+          // brain's cached terrain is stale for this tile, so drop the cache; next tick the
+          // brain rebuilds worldMap from live and re-picks a real forest.
+          resetStaticTerrainCache();
+        } else if (cell) {
+          const key = `${ba.action},${ba.tileX},${ba.tileY}`;
+          // Re-dispatch when the target (action+tile) changes, OR when a prior identical order
+          // never moved the builder (still in-tank ~0.5s later = rejected/no-op). This replaces
+          // a sticky boolean that deadlocked: once an order failed to deploy the builder, the
+          // old guard stayed set forever (order stuck in-tank → never reset) and no further
+          // builder order was ever sent → PlacePill/cover froze permanently.
+          const stale = (this.brainTickCount - this._lastBuilderOrderTick) > 25;
+          if (key !== this._lastBuilderOrderKey || stale) {
+            this.buildOrder(ba.action, ba.trees, cell);
+            this._lastBuilderOrderKey = key;
+            this._lastBuilderOrderTick = this.brainTickCount;
           }
         }
       }
-      // Reset guard once builder leaves the tank.
+      // Builder left the tank → the order took effect; clear so the SAME tile can be
+      // re-targeted after the builder returns.
       if (builderObj.order !== builderObj.states.inTank) {
-        this._builderQueueDispatched = false;
+        this._lastBuilderOrderKey = '';
       }
     }
 
@@ -2238,7 +2280,12 @@ export class BoloClientWorld extends ClientWorld {
       // Show goal-specific target and current navigation destination
       const goalIdx = best.goalIndex;
       let goalTgtStr = 'none';
-      if (goalIdx === 5) { // GetPill
+      if (goalIdx === 0) { // PlacePill
+        const b = a4.baseToBuildTarget;
+        const pa = a4.pendingBuilderAction;
+        const bStr = b ? `base[${b.tileX},${b.tileY}]d=${Math.round(Math.hypot(b.tileX - a4.tankTileX, b.tileY - a4.tankTileY))}tx` : 'base[null]';
+        goalTgtStr = `${bStr} trees=${state.tank.resourceCount}/1 carry=${state.tank.pillsCarried} builderIn=${state.tank.builderInTank} boat=${state.tank.onBoat} pend=${pa ? pa.action : 'none'} tank[${a4.tankTileX},${a4.tankTileY}]`;
+      } else if (goalIdx === 5) { // GetPill
         const p = a4.pillToGetTarget;
         const apX = a4.navCacheDestTileX, apY = a4.navCacheDestTileY;
         const pdist = p ? Math.round(Math.hypot(p.tileX - a4.tankTileX, p.tileY - a4.tankTileY)) : 0;

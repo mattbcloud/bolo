@@ -718,9 +718,24 @@ export function chooseAttackPosition(
     a4.newGetPillAPChosen = 1;
     a4.newGetPillApproachModeA = 1;  // A4[13480] = approach in progress
   } else {
-    // Fallback: approach directly
-    a4.newGetPillAPX     = pill.x;
-    a4.newGetPillAPY     = pill.y;
+    // Fallback: no scored firing slot found. Do NOT target the pill CENTRE — a live pill
+    // is impassable (world_map getTankSpeed 0), so navigating there stalls (A* can't enter;
+    // the tank freezes adjacent). Instead pick the PASSABLE tile adjacent to the pill that
+    // is nearest the tank, so the move target is always reachable and the tank advances to
+    // a point-blank firing position rather than deadlocking on the unenterable centre.
+    const pTileX = pill.tileX & 0xFF, pTileY = pill.tileY & 0xFF;
+    let bx = pTileX, by = pTileY, bestD = Infinity, ok = false;
+    for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]] as const) {
+      const nx = (pTileX + dx) & 0xFF, ny = (pTileY + dy) & 0xFF;
+      const raw = a4.worldMap[((ny & 0xFF) << 8) | (nx & 0xFF)];
+      const terr = raw & 0x0F;
+      if (terr === 0 || (raw & 0x80) || (a4.examineTerrainCostTable[terr] ?? 1000) >= 1000) continue; // wall/water/impassable
+      const candX = (nx << 8) + 128, candY = (ny << 8) + 128;
+      const d = computeDistanceBetween(state.tank.x, state.tank.y, candX, candY);
+      if (d < bestD) { bestD = d; bx = nx; by = ny; ok = true; }
+    }
+    a4.newGetPillAPX      = ok ? (bx << 8) + 128 : pill.x;
+    a4.newGetPillAPY      = ok ? (by << 8) + 128 : pill.y;
     a4.newGetPillAPChosen = 1;
   }
 }
