@@ -263,17 +263,26 @@ export function evaluateFullLoop(
     const a4 = enableBrain(world);
     placeTank(world, startTile[0], startTile[1], false);
     const t = world.player, myTeam = t.team;
-    const owned = new Set<string>();
+    // Count DISTINCT pills the tank captures, keyed by each pill's STABLE array index.
+    // A captured pill reads team === our team (engine sets pill.team = owner.team on
+    // pickup; a carried pill also has owner === our tank). The OLD counter keyed by
+    // position (`${p.cell.x},${p.cell.y}` else `${p.x},${p.y}`) — but a captured pill
+    // goes inTank with x/y/cell nulled, so every carried pill collapsed to the single
+    // key "null,null" and multi-captures were UNDER-COUNTED; its `p.owner === myTeam`
+    // test also compared a tank ref to a team number (never true). Seed `owned` with
+    // any pills already ours at spawn so only NEW captures count.
+    const owned = new Set<number>();
+    const pillIsMine = (p: any) => p && (p.team === myTeam || p.owner?.$ === t || p.owner === t);
+    const pills0 = world.map.pills ?? [];
+    for (let pi = 0; pi < pills0.length; pi++) if (pillIsMine(pills0[pi])) owned.add(pi);
     let caps = 0, dy = 0, prevArmour = t.armour;
     for (let i = 0; i < ticks; i++) {
       world.tick();
       if (t.armour === 255 && prevArmour !== 255) dy++;
       prevArmour = t.armour;
-      for (const p of (world.map.pills ?? [])) {
-        if (p.owner === myTeam || p.team === myTeam) {
-          const key = p.cell ? `${p.cell.x},${p.cell.y}` : `${p.x},${p.y}`;
-          if (!owned.has(key)) { owned.add(key); caps++; }
-        }
+      const pills = world.map.pills ?? [];
+      for (let pi = 0; pi < pills.length; pi++) {
+        if (pillIsMine(pills[pi]) && !owned.has(pi)) { owned.add(pi); caps++; }
       }
     }
     captures.push(caps); deaths.push(dy);
