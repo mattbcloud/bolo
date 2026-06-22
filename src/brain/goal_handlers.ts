@@ -401,16 +401,27 @@ function _reclaimPill(a4: A4State, state: BrainState, pill: PillState): void {
   const navX = Math.round(pill.x + (dx / d) * TILE) & 0xFFFF;
   const navY = Math.round(pill.y + (dy / d) * TILE) & 0xFFFF;
 
-  // In range: stop (or creep) and shoot the pill down — damage-free (no return fire).
+  // In range: shoot the pill down — damage-free (no return fire). Mirror the GetPill attack
+  // phase: nav (advance to clear a blocked line) and combat (aim at the pill) must NEVER both
+  // steer in the same tick, and a stopped tank must fire STATIONARY so the shot's "advance"
+  // forward bit doesn't fight setSpeed's brake (FWD + brake = coast = frozen at spd=0 while
+  // never firing → reclaim never completes, the live FixPill freeze). Split on line-of-sight.
   if (dist <= 0x07C0) {
+    const pillCx = ((pill.tileX & 0xFF) << 8) + 128;
+    const pillCy = ((pill.tileY & 0xFF) << 8) + 128;
+    const hasLOS = _checkBarriers(a4, state.tank.x, state.tank.y, pillCx, pillCy) === 0;
     let spd: number;
     if      (dist > 0x073C) spd = 16;
     else if (dist > 0x06E2) spd = 8;
     else                    spd = 0;
+    if (spd === 0 && !hasLOS) spd = 8;   // blocked at the standoff → advance to clear the line
     setSpeed(a4, spd, state.tank.speed & 0xFF);
-    if (spd > 0) navigateToCoords(a4, navX, navY, 0);
-    a4.shootPillDirection = dir;
-    _shootPill(a4, state, pill, dir, 0);
+    if (hasLOS) {
+      a4.shootPillDirection = dir;
+      _shootPill(a4, state, pill, dir, 0, spd === 0 ? 1 : 0);   // stationary fire when stopped
+    } else if (spd > 0) {
+      navigateToCoords(a4, navX, navY, 0);
+    }
     return;
   }
 
