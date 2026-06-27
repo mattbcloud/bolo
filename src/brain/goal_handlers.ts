@@ -596,6 +596,32 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
   const target = a4.baseToGetTarget;
   if (target === null) return;
 
+  // On a boat: don't stop on the water to shoot the base — get ashore first. Navigate to a
+  // passable LAND tile adjacent to the base (a landing point), NOT the base centre: an
+  // armoured / owner-active base centre is impassable (speed-0), and in water mode A* can't
+  // route to it → noRoute → idle freeze at the water's edge. An adjacent land tile is
+  // routable boat→shore and lets the tank disembark (full momentum); once ashore (onBoat
+  // clears) the normal approach/shoot below runs. Pick the land neighbour nearest the tank
+  // so it climbs out on the near bank.
+  if (state.tank.onBoat) {
+    const bx = target.tileX & 0xFF, by = target.tileY & 0xFF;
+    const dirs = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+    let bestX = -1, bestY = -1, bestD = 1e9;
+    for (const [dx, dy] of dirs) {
+      const nx = (bx + dx) & 0xFF, ny = (by + dy) & 0xFF;
+      const raw = a4.worldMap[((ny & 0xFF) << 8) | (nx & 0xFF)];
+      const terr = raw & 0x0F;
+      const isLand = !(raw & 0x80) && terr !== 1 && terr !== 9 && terr !== 10 &&
+                     a4.examineTerrainCostTable[raw] < 1000;
+      if (!isLand) continue;
+      const d = Math.abs(nx - (a4.tankTileX & 0xFF)) + Math.abs(ny - (a4.tankTileY & 0xFF));
+      if (d < bestD) { bestD = d; bestX = nx; bestY = ny; }
+    }
+    if (bestX >= 0) navigateToCoords(a4, (bestX << 8) + 128, (bestY << 8) + 128, 0);
+    else            navigateToCoords(a4, target.x, target.y, 0);  // no land neighbour — best effort
+    return;
+  }
+
   // Change detection: record current target for message coordination.
   if (target.index !== a4.getBaseChangeDetectionIndex) {
     a4.getBaseChangeDetectionIndex = target.index;
@@ -819,6 +845,17 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
         return;
       }
     }
+  }
+
+  // On a boat: get ashore before engaging. Navigate to the AP (a passable land firing
+  // slot, chosen above) — NOT the pill/base centre, which is impassable (speed-0) and
+  // makes A* return noRoute → idle freeze. Routing to the AP carries the tank to shore at
+  // full disembark momentum; combat (this fn's attack/stationary-fire phases below AND
+  // doCommonStuff) is suppressed while afloat, so it won't fire from the boat. Once landed
+  // (onBoat clears) the normal capture/attack phases run.
+  if (state.tank.onBoat) {
+    navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
+    return;
   }
 
   // Phase 4a: If pill armour is 0, drive onto it.

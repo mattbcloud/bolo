@@ -834,6 +834,15 @@ export function doCommonStuff(
 ): void {
   const tank = state.tank;
 
+  // ── On a boat: get ashore FIRST, don't fight from the water ───────────
+  // While afloat the tank's priority is reaching land. Opportunistic combat here
+  // (auto-fire, shoot-enemy-tank, shoot-base/pill-in-path, mine drops) issues
+  // firing/advance/retreat bits and — worse — the GetBase/GetPill attack phases
+  // dead-stop to fire, which both attacks from the boat AND drops the speed the
+  // engine needs (>=16) to climb onto the shore, stranding the tank against the
+  // bank. Suppress all of it on a boat; navigation owns the hull until it lands.
+  if (tank.onBoat) return;
+
   // ── Phase 1: Auto-fire at short range ────────────────────────────────
   // Verified from assembly 0x008222: when shellCount < 14 AND not shotAtMan → fire.
   if ((tank.shellCount & 0xFF) < 14) {

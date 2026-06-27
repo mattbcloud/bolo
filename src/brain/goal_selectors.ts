@@ -429,6 +429,18 @@ export function getBaseGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.baseToGetTarget;
   if (target === null) return 0xFFFF;
 
+  // ── Out-of-ammo yield ──────────────────────────────────────────────────────
+  // An armoured / owner-active base (worldMap blocked bit 0x40, same gate goalGetBase
+  // uses) can only be captured by SHOOTING its armour down to 0 first. With zero shells
+  // the tank can't damage it at all, so locking onto it (cost 0 below) deadlocks: it sits
+  // on the base firing nothing forever instead of leaving to rearm. Yield here so Refuel
+  // (made a cost-0 emergency when shells===0) wins and the tank goes to restock ammo,
+  // then comes back and finishes the capture. A non-blocked base (armour ≤9 / unowned) is
+  // claimed by driving on — no shells needed — so it keeps normal priority.
+  const tileIdx = ((target.tileY & 0xFF) << 8) | (target.tileX & 0xFF);
+  const needsShelling = (a4.worldMap[tileIdx] & 0x40) !== 0;
+  if (needsShelling && (state.tank.shells & 0xFF) === 0) return 0xFFFF;
+
   // ── Proximity lock-in ─────────────────────────────────────────────────────
   // Within 6 tiles of target: finish what we started — highest priority.
   // Exception: critically low armor (≤ 10) lets emergency refuel override.
@@ -589,6 +601,14 @@ export function refuelGoalCost(a4: A4State, state: BrainState): number {
     const baseCanHelp = (baseArmour > 0 && tank.armor < 40) || (baseShells > 0 && tank.shells < 40);
     if (atBase && baseCanHelp) return 0;   // stay and top up to FULL before leaving
   }
+
+  // Emergency rearm: a tank with ZERO shells can't shoot down an armoured base or grind a
+  // pill — every combat goal is stuck (it would otherwise idle on-target firing nothing,
+  // e.g. parked on an armoured enemy base it can't damage). Treat empty shells like the
+  // armour<16 emergency below and break off to rearm at cost 0 (strictly beats GetPill's
+  // floor of 1 and any positive combat cost), provided a refuel base is reachable. Clears
+  // the instant shells > 0, so the tank re-engages as soon as it has ammo.
+  if ((tank.shells & 0xFF) === 0 && a4.refuelBaseTarget !== null) return 0;
 
   // Binary threshold (0x0079f8): armor >= 30 AND shells >= 7 → no refuel needed.
   // shells is the raw 0-40 count; 7 shells = ~17% of max capacity.
