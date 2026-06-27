@@ -9,6 +9,9 @@ export declare class Tank extends BoloObject {
     team: number | null;
     hidden: boolean;
     speed: number;
+    effectiveSpeed: number;
+    _prevX: number;
+    _prevY: number;
     slideTicks: number;
     slideDirection: number;
     accelerating: boolean;

@@ -57,11 +57,11 @@ export class WorldMapCell extends MapCell {
         // Check for a pillbox.
         if (this.pill?.armour > 0)
             return 0;
-        // Check for an enemy base.
-        if (this.base?.owner) {
-            if (!this.base.owner.$.isAlly(tank) && this.base.armour > 9) {
-                return 0;
-            }
+        // Enemy armoured base blocks — but ONLY while its team still has live members. An
+        // abandoned base (owning team disconnected/empty) is claimable by driving across, so its
+        // gate lifts (otherwise a base with a lingering owner ref stays un-claimable forever).
+        if (this.base && this.base.armour > 9 && this.base.team !== tank.team && this.base.ownerTeamHasMembers()) {
+            return 0;
         }
         // Check if we're on a boat.
         if (tank.onBoat && this.isType('^', ' '))
@@ -73,11 +73,9 @@ export class WorldMapCell extends MapCell {
         // Check for a pillbox.
         if (this.pill?.armour > 0)
             return 0.0;
-        // Check for an enemy base.
-        if (this.base?.owner) {
-            if (!this.base.owner.$.isAlly(tank) && this.base.armour > 9) {
-                return 0.0;
-            }
+        // Enemy armoured base blocks — only while its team has live members (see getTankSpeed).
+        if (this.base && this.base.armour > 9 && this.base.team !== tank.team && this.base.ownerTeamHasMembers()) {
+            return 0.0;
         }
         // Check if we're on a boat.
         if (tank.onBoat && this.isType('^', ' '))
@@ -90,11 +88,9 @@ export class WorldMapCell extends MapCell {
         // Check for a pillbox.
         if (this.pill?.armour > 0)
             return 0;
-        // Check for an enemy base.
-        if (this.base?.owner) {
-            if (!this.base.owner.$.isAlly(tank) && this.base.armour > 9) {
-                return 0;
-            }
+        // Enemy armoured base blocks — only while its team has live members (see getTankSpeed).
+        if (this.base && this.base.armour > 9 && this.base.team !== tank.team && this.base.ownerTeamHasMembers()) {
+            return 0;
         }
         // Take the land speed.
         return this.type.manSpeed;

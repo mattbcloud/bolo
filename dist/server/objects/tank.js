@@ -23,6 +23,9 @@ export class Tank extends BoloObject {
         this.hidden = false; // True when surrounded by forest on all 4 sides
         // Movement
         this.speed = 0.0;
+        this.effectiveSpeed = 0.0;
+        this._prevX = 0;
+        this._prevY = 0;
         this.slideTicks = 0;
         this.slideDirection = 0;
         this.accelerating = false;
@@ -292,6 +295,14 @@ export class Tank extends BoloObject {
         this.accelerate();
         this.fixPosition();
         this.move();
+        // Track actual displacement for pillbox aim-leading.
+        // If the tank has speed but isn't actually moving (stuck against terrain),
+        // effectiveSpeed = 0 so pillbox shots aim directly instead of leading.
+        const dx = (this.x ?? 0) - this._prevX;
+        const dy = (this.y ?? 0) - this._prevY;
+        this.effectiveSpeed = sqrt(dx * dx + dy * dy);
+        this._prevX = this.x ?? 0;
+        this._prevY = this.y ?? 0;
         // Check hidden status every frame (forest could be destroyed)
         this.updateHiddenStatus();
     }

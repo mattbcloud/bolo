@@ -224,6 +224,9 @@ export class BoloServerWorld extends ServerWorld {
     onMessage(ws, message) {
         // Convert Buffer to string if needed
         const messageStr = Buffer.isBuffer(message) ? message.toString('utf8') : message;
+        // Any inbound message proves the client is alive — reset its silence counter so the
+        // stale-client reaper (see sendPackets) never culls an active player.
+        ws.heartbeatTimer = 0;
         if (messageStr === '') {
             ws.heartbeatTimer = 0;
         }
@@ -412,6 +415,20 @@ export class BoloServerWorld extends ServerWorld {
      * that, non-critical updates may be dropped, if the client's hearbeats are interrupted.
      */
     sendPackets() {
+        // ── Stale-client reaper ────────────────────────────────────────────────
+        // heartbeatTimer counts ticks since a client's last message; live clients ping every 10
+        // ticks (client.ts), so a timer past REAP_TICKS means the socket dropped uncleanly (e.g. a
+        // browser refresh that never fired a `close` event). Without this, that client's tank
+        // lingers in this.world.tanks as a GHOST — phantom tanks of stale teams re-claim bases
+        // every tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
+        // future unclean drop self-cleans. Iterate a copy because onEnd splices this.clients.
+        const REAP_TICKS = 250; // ~10s at 40ms/tick = 25 missed heartbeats — unambiguously gone
+        for (const client of [...this.clients]) {
+            if (client.tank && client.heartbeatTimer > REAP_TICKS) {
+                console.log(`[REAP] Stale client (tank idx=${client.tank.idx}, silent ${client.heartbeatTimer} ticks) — removing ghost tank.`);
+                this.onEnd(client, 4000, 'heartbeat timeout');
+            }
+        }
         // Check if any clients need initial sync
         const newClients = this.clients.filter(c => c.needsInitialSync);
         const hasNewClients = newClients.length > 0;
@@ -479,6 +496,18 @@ export class BoloServerWorld extends ServerWorld {
                 // Send welcome packet
                 const welcomePacket = Buffer.from(pack('BH', net.WELCOME_MESSAGE, client.tank.idx)).toString('base64');
                 client.send(welcomePacket);
+                // Re-send EVERY current tank's nick now that this client holds the full object
+                // snapshot (newClientPacket above). The onConnect dump only covered tanks that
+                // existed at connect time, and the per-join nick broadcast skips clients that aren't
+                // yet `synchronized` — so a tank that joined while THIS client was syncing would
+                // otherwise never get a name here (its label never appears). Dumping the full list at
+                // the sync boundary closes that race for good; every tank object already exists, so
+                // the client applies each nick immediately (no buffering needed).
+                const nickMessages = this.tanks
+                    .filter((t) => t.name)
+                    .map((t) => ({ command: 'nick', idx: t.idx, nick: t.name }));
+                if (nickMessages.length)
+                    client.send(JSON.stringify(nickMessages));
                 // Mark as synchronized
                 client.synchronized = true;
                 client.needsInitialSync = false;
@@ -501,6 +530,7 @@ export class BoloServerWorld extends ServerWorld {
             }
             if (client.heartbeatTimer > 40) {
                 client.send(smallPacket);
+                client.heartbeatTimer++; // keep climbing so the stale-client reaper can fire
             }
             else {
                 client.send(largePacket);
