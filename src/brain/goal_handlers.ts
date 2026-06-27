@@ -170,6 +170,25 @@ export function goalPlacePill(a4: A4State, state: BrainState): void {
   const tank = state.tank;
   if (!tank.pillsCarried) return;          // nothing to place
 
+  // On a boat: the builder can't harvest a tree or plant a pill on water, so the farm/plant
+  // steps below would just hold (placePillHold) and freeze the tank on the boat forever (live
+  // bug: boat=true spd=0 HBK indefinitely). Keep the SAME objective priority as on land, but
+  // only navigate (suppress the holds/builder actions): if short on trees head for the nearest
+  // forest — navigation routes across the water if the trees are on another landmass — so the
+  // tank can boat over, disembark, harvest, then (re-acquiring a boat) cross back to the base;
+  // otherwise head for the buildable tile next to the base. Once ashore (onBoat clears) the
+  // normal farm→drive→plant flow takes over.
+  if (tank.onBoat) {
+    if (tank.resourceCount < PLACE_PILL_TREES) {
+      const forest = _findNearestForestTile(a4);
+      if (forest) { navigateToCoords(a4, (forest.tileX << 8) + 128, (forest.tileY << 8) + 128, 0); return; }
+    }
+    const landing = _findPillPlacementTile(a4, base);
+    if (landing) navigateToCoords(a4, (landing.tileX << 8) + 128, (landing.tileY << 8) + 128, 0);
+    else         navigateToCoords(a4, base.x, base.y, 0);
+    return;
+  }
+
   // Deploy a CAPTURED pillbox to DEFEND a friendly base: farm a tree if short, drive next
   // to the base, then dispatch the builder to plant the carried pill (armour 15, costs 1
   // tree). The old flow drove the builder via myMan.actionCode — a field the engine NEVER

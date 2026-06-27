@@ -823,8 +823,15 @@ export function selectBaseToBuild(a4: A4State, state: BrainState): BaseState | n
     // (now top priority while carrying) would lock the tank on an unplaceable base.
     if (!baseHasBuildableNeighbor(a4, base)) continue;
 
+    // DISTANCE-DOMINANT: place the carried pill at the NEAREST suitable ally base. difficulty
+    // (0-3, higher near the enemy frontline) is only a small tiebreaker that nudges toward a
+    // safer base when distances are close — at the old weight of ×20 it overrode distance
+    // entirely (a far safe base beat a near contested one by 40-60 "tiles"), so the tank hauled
+    // the pill clear across the map to an edge base, and the target flipped mid-trip as the
+    // relative costs shifted. Distance-dominant also self-stabilises: the base being approached
+    // keeps getting cheaper, so it stays the pick.
     const distTiles = base.distToTank >> 8;
-    const cost = u16(distTiles + base.difficulty * 20);
+    const cost = u16(distTiles + base.difficulty * 2);
 
     if (cost < bestCost) {
       bestCost = cost;
