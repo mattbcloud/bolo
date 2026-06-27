@@ -247,6 +247,12 @@ export class BoloClientWorld extends ClientWorld {
   private _brainWasIdle: boolean = false;
   private _lastOnWaterTick: number = -999;
 
+  // Nicks (player names) that arrived before their tank's CREATE message. The server can
+  // broadcast a join's nick before that client has processed the tank's CREATE, so applying
+  // it immediately would drop it (object not in this.objects yet) → that tank never gets a
+  // name label. Buffer here keyed by object idx and flush in netSpawn when the object lands.
+  private _pendingNicks: Record<number, string> = {};
+
   // Respawn detection
   private _brainPrevArmour: number = 40;
 
@@ -2018,6 +2024,13 @@ export class BoloClientWorld extends ClientWorld {
    */
   netSpawn(data: number[], offset: number): number {
     const bytes = super.netSpawn(data, offset);
+    // Flush any nick that arrived before this object's CREATE (see _pendingNicks). The idx is
+    // the same one super.netSpawn decoded: 2-byte big-endian object index after the type byte.
+    const idx = (data[offset + 1] << 8) | data[offset + 2];
+    if (this._pendingNicks[idx] !== undefined && this.objects[idx]) {
+      this.objects[idx].name = this._pendingNicks[idx];
+      delete this._pendingNicks[idx];
+    }
     // Rebuild map.pills and map.bases arrays to reflect the new object
     this.rebuildMapObjects();
     return bytes;
@@ -2027,6 +2040,10 @@ export class BoloClientWorld extends ClientWorld {
    * Override netDestroy to rebuild map objects after dynamic object destruction.
    */
   netDestroy(data: number[], offset: number): number {
+    const idx = (data[offset] << 8) | data[offset + 1];
+    // Drop any unflushed nick for this idx so a future object reusing the slot can't inherit
+    // a previous player's buffered name.
+    if (this._pendingNicks[idx] !== undefined) delete this._pendingNicks[idx];
     const bytes = super.netDestroy(data, offset);
     // Rebuild map.pills and map.bases arrays to reflect the destroyed object
     this.rebuildMapObjects();
@@ -2666,9 +2683,13 @@ export class BoloClientWorld extends ClientWorld {
   handleJsonCommand(data: any): void {
     switch (data.command) {
       case 'nick':
-        // Ignore if object doesn't exist yet (CREATE message may arrive after this)
+        // Apply immediately if the object exists; otherwise BUFFER it (the tank's CREATE
+        // message may arrive after this nick). netSpawn flushes the buffer on creation, so a
+        // nick that races ahead of its CREATE is no longer dropped → the name label appears.
         if (this.objects[data.idx]) {
           this.objects[data.idx].name = data.nick;
+        } else {
+          this._pendingNicks[data.idx] = data.nick;
         }
         break;
       case 'msg':

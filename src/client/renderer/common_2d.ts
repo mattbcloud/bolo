@@ -186,8 +186,9 @@ export class Common2dRenderer extends BaseRenderer {
       if (tank.name && tank.armour !== 255 && tank !== player) {
         if (player) {
           const dist = distance(player, tank);
-          if (dist <= 768) continue;
-          this.ctx.globalAlpha = min(1.0, (dist - 768) / 1536);
+          // Hide the label only within 1 tile (256 world units); fade in beyond that.
+          if (dist <= 256) continue;
+          this.ctx.globalAlpha = min(1.0, (dist - 256) / 1536);
         } else {
           this.ctx.globalAlpha = 1.0;
         }

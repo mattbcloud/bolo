@@ -580,6 +580,18 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
         const welcomePacket = Buffer.from(pack('BH', net.WELCOME_MESSAGE, client.tank.idx)).toString('base64');
         client.send(welcomePacket);
 
+        // Re-send EVERY current tank's nick now that this client holds the full object
+        // snapshot (newClientPacket above). The onConnect dump only covered tanks that
+        // existed at connect time, and the per-join nick broadcast skips clients that aren't
+        // yet `synchronized` — so a tank that joined while THIS client was syncing would
+        // otherwise never get a name here (its label never appears). Dumping the full list at
+        // the sync boundary closes that race for good; every tank object already exists, so
+        // the client applies each nick immediately (no buffering needed).
+        const nickMessages = this.tanks
+          .filter((t: any) => t.name)
+          .map((t: any) => ({ command: 'nick', idx: t.idx, nick: t.name }));
+        if (nickMessages.length) client.send(JSON.stringify(nickMessages));
+
         // Mark as synchronized
         client.synchronized = true;
         client.needsInitialSync = false;
