@@ -2328,6 +2328,35 @@ export class BoloClientWorld extends ClientWorld {
       if (el) el.textContent = msg;
       console.log(msg);
       if (controlsIdle) console.warn('[brain] IDLE controls!', detail);
+
+      // ── Live-map dump ─────────────────────────────────────────────────────
+      // Reusable real-time terrain read: an ASCII grid centred on the tank from the brain's
+      // live worldMap (includes dynamic changes — built roads, craters, harvested forest), with
+      // the planned path overlaid. On by default while debugging; silence with
+      // `window.__MAPDUMP__ = false` in the console. Legend printed each dump.
+      if ((globalThis as any).__MAPDUMP__ !== false) {
+        const R = 10;
+        const cx = a4.tankTileX & 0xFF, cy = a4.tankTileY & 0xFF;
+        const TC = ['#','~',';','o','=','F',':','.','}','b','^','B','P'];  // terrain id 0..12
+        const pathSet = new Set<number>();
+        if (a4.navPath) for (let i = 0; i < a4.navPath.length; i++) pathSet.add(a4.navPath[i]);
+        const rows: string[] = [];
+        for (let dy = -R; dy <= R; dy++) {
+          let row = '';
+          for (let dx = -R; dx <= R; dx++) {
+            const tIdx = ((((cy + dy) & 0xFF) << 8) | ((cx + dx) & 0xFF));
+            if (dx === 0 && dy === 0) { row += '@'; continue; }
+            const raw = a4.worldMap[tIdx];
+            const terr = raw & 0x0F;
+            let ch = TC[terr] ?? '?';
+            const isWater = terr === 1 || terr === 9 || terr === 10 || (raw & 0x80) !== 0;
+            if (pathSet.has(tIdx)) ch = isWater ? '+' : '*';   // path overlay (+ on water, * on land)
+            row += ch;
+          }
+          rows.push(row);
+        }
+        console.log(`[MAP] tank@(${cx},${cy}) boat=${state.tank.onBoat?1:0}  @tank *path(land) +path(water) | ~/^water b=boat ==road #wall Fforest .grass Bbase Ppill\n` + rows.join('\n'));
+      }
     }
   }
 

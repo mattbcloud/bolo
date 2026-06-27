@@ -163,11 +163,18 @@ export interface ScenarioMetrics {
   maxBends: number;
   stuckEpisodes: number;
   pathRecomputes: number;
+  // Boat metrics: board = land->boat transitions, disembark = boat->land. A clean crossing is
+  // ~1 board + ~1 disembark; many of either is acquire/disembark thrash. ticksOnBoat gauges
+  // how much of the trip rode the river (vs slogging land/swamp).
+  boardCount: number;
+  disembarkCount: number;
+  ticksOnBoat: number;
 }
 
 function newMetrics(): ScenarioMetrics {
   return { reached: false, ticksToReach: -1, turnConflictTicks: 0,
-           maxBends: 0, stuckEpisodes: 0, pathRecomputes: 0 };
+           maxBends: 0, stuckEpisodes: 0, pathRecomputes: 0,
+           boardCount: 0, disembarkCount: 0, ticksOnBoat: 0 };
 }
 
 /** Step the FULL brain loop (aIndy_Think runs nav AND combat) toward a target tile. */
@@ -208,7 +215,8 @@ export function runFullLoopScenario(
  *  then step the engine (world.tick with brain off just moves the tank). */
 export function runNavOnlyScenario(
   world: any, targetTileX: number, targetTileY: number,
-  { maxTicks = 3000, stuckWindow = 200 } = {},
+  { maxTicks = 3000, stuckWindow = 200, trace = false }:
+    { maxTicks?: number; stuckWindow?: number; trace?: boolean } = {},
 ): ScenarioMetrics & { a4: any } {
   const maps = makeBrainMaps();
   let tickN = 0;
@@ -219,6 +227,7 @@ export function runNavOnlyScenario(
   const m = newMetrics();
   let lastPath: Uint16Array | null = null;
   let stuckTile = -1, stuckSince = 0;
+  let prevOnBoat = !!world.player.onBoat;
   const tx = tileToBWorld(targetTileX), ty = tileToBWorld(targetTileY);
 
   for (let t = 0; t < maxTicks; t++) {
@@ -228,6 +237,16 @@ export function runNavOnlyScenario(
     navigateToCoords(a4, tx, ty, 0);
     applyControls(world.player, { steeringWord: a4.steeringWord, firingWord: a4.firingWord });
     world.tick(); // brain disabled → just advances the tank from these controls
+
+    const ob = !!world.player.onBoat;
+    if (ob) m.ticksOnBoat++;
+    if (ob !== prevOnBoat) { if (ob) m.boardCount++; else m.disembarkCount++; prevOnBoat = ob; }
+
+    if (trace) {
+      const sw = a4.steeringWord, dirs = [(sw&0x04)?'CCW':'', (sw&0x08)?'CW':'', (sw&0x10)?'FWD':'', (sw&0x02)?'BRK':''].filter(Boolean).join('|');
+      // eslint-disable-next-line no-console
+      console.log(`t=${t} pos=(${a4.tankTileX},${a4.tankTileY}) boat=${ob?1:0} spd=${(world.player.speed).toFixed(1)} dir=${Math.round(world.player.direction)} steer=${dirs||'-'} boatNeeded=${a4.boatNeeded?1:0} acq=${a4.boatBuildTileX>=0&&a4.boatNeeded?`(${a4.boatBuildTileX},${a4.boatBuildTileY})`:'-'}`);
+    }
 
     if (a4.navPath !== lastPath) {
       lastPath = a4.navPath; m.pathRecomputes++;
