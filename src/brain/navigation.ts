@@ -319,6 +319,28 @@ function nearDangerTerrain(a4: A4State): boolean {
   return false;
 }
 
+/** A tile a boat can travel on: river (terrain 1), boat (9), deep sea (10), or any
+ *  water-flagged tile (0x80). Anything else is dry land the boat must steer clear of. */
+function isWaterTile(raw: number): boolean {
+  const terr = raw & 0x0F;
+  return (raw & 0x80) !== 0 || terr === 1 || terr === 9 || terr === 10;
+}
+
+/** True if the straight line from (x0,y0) to (x1,y1) — BWorld units — stays entirely over
+ *  water. Sampled ~every quarter-tile. Used to keep a boat's steering carrot inside the
+ *  channel: steer only toward points we can "see" down the river without crossing a bank. */
+function lineStaysOnWater(a4: A4State, x0: number, y0: number, x1: number, y1: number): boolean {
+  const dx = x1 - x0, dy = y1 - y0;
+  const steps = Math.max(1, Math.ceil(Math.sqrt(dx * dx + dy * dy) / 64));
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps;
+    const tx = (((x0 + dx * t) | 0) >> 8) & 0xFF;
+    const ty = (((y0 + dy * t) | 0) >> 8) & 0xFF;
+    if (!isWaterTile(a4.worldMap[((ty & 0xFF) << 8) | (tx & 0xFF)])) return false;
+  }
+  return true;
+}
+
 export function getTurnSpeed(a4: A4State, toTileX: number, toTileY: number): number {
   const toWorldX = (toTileX << 8) + 128;
   const toWorldY = (toTileY << 8) + 128;
@@ -328,10 +350,6 @@ export function getTurnSpeed(a4: A4State, toTileX: number, toTileY: number): num
   const tankMapIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
   const tankOnWater = !!(a4.worldMap[tankMapIdx] & 0x80);
   if (tankOnWater) {
-    // Disembark momentum: when the destination tile is land, the tank must
-    // carry enough speed to climb off the boat onto the shore. At low speed it
-    // stalls floating against the bank and never lands. Raise the floor to 24
-    // (vs 12 for open-water travel) whenever the target tile is dry land.
     const toIdx = ((toTileY & 0xFF) << 8) | (toTileX & 0xFF);
     const toRaw = a4.worldMap[toIdx];
     const toIsLand =
@@ -340,8 +358,16 @@ export function getTurnSpeed(a4: A4State, toTileX: number, toTileY: number): num
       (toRaw & 0x0F) !== 9 &&
       (toRaw & 0x0F) !== 10 &&
       a4.examineTerrainCostTable[toRaw] < 1000;
-    const floor = toIsLand ? 24 : 12;
-    return Math.max(floor, 64 - angErr);
+    // Pivot BEFORE committing forward. A boat that drives forward while still turning onto the
+    // channel axis drifts sideways into the bank — then it can't ride the river and thrashes at
+    // the shore (the y146 crossing repro). So ease forward speed HARD while the heading is
+    // off-axis, letting the hull rotate nearly in place; once roughly aligned, run full speed.
+    // When the next tile is land AND we're aligned, carry the >=16 momentum the engine needs to
+    // climb the shore (disembark). This is turn-discipline, not a blanket cap — straight reaches
+    // still run full speed. angErr is 0..128 (a full turn is 256).
+    if (angErr >= 32) return 3;                  // sharp turn: pivot almost in place
+    if (angErr >= 16) return 8;                  // moderate: ease through the turn
+    return toIsLand ? 24 : 16;                   // aligned: full channel speed / climb-ashore momentum
   }
 
   if (angErr >= 64) return 0;
@@ -482,13 +508,36 @@ export function navigateToCoords(
     a4.boatFailedUntilTick = 0;
   }
 
-  // Suppress acquisition during the post-timeout cooldown so boatNeeded can't
-  // re-latch every recompute (which made the tank repeatedly wade to an
-  // unreachable boat point, draining all its shells). During the cooldown the
-  // tank commits to the dry route (or the goal handler moves on).
+  // ── Boat state-flip tracking (thrash guard + disembark commit) ─────────────
+  // On patchy water the tank can board, instantly hit land, disembark, and re-acquire forever —
+  // never crossing — while each brief boarding resets the acquisition timer so its 1500-tick
+  // timeout never fires. Track onBoat flips: (a) on a DISEMBARK, open a short "commit to land"
+  // window so the tank won't immediately re-board the boat it just stepped off; (b) too many
+  // flips in a window means the crossing isn't viable, so trip the boat cooldown (commit to the
+  // dry route / let the goal move on). Done BEFORE the acquisition decision so the new
+  // disembark/cooldown state takes effect this tick.
+  const obNum = a4.tankOnBoat ? 1 : 0;
+  if (a4.boatFlipPrevState !== -1 && obNum !== a4.boatFlipPrevState) {
+    if (obNum === 0) a4.boatDisembarkTick = a4.tickCounter;   // just disembarked → start commit window
+    if (a4.tickCounter - a4.boatFlipWindowTick > 200) { a4.boatFlipCount = 0; a4.boatFlipWindowTick = a4.tickCounter; }
+    if (++a4.boatFlipCount >= 6) {
+      a4.boatFailedUntilTick = a4.tickCounter + 3000;   // ~60s: commit to dry route / let goal move on
+      a4.boatNeeded = false;
+      a4.boatAcquireSinceTick = 0;
+      a4.boatFlipCount = 0;
+      a4.worldCostsInitDone = 0;                        // force a fresh (dry) path
+    }
+  }
+  a4.boatFlipPrevState = obNum;
+
+  // Suppress acquisition during the post-timeout cooldown OR the brief post-disembark commit
+  // window, so boatNeeded can't re-latch and re-board the just-left boat (the thrash). During
+  // either, the tank commits to the dry route (or the goal handler moves on).
   const boatCooldownActive = a4.tickCounter < a4.boatFailedUntilTick;
-  let acquiringBoat = a4.boatNeeded && !a4.tankOnBoat && a4.boatBuildTileX >= 0 && !boatCooldownActive;
-  if (boatCooldownActive) a4.boatNeeded = false;
+  const boatCommitActive   = a4.boatDisembarkTick > 0 && (a4.tickCounter - a4.boatDisembarkTick) < 90;
+  const boatSuppressed = boatCooldownActive || boatCommitActive;
+  let acquiringBoat = a4.boatNeeded && !a4.tankOnBoat && a4.boatBuildTileX >= 0 && !boatSuppressed;
+  if (boatSuppressed) a4.boatNeeded = false;
 
   if (acquiringBoat) {
     // Start (or continue) the acquisition timer.
@@ -593,7 +642,7 @@ export function navigateToCoords(
     // compute a wet path (rivers cheap) to see if water routing would be
     // significantly shorter. Suppressed while acquiringBoat so the latch holds.
     let wetPath: Uint16Array | null = null;
-    if (!onBoat && !acquiringBoat) {
+    if (!onBoat && !acquiringBoat && !boatSuppressed) {
       const savedRiverCost = a4.examineTerrainCostTable[1];
       a4.examineTerrainCostTable[1] = 3;
       wetPath = computePath(a4, tankTileX, tankTileY, destTileX, destTileY);
@@ -612,7 +661,7 @@ export function navigateToCoords(
     const path = computePath(a4, tankTileX, tankTileY, destTileX, destTileY, onBoat);
 
     if (!path) {
-      if (!onBoat && !acquiringBoat && wetPath) {
+      if (!onBoat && !acquiringBoat && !boatSuppressed && wetPath) {
         a4.boatNeeded = true;
         findBoatBuildTile(a4, wetPath);
       }
@@ -805,6 +854,26 @@ export function navigateToCoords(
       remaining -= segLen;
       px = nx; py = ny;
       carrotX = nx; carrotY = ny;     // ran past the end → last waypoint
+    }
+  }
+
+  // ── Channel-following carrot (boats) ──────────────────────────────────────
+  // A fixed-distance carrot cuts corners: on a river bend it sits across the inside bank, so
+  // the boat steers straight at land — clipping the shore, stalling, or disembarking into the
+  // water. Instead steer like a river pilot: aim at the FURTHEST waypoint down the channel
+  // whose straight line from the tank stays entirely over water. On a straight reach that
+  // reaches far ahead (smooth, full speed); into a bend it collapses onto the bend apex, so
+  // the bow turns to follow the channel and never points at the bank. The first waypoint whose
+  // line crosses land marks the bend — stop there (points beyond it are also around the bend).
+  // Boat-only: land navigation keeps the tuned fixed-distance carrot.
+  if (a4.tankOnBoat) {
+    const MAX_LOOK = 1536;  // ~6 tiles — how far down a straight channel we'll sight
+    for (let i = idx + 1; i < path.length; i++) {
+      const wx = ((path[i] & 0xFF) << 8) + 128;
+      const wy = (((path[i] >> 8) & 0xFF) << 8) + 128;
+      if (computeDistanceBetween(fromX, fromY, wx, wy) > MAX_LOOK) break;
+      if (!lineStaysOnWater(a4, fromX, fromY, wx, wy)) break;  // hit the bend — steer to here
+      carrotX = wx; carrotY = wy;
     }
   }
 

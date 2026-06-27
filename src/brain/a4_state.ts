@@ -230,6 +230,20 @@ export class A4State {
    *  to an unreachable boat point, draining shells). Mirrors getManFailedUntilTick. */
   boatFailedUntilTick = 0;
 
+  /** Board/disembark thrash detector. On patchy 1-tile water the tank can board, instantly
+   *  hit land, disembark, and re-acquire every few ticks — never crossing — while each brief
+   *  boarding resets boatAcquireSinceTick so the acquisition timeout never fires. We count
+   *  onBoat state flips within a window; too many → the crossing isn't viable, trip the
+   *  cooldown. boatFlipPrevState = last seen onBoat; -1 = uninitialised. */
+  boatFlipPrevState = -1;
+  boatFlipCount = 0;
+  boatFlipWindowTick = 0;
+
+  /** Tick of the last disembark (boat->land). For a short window after, suppress re-acquiring a
+   *  boat so the tank COMMITS to land instead of immediately re-boarding the boat it just left
+   *  (the board<->disembark thrash). 0 = none. */
+  boatDisembarkTick = 0;
+
   /** Total cost of the current dry path (for comparison) */
   navDryPathCost = 0;
 
