@@ -78,6 +78,16 @@ export const BoloWorldMixin = {
 
     // Update owner_idx on all map objects to reflect the renumbered tanks
     for (const obj of this.getAllMapObjects()) {
+      // Clear any dangling refueling ref to the removed tank. A base only re-runs its claim
+      // logic (findSubject) when refueling is null (world_base.ts update). If a tank leaves
+      // while parked on a base, tank.destroy() doesn't move its cell or set armour=255, so the
+      // base's normal clear check (tankCell !== cell || armour === 255) never fires and the ref
+      // stays pinned to the destroyed tank forever → the abandoned base can never be claimed
+      // again. Clearing it here lets an enemy drive on and take it.
+      if (obj.refueling && obj.refueling.$ === tank) {
+        obj.ref('refueling', null);
+      }
+
       if (obj.owner_idx !== 255) {
         if (obj.owner_idx === removedIdx) {
           // The owner was the removed tank - clear ownership but preserve team

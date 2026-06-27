@@ -281,6 +281,10 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // Convert Buffer to string if needed
     const messageStr = Buffer.isBuffer(message) ? message.toString('utf8') : message;
 
+    // Any inbound message proves the client is alive — reset its silence counter so the
+    // stale-client reaper (see sendPackets) never culls an active player.
+    ws.heartbeatTimer = 0;
+
     if (messageStr === '') {
       ws.heartbeatTimer = 0;
     } else if (messageStr.charAt(0) === '{') {
@@ -479,6 +483,21 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
    * that, non-critical updates may be dropped, if the client's hearbeats are interrupted.
    */
   sendPackets(): void {
+    // ── Stale-client reaper ────────────────────────────────────────────────
+    // heartbeatTimer counts ticks since a client's last message; live clients ping every 10
+    // ticks (client.ts), so a timer past REAP_TICKS means the socket dropped uncleanly (e.g. a
+    // browser refresh that never fired a `close` event). Without this, that client's tank
+    // lingers in this.world.tanks as a GHOST — phantom tanks of stale teams re-claim bases
+    // every tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
+    // future unclean drop self-cleans. Iterate a copy because onEnd splices this.clients.
+    const REAP_TICKS = 250;  // ~10s at 40ms/tick = 25 missed heartbeats — unambiguously gone
+    for (const client of [...this.clients]) {
+      if (client.tank && client.heartbeatTimer > REAP_TICKS) {
+        console.log(`[REAP] Stale client (tank idx=${client.tank.idx}, silent ${client.heartbeatTimer} ticks) — removing ghost tank.`);
+        this.onEnd(client, 4000, 'heartbeat timeout');
+      }
+    }
+
     // Check if any clients need initial sync
     const newClients = this.clients.filter(c => c.needsInitialSync);
     const hasNewClients = newClients.length > 0;
@@ -584,6 +603,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
 
       if (client.heartbeatTimer > 40) {
         client.send(smallPacket);
+        client.heartbeatTimer++;  // keep climbing so the stale-client reaper can fire
       } else {
         client.send(largePacket);
         client.heartbeatTimer++;
