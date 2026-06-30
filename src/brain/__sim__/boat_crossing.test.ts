@@ -19,6 +19,13 @@ const LEGS: Leg[] = [
   { name: 'cross-y146-11t', ax: 119, ay: 146, bx: 130, by: 146, onBoat: true },
   { name: 'cross-y152-8t',  ax: 130, ay: 152, bx: 138, by: 152, onBoat: true },
   { name: 'cross-y124-9t',  ax: 100, ay: 124, bx: 109, by: 124, onBoat: true },
+  // Angled disembarks (the GetBase "no speed to get ashore" case): the boat climbs the shore onto
+  // a tile offset from its travel axis, so it crosses the water→land boundary mid-turn. The engine
+  // needs >=16 to climb and a boat caps at 16, so getTurnSpeed must hold the climb floor through a
+  // moderate turn here rather than easing to 8 (which strands the tank at the shore).
+  { name: 'diag-SE-a', ax: 126, ay: 146, bx: 132, by: 149, onBoat: true },
+  { name: 'diag-SE-b', ax: 130, ay: 147, bx: 135, by: 151, onBoat: true },
+  { name: 'diag-SE-c', ax: 127, ay: 146, bx: 134, by: 150, onBoat: true },
 ];
 
 describe('boat navigation: river crossings', () => {

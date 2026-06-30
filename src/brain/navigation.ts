@@ -365,9 +365,14 @@ export function getTurnSpeed(a4: A4State, toTileX: number, toTileY: number): num
     // When the next tile is land AND we're aligned, carry the >=16 momentum the engine needs to
     // climb the shore (disembark). This is turn-discipline, not a blanket cap — straight reaches
     // still run full speed. angErr is 0..128 (a full turn is 256).
-    if (angErr >= 32) return 3;                  // sharp turn: pivot almost in place
-    if (angErr >= 16) return 8;                  // moderate: ease through the turn
-    return toIsLand ? 24 : 16;                   // aligned: full channel speed / climb-ashore momentum
+    // For a DISEMBARK (next tile is land) hold the >=16 climb floor through a MODERATE turn: a boat
+    // caps at 16 on water and the engine needs >=16 to climb ashore, so easing to 8 mid-turn (as
+    // pure channel-following would) strands the tank at the shore unable to climb (live GetBase
+    // "no speed to disembark" across open water, approached at an angle). A SHARP turn still pivots
+    // (you'd otherwise climb the wrong tile / a bank), and water→water keeps the tight discipline.
+    if (angErr >= 32) return toIsLand ? 8 : 3;   // sharp turn: pivot (land keeps a little momentum)
+    if (angErr >= 16) return toIsLand ? 16 : 8;  // moderate: land holds the climb floor; water eases
+    return toIsLand ? 24 : 16;                    // aligned: full channel speed / climb-ashore momentum
   }
 
   if (angErr >= 64) return 0;
