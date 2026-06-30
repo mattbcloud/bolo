@@ -15,7 +15,7 @@ describe('capture-floor diagnostic', () => {
   it('classifies why trials fail to capture', () => {
     const trials = 30, ticks = 5000, baseSeed = 1000;
     let engagedTrials = 0, damagedTrials = 0, nearKillTrials = 0, capturedTrials = 0;
-    let totalPillsNear = 0, totalEngaged = 0;
+    let totalPillsNear = 0, totalEngaged = 0, totalManDeaths = 0, totalCaptured = 0, totalParachuteTicks = 0;
     const minArmours: number[] = [];
 
     for (let k = 0; k < trials; k++) {
@@ -42,6 +42,7 @@ describe('capture-floor diagnostic', () => {
       let buildDispatch = 0, forestDispatch = 0, builderOutTicks = 0, maxTrees = 0;
       const orderHist: Record<number, number> = {};
       const wallTiles = new Set<number>();
+      let manDeaths = 0, prevManOrder = 0;   // count transitions INTO parachuting (3) = builder killed
       const treesCheat = process.env.TREES_CHEAT ? Number(process.env.TREES_CHEAT) : 0;
       for (let i = 0; i < ticks; i++) {
         if (treesCheat && t.trees < treesCheat) t.trees = treesCheat;   // probe: infinite cover materials
@@ -59,6 +60,9 @@ describe('capture-floor diagnostic', () => {
           builderOutTicks++;
           orderHist[bldr.$.order] = (orderHist[bldr.$.order] ?? 0) + 1;
         }
+        const manOrder = (bldr && bldr.$ && bldr.$.order !== undefined) ? bldr.$.order : 0;
+        if (manOrder === 3 && prevManOrder !== 3) manDeaths++;   // builder just got killed (parachuting)
+        prevManOrder = manOrder;
         // Is the brain's target pill low & in range, and is it covered?
         const tp = a4.pillToGetTarget;
         if (tp && tp.armour > 0 && tp.armour <= 8) {
@@ -78,7 +82,9 @@ describe('capture-floor diagnostic', () => {
           }
         }
       }
-      if (k < 6) console.log(`[capfloor seed${k}] holdTicks=${holdTicks} lowInRange=${lowInRangeTicks} lowCovered=${lowCoveredTicks} wallTilesNearPills=${wallsBuilt} buildDispatch=${buildDispatch} forestDispatch=${forestDispatch} builderOut=${builderOutTicks} maxTrees=${maxTrees} orderHist=${JSON.stringify(orderHist)}`);
+      if (k < 6) console.log(`[capfloor seed${k}] holdTicks=${holdTicks} lowInRange=${lowInRangeTicks} lowCovered=${lowCoveredTicks} wallTilesNearPills=${wallsBuilt} buildDispatch=${buildDispatch} forestDispatch=${forestDispatch} builderOut=${builderOutTicks} manDeaths=${manDeaths} parachuteTicks=${orderHist[3] ?? 0} maxTrees=${maxTrees} orderHist=${JSON.stringify(orderHist)}`);
+      totalManDeaths += manDeaths;
+      totalParachuteTicks += (orderHist[3] ?? 0);
 
       let trialEngaged = 0, trialDamaged = false, trialNearKill = false, trialCaptured = false;
       let trialMin = 99;
@@ -89,7 +95,7 @@ describe('capture-floor diagnostic', () => {
         if (m < s) { trialDamaged = true; trialEngaged++; }
         if (m <= 3 && s > 3) trialNearKill = true;
         // captured: pill now owned by the brain tank (inTank or owner is player)
-        if (p.armour === 0 || p.inTank) trialCaptured = true;
+        if (p.armour === 0 || p.inTank) { trialCaptured = true; totalCaptured++; }
       }
       totalEngaged += trialEngaged;
       if (trialEngaged > 0) engagedTrials++;
@@ -101,6 +107,7 @@ describe('capture-floor diagnostic', () => {
 
     console.log(`[capfloor] trials=${trials} pillsNear(<=20tx)=${(totalPillsNear/trials).toFixed(1)}/trial ` +
       `engagedTrials=${engagedTrials} damagedTrials=${damagedTrials} nearKill(<=3)=${nearKillTrials} captured=${capturedTrials}`);
+    console.log(`[capfloor] totalCapturedPills=${totalCaptured} totalBuilderDeaths=${totalManDeaths} (${(totalManDeaths/trials).toFixed(1)}/trial) totalParachuteTicks=${totalParachuteTicks}`);
     console.log(`[capfloor] perTrial lowestPillArmour reached: ${minArmours.join(',')}`);
   });
 });

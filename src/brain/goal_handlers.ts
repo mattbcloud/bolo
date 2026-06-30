@@ -148,6 +148,125 @@ function _maintainCover(a4: A4State, state: BrainState, pill: PillState): void {
   }
 }
 
+/**
+ * Cover-method attack — the real Bolo tactic (Puppy Love's Tactics & Strategy Guide):
+ *
+ *   1. PLACE the cover NEXT TO THE PILL, on the tank-facing side — and build it from OUTSIDE
+ *      the pill's range. A pillbox only fires at a TANK within range (1919; world_pillbox.ts)
+ *      and never targets the walking builder, so with our tank out of range the pill is dormant
+ *      and the builder makes its trip to the pill unharmed. (Prefer planting a CAPTURED pillbox
+ *      over a brick — it absorbs more and shoots back.)
+ *   2. ATTACK from inside range: graze the pill's edge past the cover (shootPillFromCover). The
+ *      pill aims its return fire at the tank's CENTRE, so its shells hit the cover, not us.
+ *   3. RETREAT as the cover collapses: a wall shot out mid-fight drops us back to step 1 (rebuild
+ *      from safety), so the builder is never deployed while the tank is inside the pill's range.
+ *
+ * Crucially the cover sits at the PILL's neighbour (fixed by the pill), NOT the tank's neighbour —
+ * so it stays on the pill→tank line as the tank advances to fire. (The old _maintainCover built at
+ * the tank's neighbour from firing range, which both mis-placed the wall and got the builder killed.)
+ *
+ * Returns true if it issued controls this tick (the caller should then return).
+ */
+function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pillDistPh: number): boolean {
+  const tank = state.tank;
+  if (pill.armour <= 0 || tank.onBoat) return false;   // dead → capture phase; afloat → not now
+
+  const PILL_RANGE = 1919;     // world_pillbox.ts effective fire range
+  const SAFE_BUILD = 2080;     // only deploy the builder beyond this (range + coast margin)
+  const RETREAT_TO = 2400;     // retreat to here (well out of range) to (re)build cover
+  const FIRE_DIST  = 1740;     // advance to here to fire (inside our 1792 shell range)
+  const COVER_FINISH = 4;      // pill nearly dead → "sink the remaining shots"
+
+  // Cover tile = the PILL's neighbour toward the FIRING SLOT (AP), not the tank's transient
+  // position. Anchoring to the AP (a stable firing slot chosen in Phase 2) keeps the wall on the
+  // pill→tank line once the tank reaches the AP to fire — if we used the live tank bearing the
+  // tile would drift as the tank manoeuvres and we'd "lose" the wall we just built and retreat.
+  // Cover tile = the PILL's neighbour toward the firing slot (AP). Anchored to the AP (stable)
+  // rather than the live tank bearing, so the wall stays on the pill→tank line as the tank closes.
+  const pillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY) & 0xFF;
+  const [pdx, pdy] = _dir8(pillToAP);
+  const covX = (pill.tileX + pdx) & 0xFF, covY = (pill.tileY + pdy) & 0xFF;
+  const covRaw = a4.worldMap[((covY & 0xFF) << 8) | (covX & 0xFF)];
+  const covTerr = covRaw & 0x0F;
+  const coverPresent = covTerr === 0 || covTerr === 5 || covTerr === 8 || covTerr === 12; // wall/forest/shot-wall/pill
+
+  // Pill nearly dead → hand off to the normal approach to "sink the remaining shots" (its
+  // LOS-blocked branch repositions to a clear firing slot, which works past either cover type).
+  if (pill.armour <= COVER_FINISH) return false;
+
+  const trees = tank.resourceCount & 0xFF;
+  const carryingPill = (tank.pillsCarried & 0xFF) > 0;
+  // PREFERRED cover = a CAPTURED pillbox planted next to the target (absorbs more AND shoots back
+  // at the pill). The engine charges 1 tree to plant it (builder.performOrder), so we need a tree.
+  const canPlantPill = carryingPill && trees >= PLACE_PILL_TREES;
+  const canBuildWall = trees >= COVER_WALL_TREES;
+
+  // Retreat to a standoff `toDist` from the pill, straight back along the tank→pill line.
+  const retreat = (toDist: number) => {
+    const inv = 1 / (pillDistPh || 1);
+    const rx = (Math.round(pill.x + (tank.x - pill.x) * inv * toDist)) & 0xFFFF;
+    const ry = (Math.round(pill.y + (tank.y - pill.y) * inv * toDist)) & 0xFFFF;
+    navigateToCoords(a4, rx, ry, 0);
+  };
+
+  if (!coverPresent) {
+    // The cover the fire relies on isn't up. Can we actually (re)build it next to this pill?
+    const buildable = !(covRaw & 0x80) && covTerr !== 11;   // not water, not a base tile
+    // Only commit to the cover method if we can place cover (plant the carried pill, build a wall,
+    // or harvest a tree to do either). Otherwise DON'T retreat — that just oscillates approach⇄
+    // retreat forever and never captures; engage without cover instead (fall through).
+    const needTree = (carryingPill && trees < PLACE_PILL_TREES) || (!carryingPill && trees < COVER_WALL_TREES);
+    const harvestTile = needTree ? _findAdjacentForest(a4) : null;
+    const canCover = buildable && (canPlantPill || canBuildWall || harvestTile !== null);
+    if (!canCover) return false;                            // no cover possible → engage without it
+
+    if (pillDistPh <= SAFE_BUILD) {
+      // Inside (or near) the pill's range — too dangerous to deploy the builder. Retreat out of
+      // range first. This is also the "cover collapsed mid-fight → fall back and rebuild" path.
+      retreat(RETREAT_TO);
+      return true;
+    }
+    // Safely out of range: send the builder to place the cover NEXT TO THE PILL. Prefer planting
+    // the captured pillbox; fall back to a brick; harvest a tree first if we're short.
+    if (tank.builderInTank && !a4.pendingBuilderAction) {
+      if (canPlantPill) {
+        a4.pendingBuilderAction = { action: 'pillbox', trees: PLACE_PILL_TREES, tileX: covX, tileY: covY };
+        a4.coverBuilderDispatchTick = a4.tickCounter;
+      } else if (canBuildWall) {
+        a4.pendingBuilderAction = { action: 'building', trees: COVER_WALL_TREES, tileX: covX, tileY: covY };
+        a4.coverBuilderDispatchTick = a4.tickCounter;
+      } else if (harvestTile) {
+        // Short a tree — harvest the adjacent forest first (still safely out of range).
+        a4.pendingBuilderAction = { action: 'forest', trees: 0, tileX: harvestTile.tileX, tileY: harvestTile.tileY };
+        a4.coverBuilderDispatchTick = a4.tickCounter;
+      }
+    }
+    setSpeed(a4, 0, tank.speed & 0xFF);   // hold out of range while the builder works
+    return true;
+  }
+
+  // Cover is up next to the pill.
+  if (!tank.builderInTank && pillDistPh > PILL_RANGE) {
+    // Builder still finishing / walking home and we're safely out of range → wait for it to board.
+    setSpeed(a4, 0, tank.speed & 0xFF);
+    return true;
+  }
+
+  if (pillDistPh > FIRE_DIST) {
+    // Advance into firing range via the chosen firing slot (AP). Don't fire yet (a centre shot
+    // would just chip our own cover); let shootPillFromCover take over once we're in range.
+    navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
+    return true;
+  }
+
+  // At firing distance, behind the cover → graze the pill's edge; its return fire hits the cover.
+  a4.shootPillDirection = directionTo(tank.x, tank.y, pill.x, pill.y) & 0xFF;
+  const fired = _shootPillFromCover(a4, state, pill);
+  setSpeed(a4, 0, tank.speed & 0xFF);
+  if (fired) a4.coverFinishHold = 1;   // covered + holding still → don't break off to refuel
+  return true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GOAL 0 — PlacePill (0x0046ba)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -911,6 +1030,17 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   // the pill, so it fires continuously during the final approach.
   const pillDistPh = computeDistanceBetween(state.tank.x, state.tank.y, pill.x, pill.y);
 
+  // ── COVER METHOD (Puppy Love's tactic): place cover next to the pill from OUTSIDE its range,
+  // then graze it from inside range while the cover eats the return fire; retreat as it collapses.
+  // See _coverMethodAttack. COVER_SAFE=0 falls back to the old charge+tank-neighbour-wall path
+  // (controlled A/B in coverplace.test.ts).
+  const COVER_SAFE = typeof process === 'undefined' || process.env.COVER_SAFE !== '0';
+  if (COVER_SAFE) {
+    if (_coverMethodAttack(a4, state, pill, pillDistPh)) return;
+    // _coverMethodAttack returned false → no cover possible here; engage without it (fall through),
+    // and do NOT run the old tank-neighbour _maintainCover below.
+  }
+
   if (pillDistPh > 0x07C0) {
     // ── TREE-GATHERING phase: stock cover materials BEFORE engaging ─────────
     // Walls (the cover that lets the tank finish a hot pill — see the close-the-kill
@@ -1006,10 +1136,11 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   //   dist ≤ 0x06E2:             speed  0  — stop and concentrate fire
   a4.newGetPillStallTick = 0;
 
-  // COVER LAYER: build/maintain a wall on the pill-neighbour while the tank charges
-  // (the builder works in parallel; this does NOT slow the aggressive approach).
-  // Verified to lift captures ~2× over baseline (0.13→0.27) at equal deaths.
-  _maintainCover(a4, state, pill);
+  // COVER LAYER (baseline A/B path only): build a wall on the tank-neighbour while charging.
+  // With COVER_SAFE on, the proper cover method (_coverMethodAttack, built at the PILL-neighbour
+  // from out of range) ran earlier and we only reach here when no cover was possible — so don't
+  // dispatch the builder into the kill zone here.
+  if (!COVER_SAFE) _maintainCover(a4, state, pill);
 
   // CLOSE-THE-KILL (capfloor.test.ts root cause): the tank grinds pills to ~3 armour
   // then can't land the final hits — by then the pill is fully heated (fires every 6

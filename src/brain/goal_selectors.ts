@@ -373,13 +373,17 @@ export function fixPillCostForPill(a4: A4State, _state: BrainState, pill: PillSt
 export function placePillGoalCost(a4: A4State, state: BrainState): number {
   if (a4.baseToBuildTarget === null) return 0xFFFF;
 
-  // Carrying a captured pillbox → PLACE it at a friendly base before hunting more pills
-  // (doctrine: deploy captured pills to DEFEND refuel bases). The binary's distance/
-  // difficulty cost (20-200) always lost to GetPill (1-9), so captured pills were never
-  // deployed. Cost 1 beats GetPill (PlacePill is goal index 0, so it wins a cost-1 tie)
-  // yet still yields to emergency Refuel / close base-capture / tank-kill (cost 0).
-  // selectBaseToBuild already picks the nearest BUILDABLE ally base, so distance need not
-  // enter the goal cost.
+  // Once the tank holds a captured pillbox, PREFER using it as COVER to capture MORE pills
+  // (per the tactics guide a captured pill is the best cover — it absorbs the target's fire AND
+  // shoots back; _coverMethodAttack plants it next to the target) over deploying it to defend a
+  // base. So while there is still an attackable pill to hunt, yield to GetPill; only fall back to
+  // placing the pill at a base when no pill is left to hunt with it.
+  if (a4.pillToGetTarget !== null && getPillCostForPill(a4, state, a4.pillToGetTarget) < 0xFFFF) {
+    return 0xFFFE;   // lose to GetPill → keep hunting and use the captured pill as cover
+  }
+
+  // No pill to hunt → deploy the captured pill to DEFEND the nearest buildable base. Cost 1
+  // beats GetBase/Explore yet yields to emergency Refuel / close base-capture / tank-kill (cost 0).
   return 1;
 }
 
