@@ -171,10 +171,14 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
   const tank = state.tank;
   if (pill.armour <= 0 || tank.onBoat) return false;   // dead → capture phase; afloat → not now
 
-  const PILL_RANGE = 1919;     // world_pillbox.ts effective fire range
-  const SAFE_BUILD = 2080;     // only deploy the builder beyond this (range + coast margin)
-  const RETREAT_TO = 2400;     // retreat to here (well out of range) to (re)build cover
-  const FIRE_DIST  = 1740;     // advance to here to fire (inside our 1792 shell range)
+  const PILL_RANGE  = 1919;    // world_pillbox.ts effective fire range
+  const SAFE_BUILD  = 2080;    // only deploy the builder beyond this (range + coast margin)
+  const ENGAGE_MAX  = 2304;    // ~9 tiles: only START a cover build once we've closed to here. Beyond
+                               // it, APPROACH first (builder aboard) — else we'd dispatch the builder
+                               // on a huge cross-map trek to a far pill and sit idle for it (live bug).
+  const RETREAT_TO  = 2200;    // retreat to here to (re)build cover: outside range, still in the build
+                               // band (<=ENGAGE_MAX) so we rebuild next tick instead of re-approaching.
+  const FIRE_DIST   = 1740;    // advance to here to fire (inside our 1792 shell range)
   const COVER_FINISH = 4;      // pill nearly dead → "sink the remaining shots"
 
   // Cover tile = the PILL's neighbour toward the FIRING SLOT (AP), not the tank's transient
@@ -219,6 +223,18 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
     const harvestTile = needTree ? _findAdjacentForest(a4) : null;
     const canCover = buildable && (canPlantPill || canBuildWall || harvestTile !== null);
     if (!canCover) return false;                            // no cover possible → engage without it
+
+    // Don't sit and build cover on a tile ANOTHER threat can already hit. Setting up cover means
+    // idling for the builder's long round-trip; if the standoff is exposed (another pill/tank in
+    // range — the target pill is out of range here by construction), the tank just bleeds armour
+    // and refuel-loops without ever engaging (live GetPill<->Refuel stall). Charge-and-capture
+    // instead. Cover is reserved for genuinely safe/isolated pills, where dangerMap is clear.
+    const tIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
+    if (a4.dangerMap[tIdx] !== 0) return false;             // exposed standoff → engage without cover
+
+    if (pillDistPh > ENGAGE_MAX) return false;              // too far to start a build → APPROACH first
+                                                            // (builder stays aboard; the normal nav
+                                                            // closes the distance, then we build here)
 
     if (pillDistPh <= SAFE_BUILD) {
       // Inside (or near) the pill's range — too dangerous to deploy the builder. Retreat out of
@@ -908,6 +924,20 @@ export function goalGetMan(a4: A4State, state: BrainState): void {
  *
  * See newgetpill_decode.md.
  */
+
+/** Abandon a pill the tank can't route to: set a short RETRY cooldown (pillToGet skips it until
+ *  then — this is a retry timer, NOT a permanent blacklist) and clear the target + commitment + AP
+ *  state so ChooseGoal picks another objective next tick instead of idling on the unreachable pill. */
+function _abandonUnreachablePill(a4: A4State, pill: PillState): void {
+  a4.getPillFailedUntilTick[pill.index & 0x3F] = a4.tickCounter + 2000;   // ~33s, then retriable
+  a4.pillToGetTarget       = null;
+  a4.prevCommittedPillIndex = -1;
+  a4.newGetPillTargetIndex  = -1;
+  a4.newGetPillAPChosen     = 0;
+  a4.newGetPillAPFailCount  = 0;
+  a4.newGetPillStallTick    = 0;
+}
+
 export function goalNewGetPill(a4: A4State, state: BrainState): void {
   const pill = a4.pillToGetTarget;
   if (pill === null) return;
@@ -928,6 +958,27 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
     a4.newGetPillPillCopy = pill;
     a4.chooseAPLastSector = -1;
     a4.newGetPillAPFailCount = 0;  // reset failure count for new target
+    a4.getPillBestDist = 0xFFFF;   // reset the no-progress watchdog for the new target
+    a4.getPillProgressTick = a4.tickCounter;
+    a4.getPillLastArmour = pill.armour & 0xFF;
+  }
+
+  // No-progress watchdog: abandon a pill we're making NO headway on. "Progress" = getting closer
+  // OR dropping its armour (actively damaging it). If neither happens for a long time the engagement
+  // is stuck — unreachable at range (degenerate/looping AP, no route), or a walled-in pill with no
+  // firing slot the tank drives at forever at spd=0 (live: 17k+ ticks frozen 3 tiles from a boxed-in
+  // pill). Set the retry cooldown so the brain does something else and comes back later. Legit slow
+  // grinds and the cover-build hold keep resetting the timer (armour drops / closes), so they're safe.
+  {
+    const distTiles = (pill.distToTank >> 8) & 0xFFFF;
+    let progressed = false;
+    if (distTiles < a4.getPillBestDist) { a4.getPillBestDist = distTiles; progressed = true; }
+    if ((pill.armour & 0xFF) < a4.getPillLastArmour) { a4.getPillLastArmour = pill.armour & 0xFF; progressed = true; }
+    if (progressed) a4.getPillProgressTick = a4.tickCounter;
+    else if (a4.tickCounter - a4.getPillProgressTick > 1500) {   // ~25s of zero progress → stuck
+      _abandonUnreachablePill(a4, pill);
+      return;
+    }
   }
 
   // Same-target detection (index-based)
@@ -1105,9 +1156,14 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
       if (facingErr <= 1) _shootPill(a4, state, pill, dirNav, 0);
     }
 
-    // AP navigation failure: replan from a different sector, never give up.
+    // AP navigation failure: replan from a different sector — but not forever. If replanning keeps
+    // failing, the pill is genuinely unreachable (across water/forest with no routable AP): ABANDON
+    // it for a while so the brain does something else instead of idling on it indefinitely (live
+    // bug: GetPill locked on a 19-tile pill, route:MISS, ctrl:idle for 1600+ ticks). The cooldown
+    // lets pillToGet re-select it later — it's a retry timer, not a permanent blacklist.
     if (a4.noLocalRouteFlag) {
       a4.noLocalRouteFlag = 0;
+      if (++a4.newGetPillAPFailCount >= 20) { _abandonUnreachablePill(a4, pill); return; }
       const dirPillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY);
       a4.chooseAPLastSector = Math.floor((dirPillToAP & 0xFF) * 40 / 256);
       a4.newGetPillAPChosen = 0;
@@ -1115,10 +1171,11 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
       return;
     }
 
-    // Stall detection: if stuck >10s navigating to AP, try a different sector
+    // Stall detection: if stuck >10s navigating to AP, try a different sector; give up after a few.
     if (a4.newGetPillStallTick === 0) {
       a4.newGetPillStallTick = a4.tickCounter;
     } else if (a4.tickCounter - a4.newGetPillStallTick > 600) {
+      if (++a4.newGetPillAPFailCount >= 3) { _abandonUnreachablePill(a4, pill); return; }
       const dirPillToAP = directionTo(pill.x, pill.y, a4.newGetPillAPX, a4.newGetPillAPY);
       a4.chooseAPLastSector = Math.floor((dirPillToAP & 0xFF) * 40 / 256);
       a4.newGetPillAPChosen = 0;
@@ -1135,6 +1192,7 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   //   dist > 0x06E2 (6.9 tiles): speed  8
   //   dist ≤ 0x06E2:             speed  0  — stop and concentrate fire
   a4.newGetPillStallTick = 0;
+  a4.newGetPillAPFailCount = 0;   // reached attack range → this pill is reachable; reset the give-up counter
 
   // COVER LAYER (baseline A/B path only): build a wall on the tank-neighbour while charging.
   // With COVER_SAFE on, the proper cover method (_coverMethodAttack, built at the PILL-neighbour

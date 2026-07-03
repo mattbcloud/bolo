@@ -832,6 +832,14 @@ export class A4State {
    */
   getPillFailedUntilTick: Uint32Array = new Uint32Array(64);
 
+  /** No-progress watchdog for GetPill: the closest we've gotten to the current pill target, and
+   *  the tick we last made progress. If the tank goes a long time without getting closer (stuck at
+   *  a degenerate AP, looping AP re-picks, unreachable target), goalNewGetPill abandons the pill
+   *  (sets getPillFailedUntilTick) so the brain does something else instead of idling. */
+  getPillBestDist = 0xFFFF;
+  getPillProgressTick = 0;
+  getPillLastArmour = 0xFF;   // lowest pill armour seen for the current target (armour drop = progress)
+
   // ── GetMan state ───────────────────────────────────────────────────────────
 
   /** A4[13046] byte — GetMan: man-dispatched flag */

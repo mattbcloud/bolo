@@ -125,6 +125,15 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
   a4.currentGoal       = currentGoal;
   a4.getBaseWasLastGoal = (currentGoal === Goal.GET_BASE) ? 1 : 0;
 
+  // Snapshot the GOAL's turn intent (nav toward its waypoint, or its own aim) before the
+  // opportunistic combat pass. turnTowardsDir routes far turns to the steering word and fine
+  // (<=9deg) aim-turns to the firing word; if doCommonStuff then aims at a DIFFERENT target it can
+  // set the OPPOSITE turn bit, leaving both CCW(0x04) and CW(0x08) set across the two words. The
+  // engine cancels a both-directions turn (turnSpeedup 0) and the tank FREEZES mid-route (live:
+  // GetPill/Refuel stuck spinning turn bits at spd=0). We reconcile below by reverting to this.
+  const goalSteerTurn = a4.steeringWord & 0x0C;
+  const goalFireTurn  = a4.firingWord & 0x0C;
+
   // ── Step 13: DoCommonStuff (0x008212) ─────────────────────────────────────
   doCommonStuff(a4, state);
 
@@ -174,29 +183,35 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
   // ── Step 20: TickCount → A4[13722] ───────────────────────────────────────
   a4.wallClockTick = tickCount();
 
-  // ── [PHASE-0 DEBUG] turn-bit conflict detection ──────────────────────────
-  // Both CCW (0x04) and CW (0x08) set → applyControls sets turningClockwise AND
-  // turningCounterClockwise → tank.ts cancels the turn (turnSpeedup=0) and the
-  // tank plows straight off its planned route. Toggle: window.__BRAIN_DBG__=false
-  if ((globalThis as any).__BRAIN_DBG__ !== false) {
+  // ── Turn-bit conflict reconciliation ─────────────────────────────────────
+  // If both CCW (0x04) and CW (0x08) are now set (across steering+firing), applyControls would
+  // set turningClockwise AND turningCounterClockwise → tank.ts cancels the turn (turnSpeedup=0)
+  // and the tank plows straight / freezes off its planned route. This happens when the goal's
+  // turn and doCommonStuff's opportunistic aim disagree. Resolve it in favour of the GOAL: revert
+  // the turn bits to the pre-doCommonStuff snapshot (nav toward the objective / the goal's own
+  // aim), keeping doCommonStuff's non-turn additions (FIRE 0x10 / SHOOT 0x40). The opportunistic
+  // fine-aim resumes next tick once the hull has swung toward the goal's target.
+  {
     const ccw = !!(a4.steeringWord & 0x04) || !!(a4.firingWord & 0x04);
     const cw  = !!(a4.steeringWord & 0x08) || !!(a4.firingWord & 0x08);
-    const conflict = ccw && cw;
-    const dbg = ((globalThis as any).__bdbg__ ??= { prev: false, last: -999 });
-    if (conflict && (!dbg.prev || a4.tickCounter - dbg.last > 90)) {
-      const GOALS = ['PlacePill', 'Explore', 'FixPill', 'GetBase', 'GetMan', 'GetPill',
-                     'KillBase', 'KillMan', 'KillTank', 'Refuel', 'TourBases'];
-      console.log(
-        `[TURN-CONFLICT] t=${a4.tickCounter} goal=${GOALS[a4.currentGoal] ?? a4.currentGoal} ` +
-        `tank(${a4.tankTileX},${a4.tankTileY}) dir=${a4.tankDirection} ` +
-        `CCW+CW both set -> NO TURN. steer=0x${a4.steeringWord.toString(16)} ` +
-        `fire=0x${a4.firingWord.toString(16)} (combat overrode nav steering toward waypoint)`,
-      );
-      dbg.last = a4.tickCounter;
+    if (ccw && cw) {
+      a4.steeringWord = (a4.steeringWord & ~0x0C) | goalSteerTurn;
+      a4.firingWord   = (a4.firingWord   & ~0x0C) | goalFireTurn;
+      if ((globalThis as any).__BRAIN_DBG__ !== false) {
+        const dbg = ((globalThis as any).__bdbg__ ??= { last: -999 });
+        if (a4.tickCounter - dbg.last > 180) {
+          const GOALS = ['PlacePill', 'Explore', 'FixPill', 'GetBase', 'GetMan', 'GetPill',
+                         'KillBase', 'KillMan', 'KillTank', 'Refuel', 'TourBases'];
+          // eslint-disable-next-line no-console
+          console.log(`[TURN-RESOLVED] t=${a4.tickCounter} goal=${GOALS[a4.currentGoal] ?? a4.currentGoal} ` +
+            `tank(${a4.tankTileX},${a4.tankTileY}) reverted combat aim-turn to goal steering ` +
+            `-> steer=0x${a4.steeringWord.toString(16)} fire=0x${a4.firingWord.toString(16)}`);
+          dbg.last = a4.tickCounter;
+        }
+      }
     }
-    dbg.prev = conflict;
   }
-  // ── [/PHASE-0 DEBUG] ─────────────────────────────────────────────────────
+  // ── [/turn reconciliation] ───────────────────────────────────────────────
 
   return {
     steeringWord:  a4.steeringWord,
@@ -282,9 +297,15 @@ function chooseGoal(a4: A4State, state: BrainState): number {
 
     if (prevPillValid) {
       if (a4.newGetPillAPChosen) {
-        // Tier 1: AP chosen — unconditional lock (no prevGoal gate).
-        // Survives brief interruptions by GetBase/Refuel without resetting AP.
-        a4.pillToGetTarget = prevPill;
+        // Tier 1: AP chosen — lock onto the committed pill (survives brief GetBase/Refuel
+        // interruptions without resetting the AP). EXCEPTION: break the lock to recover a FREE
+        // (0-armour) pill that's now cheaper to grab — it's a no-cost, time-sensitive capture
+        // (an enemy could take it first). Don't break off if we're about to finish the committed
+        // pill ourselves (armour <= 3) — that one's about to become a free grab too.
+        const freeGrab = newPill !== null && newPill.armour === 0 &&
+          newPill.index !== a4.prevCommittedPillIndex && (prevPill!.armour & 0xFF) > 3 &&
+          getPillCostForPill(a4, state, newPill) < getPillCostForPill(a4, state, prevPill!);
+        if (!freeGrab) a4.pillToGetTarget = prevPill;
       } else if (newPill !== null && newPill.index !== a4.prevCommittedPillIndex) {
         // Tier 2: no AP yet — cost-based preference
         if (prevPill!.armour <= 3) {

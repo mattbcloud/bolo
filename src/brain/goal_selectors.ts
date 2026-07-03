@@ -154,6 +154,9 @@ export function pillToGet(a4: A4State, state: BrainState): PillState | null {
     if (!pill.attackable) continue;                 // not an attackable enemy pill
     if (pill.alreadyTargeted) continue;             // ally already handling it
     if (pill.processingBlocked) continue;
+    // Temporarily skip a pill we just proved unreachable (route kept failing) so we don't lock
+    // onto it and idle forever; it becomes selectable again after the cooldown (not a blacklist).
+    if (a4.tickCounter < a4.getPillFailedUntilTick[pill.index & 0x3F]) continue;
 
     const cost = getPillCostForPill(a4, state, pill);
     if (cost < bestCost) {
@@ -247,6 +250,12 @@ export function getBaseCostForBase(a4: A4State, _state: BrainState, base: BaseSt
 export function getPillCostForPill(_a4: A4State, state: BrainState, pill: PillState): number {
   // Can't shoot an armed pill without ammo; only pursue armour=0 pills for auto-capture
   if (state.tank.ammo === 0 && pill.armour > 0) return 0xFFFF;
+
+  // A neutralised (0-armour) pill is a FREE capture — just drive onto it: no ammo, no grind, no
+  // risk, and the damage someone already spent persists. PRIORITISE recovering it (user request):
+  // cost well below armed pills (undefended ~dist/4) and bases (~dist tiles), distance-ordered so
+  // we grab the NEAREST dead pill, and >=1 so survival emergencies (cost 0) still win.
+  if (pill.armour === 0) return u16(Math.max(1, pill.distToTank >> 11));   // ≈ tiles/8
 
   const defCount = pill.defenderCount & 0xFF;
   const bwDist   = pill.distToTank;
@@ -373,18 +382,21 @@ export function fixPillCostForPill(a4: A4State, _state: BrainState, pill: PillSt
 export function placePillGoalCost(a4: A4State, state: BrainState): number {
   if (a4.baseToBuildTarget === null) return 0xFFFF;
 
-  // Once the tank holds a captured pillbox, PREFER using it as COVER to capture MORE pills
-  // (per the tactics guide a captured pill is the best cover — it absorbs the target's fire AND
-  // shoots back; _coverMethodAttack plants it next to the target) over deploying it to defend a
-  // base. So while there is still an attackable pill to hunt, yield to GetPill; only fall back to
-  // placing the pill at a base when no pill is left to hunt with it.
+  const carried = state.tank.pillsCarried & 0xFF;
+
+  // DEPLOY captured pillboxes to defend bases. Cost 1 beats GetBase/Explore yet yields to emergency
+  // Refuel / close base-capture / tank-kill (cost 0). Reserve at MOST ONE pill for the cover method
+  // (a captured pill is the best cover — _coverMethodAttack plants it next to the target): while
+  // carrying just one AND there's a pill to hunt with it, yield to GetPill. But NEVER hoard — any
+  // EXCESS pill (2nd, 3rd, …) is placed regardless, so tanks stop driving around with 3+ undeployed
+  // pillboxes while working other objectives (live bug).
+  if (carried >= 2) return 1;   // place the excess now — don't accumulate
+
   if (a4.pillToGetTarget !== null && getPillCostForPill(a4, state, a4.pillToGetTarget) < 0xFFFF) {
-    return 0xFFFE;   // lose to GetPill → keep hunting and use the captured pill as cover
+    return 0xFFFE;   // holding one, a pill to hunt → keep it as cover
   }
 
-  // No pill to hunt → deploy the captured pill to DEFEND the nearest buildable base. Cost 1
-  // beats GetBase/Explore yet yields to emergency Refuel / close base-capture / tank-kill (cost 0).
-  return 1;
+  return 1;   // holding one, nothing to hunt → deploy it to defend a base
 }
 
 /**
@@ -533,6 +545,7 @@ export function getPillGoalCost(a4: A4State, state: BrainState): number {
 export function killBaseGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.killBaseTarget;
   if (target === null) return 0xFFFF;
+  if (state.tank.ammo === 0) return 0xFFFF;   // no shells → can't destroy it; go refuel instead
   return killBaseCostForBase(a4, state, target);
 }
 
@@ -542,6 +555,9 @@ export function killBaseGoalCost(a4: A4State, state: BrainState): number {
 export function killManGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.manToKillTarget;
   if (target === null) return 0xFFFF;
+  // Out of ammo → we can't shoot the man; pursuing it just circles a target we can't kill and
+  // starves Refuel (live bug: ammo=0 tank stuck flip-flopping KillMan/KillTank, spinning in place).
+  if (state.tank.ammo === 0) return 0xFFFF;
   return killManCostForTank(a4, state, target);
 }
 
@@ -551,6 +567,7 @@ export function killManGoalCost(a4: A4State, state: BrainState): number {
 export function killTankGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.tankToKillTarget;
   if (target === null) return 0xFFFF;
+  if (state.tank.ammo === 0) return 0xFFFF;   // no shells → can't kill it; yield to Refuel
   return killTankCostForTank(a4, state, target);
 }
 
@@ -738,6 +755,27 @@ function baseUnderHostilePill(a4: A4State, base: BaseState): boolean {
 }
 
 export function chooseRefuelBase(a4: A4State, state: BrainState): BaseState | null {
+  const tank = state.tank;
+
+  // STICKY commit: if we're already sitting on an ally base that still has ANY stock and we still
+  // need fuel, keep refuelling HERE until it's empty or we're full. The normal pick below skips a
+  // base once its stock drops under the ARRIVAL threshold (15) — but as a tank refuels it drains
+  // the base, so that filter flips the target to another base mid-refuel, the tank drives off at
+  // ~half full, drains that one, flips back, and never tops up (live: red tank ping-ponging two
+  // bases, stuck at ~15 armour). Committing to the base we're on drains it fully before moving on.
+  if (tank.armor < 40 || tank.shells < 40) {
+    for (const base of a4.bases) {
+      if (!base.isAlly || base.isEnemy) continue;
+      if ((base.tileX & 0xFF) !== (a4.tankTileX & 0xFF) || (base.tileY & 0xFF) !== (a4.tankTileY & 0xFF)) continue;
+      const ob = (base as any).oronaBase;
+      const baseArmour = ob?.armour ?? (base as any).armor ?? 0;
+      const baseShells = ob?.shells ?? 0;
+      const canHelp = (baseArmour > 0 && tank.armor < 40) || (baseShells > 0 && tank.shells < 40);
+      const idx = ((base.tileY & 0xFF) << 8) | (base.tileX & 0xFF);
+      if (canHelp && !a4.blockedMap[idx] && !baseUnderHostilePill(a4, base)) return base;
+    }
+  }
+
   let best: BaseState | null = null;
   let bestCost = 0xFFFF;
   // Last-resort target: the best stocked base even if pill-covered. Only used when NO
