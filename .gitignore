@@ -16,3 +16,5 @@ firebase-service-account.json
 .env
 .env.local
 .env.production
+dist/.DS_Store
+**/.DS_Store
