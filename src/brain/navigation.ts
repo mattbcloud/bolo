@@ -157,12 +157,22 @@ function computePath(
       const tileCost = costs[raw];
       if (tileCost >= 1000) continue;  // impassable
 
-      // Prevent diagonal corner-cutting: Bolo physics block diagonal movement
-      // when either adjacent orthogonal tile is a wall.
+      // Prevent diagonal corner-cutting: the engine won't let a tank squeeze
+      // diagonally past a blocked corner. Block the diagonal when either
+      // orthogonally-adjacent cell is impassable (cost≥1000: live pill, armoured
+      // base, deep water) OR a WALL / shot-wall (terrain 0 / 8). Walls are
+      // individually bulldozable so their cost is FINITE (<1000) — the old check,
+      // gated only on cost≥1000, therefore let A* cut a diagonal between two walls.
+      // The follower then drove into the wall corner and the tank sat at spd=0
+      // forever (live Refuel freeze: the next waypoint wasn't itself a wall, so the
+      // bulldoze-through path never fired). Adding the wall case routes around.
       if (dx !== 0 && dy !== 0) {
         const adjX = worldMap[((cy & 0xFF) << 8) | ((cx + dx) & 0xFF)];
         const adjY = worldMap[(((cy + dy) & 0xFF) << 8) | (cx & 0xFF)];
-        if (costs[adjX] >= 1000 || costs[adjY] >= 1000) continue;
+        const tX = adjX & 0x0F, tY = adjY & 0x0F;
+        const blockX = costs[adjX] >= 1000 || tX === 0 || tX === 8;
+        const blockY = costs[adjY] >= 1000 || tY === 0 || tY === 8;
+        if (blockX || blockY) continue;
       }
 
       // Wall proximity penalty: penalize tiles adjacent to impassable terrain.

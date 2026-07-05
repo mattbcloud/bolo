@@ -623,6 +623,15 @@ export function refuelGoalCost(a4: A4State, state: BrainState): number {
     if (atBase && baseCanHelp) return 0;   // stay and top up to FULL before leaving
   }
 
+  // Collect a KILLED pill before emergency-refuelling. If our target pill is already dead
+  // (armour 0) and close, driving onto it to collect is free, instant, and safe (a dead pill
+  // doesn't fire) and banks the capture we just earned. Otherwise the emergencies below yank the
+  // low-armour tank off the free pill and leave it uncaptured (observed: pill ground to 0 from
+  // cover, then the tank drove away to refuel). Yield so GetPill's Phase 4a (drive onto it) runs —
+  // getPillCostForPill already prices a 0-armour pill as a cheap free capture, so GetPill wins.
+  const deadTgt = a4.pillToGetTarget;
+  if (deadTgt !== null && deadTgt.armour === 0 && (deadTgt.distToTank >> 8) <= 4) return 0xFFFF;
+
   // Emergency rearm: a tank with ZERO shells can't shoot down an armoured base or grind a
   // pill — every combat goal is stuck (it would otherwise idle on-target firing nothing,
   // e.g. parked on an armoured enemy base it can't damage). Treat empty shells like the
@@ -672,11 +681,22 @@ export function refuelGoalCost(a4: A4State, state: BrainState): number {
 export function tourBasesGoalCost(a4: A4State, _state: BrainState): number {
   if (!a4.bases.some(b => b.isAlly)) return 0xFFFF;
 
-  // Only activate when no GetPill, FixPill, or PlacePill objectives exist
-  const getPillCost  = a4.goals[5]?.cost ?? 0xFFFF;   // Goal.GET_PILL = 5
-  const fixPillCost  = a4.goals[2]?.cost ?? 0xFFFF;   // Goal.FIX_PILL = 2
-  const placePillCost = a4.goals[0]?.cost ?? 0xFFFF;  // Goal.PLACE_PILL = 0
-  if (getPillCost < 0xFFFF || fixPillCost < 0xFFFF || placePillCost < 0xFFFF) {
+  // TourBases is the lowest-priority "wander friendly bases when idle" goal, so it must yield to
+  // EVERY real objective — not just the pill goals. The old guard checked only GetPill/FixPill/
+  // PlacePill, so its cost-1 beat a medium-range combat goal (KillTank costs 2 at 5-10 tiles, 0
+  // only ≤5 tiles): a tank toured bases instead of engaging an enemy 6-7 tiles away (killtank.
+  // test: enemy@(+6,+3) → goal=TourBases, 0 damage). Yield to the combat goals (KillTank/KillMan/
+  // KillBase) and GetBase too, so touring only happens when there is genuinely nothing to fight
+  // or capture.
+  const getPillCost   = a4.goals[5]?.cost ?? 0xFFFF;   // Goal.GET_PILL   = 5
+  const fixPillCost   = a4.goals[2]?.cost ?? 0xFFFF;   // Goal.FIX_PILL   = 2
+  const placePillCost = a4.goals[0]?.cost ?? 0xFFFF;   // Goal.PLACE_PILL = 0
+  const getBaseCost   = a4.goals[3]?.cost ?? 0xFFFF;   // Goal.GET_BASE   = 3
+  const killBaseCost  = a4.goals[6]?.cost ?? 0xFFFF;   // Goal.KILL_BASE  = 6
+  const killManCost   = a4.goals[7]?.cost ?? 0xFFFF;   // Goal.KILL_MAN   = 7
+  const killTankCost  = a4.goals[8]?.cost ?? 0xFFFF;   // Goal.KILL_TANK  = 8
+  if (getPillCost < 0xFFFF || fixPillCost < 0xFFFF || placePillCost < 0xFFFF ||
+      getBaseCost < 0xFFFF || killBaseCost < 0xFFFF || killManCost < 0xFFFF || killTankCost < 0xFFFF) {
     return 0xFFFF;
   }
 

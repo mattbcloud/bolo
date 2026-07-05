@@ -762,6 +762,14 @@ export class A4State {
   /** Tick when previous positions were recorded (for stale-data guard) */
   enemyPrevTick: Int32Array = new Int32Array(16);
 
+  /** Dedicated previous-position cache for the KillTank target's LEAD aim. Kept separate from
+   *  enemyPrev* (which doCommonStuff overwrites with the CURRENT position mid-tick, zeroing the
+   *  delta) so goalKillTank can measure the target's velocity itself and aim where it WILL be. */
+  killTankPrevX = 0;
+  killTankPrevY = 0;
+  killTankPrevTick = 0;
+  killTankPrevIdx = -1;
+
   // ── GetBase state ──────────────────────────────────────────────────────────
 
   /** A4[13870] ptr — GetBase: BaseToGet change-detection ptr */
@@ -1115,6 +1123,17 @@ export class A4State {
    *  hits instead of retreating and leaving the pill stuck at ~3 armour forever. Only
    *  set when checkBarriers confirms the pill→tank shot is blocked (so staying is safe). */
   coverFinishHold = 0;
+
+  /** Latched cover placement (port addition). The cover (wall or captured pillbox) must sit on the
+   *  pill's neighbour toward the TANK (the approach side), so the tank fires from BEHIND it — NOT
+   *  toward the independently-chosen AP, which can land on the far side of the pill and leave the
+   *  cover uselessly opposite the tank. The tile is latched once per target pill (keyed by
+   *  coverTilePill) so it stays fixed as the tank advances to fire — recomputing from the moving
+   *  tank each tick would drift the tile off the placed cover and trigger an endless rebuild.
+   *  coverTilePill = the packed tile of the pill this cover is for (-1 = unset). */
+  coverTileX = -1;
+  coverTileY = -1;
+  coverTilePill = -1;
 
   /** A4[13895] byte — NewRefuel: sub-state machine variable */
   newRefuelState = 0;

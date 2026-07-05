@@ -2313,11 +2313,45 @@ export class BoloClientWorld extends ClientWorld {
         goalTgtStr = b ? `base[${b.tileX},${b.tileY}]d=${b.distToTank>>8}tx` : 'none';
       } else if (goalIdx === 9) { // Refuel
         const r = a4.refuelBaseTarget;
-        goalTgtStr = r ? `base[${r.tileX},${r.tileY}]d=${r.distToTank>>8}tx` : 'none';
+        // Task#4 diagnostic: why does a tank parked ON a stocked base not refuel?
+        // Expose the engine-side handshake: base stock/team, tank team, whether the
+        // engine sees the tank ON the base cell (cell-object identity), and whether
+        // the base's `refueling` ref points to US / someone else / null + its counter.
+        const ob = r ? (r as any).oronaBase : null;
+        const pt = this.player;
+        const refT = ob?.refueling?.$ ?? null;
+        // face vs dirBase: if the tank's facing stays far from the bearing to the base while it
+        // sits at spd=0 (ACC|CW), it's turning-in-place / oscillating rather than moving in — the
+        // suspected cause of the diagonal-approach stall at a contested base.
+        let faceDbg = '';
+        if (pt && r) {
+          const face = (pt.direction ?? 0) & 0xFF;
+          const dx = (r.x ?? 0) - (pt.x ?? 0), dy = (r.y ?? 0) - (pt.y ?? 0);
+          const dirBase = (Math.round(Math.atan2(-dy, dx) / (2 * Math.PI) * 256) + 256) & 0xFF;
+          const err = Math.min((face - dirBase + 256) & 0xFF, (dirBase - face + 256) & 0xFF);
+          // occupant of the base cell (a live enemy sitting on it would block landing)
+          const occ = ob?.cell ? (this.tanks ?? []).find((t: any) => t !== pt && t.cell === ob.cell && t.armour !== 255) : null;
+          faceDbg = ` face=${face} dirBase=${dirBase} err=${err}${occ ? ' BLOCKED-by-tank' : ''}`;
+        }
+        const dbg = ob
+          ? ` bArm=${ob.armour} bSh=${ob.shells} bTeam=${ob.team} tTeam=${pt?.team} onCell=${ob.cell === pt?.cell ? 1 : 0} ref=${refT ? (refT === pt ? 'ME' : 'OTHER') : 'null'} rc=${ob.refuelCounter}`
+          : ' ob=null';
+        goalTgtStr = (r ? `base[${r.tileX},${r.tileY}]d=${r.distToTank>>8}tx` : 'none') + dbg + faceDbg;
       } else if (goalIdx === 4) { // GetMan
         const m = a4.myMan;
         const md = m ? Math.round(Math.hypot((m.x>>8)-a4.tankTileX, (m.y>>8)-a4.tankTileY)) : 0;
         goalTgtStr = m ? `man[${m.x>>8},${m.y>>8}]d=${md}tx tank[${a4.tankTileX},${a4.tankTileY}] failUntil=${a4.getManFailedUntilTick}` : 'none';
+      } else if (goalIdx === 7) { // KillMan — diagnose the spin/stall
+        const mk: any = a4.manToKillTarget;
+        if (mk) {
+          const dtx = Math.round(Math.hypot((mk.x>>8)-a4.tankTileX, (mk.y>>8)-a4.tankTileY));
+          const dm = mk.distanceMetric;
+          // Handler branches (goalKillMan): dm>=0x700 far→nav, dm<0x100 very-close→explore, else med→shoot.
+          const branch = dm >= 0x700 ? 'FAR/nav' : (dm < 0x100 ? 'CLOSE/explore' : 'MED/shoot');
+          goalTgtStr = `man[${mk.x>>8},${mk.y>>8}]d=${dtx}tx dm=${dm} ${branch} active=${mk.active?1:0} shells=${this.player?.shells ?? '?'}`;
+        } else {
+          goalTgtStr = 'man=null';
+        }
       }
       const spd = Math.round(state.tank.speed * 10) / 10;
       const GN2: Record<number,string> = {0:'PP',1:'Ex',2:'FP',3:'GB',4:'GM',5:'GP',6:'KB',7:'KM',8:'KT',9:'RF',10:'TB',12:'NO'};
