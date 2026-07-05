@@ -527,19 +527,32 @@ export function shootPillFromCover(
 
   // Aim point to STEER toward: pill centre if LOS is clear, else the pill edge on
   // whichever perpendicular side has a clear line (graze past the cover).
+  //
+  // CRITICAL geometry (why we scan the offset instead of using a fixed 112): a shell
+  // only hits the pill when it enters the pill's cell within 127 of its centre
+  // (shell.ts collide). Aiming at a large fixed edge offset (112) puts the shell's
+  // closest approach to the centre at ~111 — right at the ragged edge of the 127
+  // radius — so the ±fireTolerance angular slop biases most grazes OUTSIDE 127 and
+  // they sail past (measured: tank fires steadily behind cover yet armour barely
+  // moves). Instead scan the offset from small→large and take the SMALLEST offset
+  // whose LOS clears the cover: that keeps the shell as close to centre as possible
+  // (deep inside 127 = reliable hit) while still grazing past the single cover tile.
   let aimX = pillX, aimY = pillY;
   if (checkBarriers(a4, tank.x, tank.y, pillX, pillY) > 0) {
     const dx = signedWord(pillX - tank.x);
     const dy = signedWord(pillY - tank.y);
     const len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len;        // unit tank→pill (screen space)
-    const cands = [
-      { x: (pillX + Math.round(-uy * edgeOffset)) & 0xFFFF, y: (pillY + Math.round(ux * edgeOffset)) & 0xFFFF },
-      { x: (pillX + Math.round(uy * edgeOffset)) & 0xFFFF, y: (pillY + Math.round(-ux * edgeOffset)) & 0xFFFF },
-    ];
     let chosen: { x: number; y: number } | null = null;
-    for (const c of cands) {
-      if (checkBarriers(a4, tank.x, tank.y, c.x, c.y) === 0) { chosen = c; break; }
+    for (const off of [64, 80, 96, 112, edgeOffset]) {   // ascending: smallest clearing offset wins
+      const cands = [
+        { x: (pillX + Math.round(-uy * off)) & 0xFFFF, y: (pillY + Math.round(ux * off)) & 0xFFFF },
+        { x: (pillX + Math.round(uy * off)) & 0xFFFF, y: (pillY + Math.round(-ux * off)) & 0xFFFF },
+      ];
+      for (const c of cands) {
+        if (checkBarriers(a4, tank.x, tank.y, c.x, c.y) === 0) { chosen = c; break; }
+      }
+      if (chosen) break;
     }
     if (!chosen) return 0;   // no clear edge — hold fire (caller may reposition)
     aimX = chosen.x; aimY = chosen.y;
@@ -549,21 +562,30 @@ export function shootPillFromCover(
   const fireDir = directionTo(tank.x, tank.y, aimX, aimY);
   turnTowardsDir(a4, tank.facingDir, fireDir, 0);
 
-  // FIRE GATE decoupled from turnTowardsDir's "aligned" return (which, with
-  // tolerance 0, oscillates ±1 forever in the live loop and never fires). Fire
-  // whenever the hull is within a small angular tolerance of the aim AND the shot
-  // along the CURRENT facing actually clears the cover (no barrier to the pill's
-  // range along facing). hitRadius is the angular tolerance in direction units.
+  // FIRE GATE — predict the hit directly instead of using an angular tolerance.
+  // At ~6-7 tile range even a ±3 direction-unit tolerance spans >130 units laterally
+  // at the pill (far more than its 127 collision radius), so an "aligned" graze sails
+  // wide and the pill barely takes damage. Instead fire only when the shell along the
+  // CURRENT facing will actually connect: (1) it clears the cover, and (2) its closest
+  // approach to the pill CENTRE is inside the collision radius (with margin). The shell
+  // hits a pill when it enters the pill's cell within 127 of centre (shell.ts collide).
   if ((tank.shellCount & 0xFF) < 14) return 0;
-  const delta = computeDirectionDelta(tank.facingDir, fireDir);
-  if (delta > hitRadius) return 0;
+  const HIT_MARGIN = 110;   // < 127 collision radius, leaving slack for the discrete 32u shell step
   const projDist = computeDistanceBetween(tank.x, tank.y, pillX, pillY);
   const shot = locationFromDir(tank.facingDir & 0xFF, projDist, tank.x, tank.y);
-  if (checkBarriers(a4, tank.x, tank.y, shot.x & 0xFFFF, shot.y & 0xFFFF) === 0) {
-    a4.firingWord |= 0x10;   // stationary fire (no forced forward motion)
-    return 1;
-  }
-  return 0;
+  if (checkBarriers(a4, tank.x, tank.y, shot.x & 0xFFFF, shot.y & 0xFFFF) > 0) return 0;  // blocked by cover
+  // Closest approach of the facing ray to the pill centre. The shell velocity unit is
+  // (cos,sin) of ((256-dir)/256·2π), matching shell.ts move().
+  const rdx = signedWord(pillX - tank.x), rdy = signedWord(pillY - tank.y);
+  const frad = ((256 - (tank.facingDir & 0xFF)) * 2 * Math.PI) / 256;
+  const fux = Math.cos(frad), fuy = Math.sin(frad);
+  const proj = rdx * fux + rdy * fuy;
+  if (proj <= 0) return 0;                                          // pill is behind our facing
+  const closest = Math.sqrt(Math.max(0, rdx * rdx + rdy * rdy - proj * proj));
+  if (closest > HIT_MARGIN) return 0;                              // would sail past the 127 radius
+  void hitRadius;
+  a4.firingWord |= 0x10;   // stationary fire (no forced forward motion)
+  return 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -842,6 +864,18 @@ export function doCommonStuff(
   // engine needs (>=16) to climb onto the shore, stranding the tank against the
   // bank. Suppress all of it on a boat; navigation owns the hull until it lands.
   if (tank.onBoat) return;
+
+  // ── Cover-fire: hand the hull to shootPillFromCover exclusively ───────
+  // When parked on the cover firing slot, goalNewGetPill drives shootPillFromCover, which
+  // rotates the hull to the pill's near EDGE (grazing past the wall) and fires ONLY when the
+  // shell will actually connect. doCommonStuff's Phase-1 auto-fire below shoots EVERY loaded
+  // tick along the current (still-rotating) facing — into the wall or wide — wasting the shot
+  // window and slowing the kill ~10× (the graze needs a settled, edge-true aim). Phase-2's
+  // opportunistic aim also fights the edge aim toward the pill CENTRE (which the wall blocks).
+  // So while the cover-fire hold is active, suppress opportunistic combat entirely — exactly
+  // like the on-boat case — and let the gated graze own the hull. Also holds it dead-still (no
+  // forward bits to cancel the slot brake), so it stays on the exact cell.
+  if (a4.coverFireHold) return;
 
   // ── Phase 1: Auto-fire at short range ────────────────────────────────
   // Verified from assembly 0x008222: when shellCount < 14 AND not shotAtMan → fire.

@@ -505,6 +505,24 @@ export function navigateToCoords(
   const currentDir = a4.tankDirection;
   const currentSpd = a4.tankSpeed;
 
+  // ── Stale boat-latch reset on destination change ──────────────────────────
+  // A boatNeeded latch is tied to a SPECIFIC destination's water route (its boat-build tile). When
+  // the GOAL changes where it's sending us (e.g. Refuel-near-water → GetBase), a latch left over
+  // from the old destination keeps redirecting nav to the OLD boat tile — and if that tile is where
+  // the tank already sits, it "arrives" and dead-stops there forever (live: GetBase/Refuel idle at
+  // the water's edge, route:ok but spd=0). acquiringBoat suppresses the wet/dry re-check, so the
+  // stale latch never self-clears. Detect a raw destination change here (before any boat redirect
+  // below reads boatNeeded) and reset the acquisition so the boat decision is re-made for the NEW
+  // destination. Uses the RAW target param (the goal's real destination), not the redirected one.
+  {
+    const reqTX = (targetX >> 8) & 0xFF, reqTY = (targetY >> 8) & 0xFF;
+    if (reqTX !== a4.navReqDestTileX || reqTY !== a4.navReqDestTileY) {
+      a4.navReqDestTileX = reqTX;
+      a4.navReqDestTileY = reqTY;
+      if (!a4.tankOnBoat) { a4.boatNeeded = false; a4.boatAcquireSinceTick = 0; }
+    }
+  }
+
   // ── GetBoat sub-goal ──────────────────────────────────────────────────────
   // When a water route is significantly shorter and we're not on a boat yet,
   // acquire a boat: redirect navigation toward the boat pickup/build point.
@@ -826,15 +844,22 @@ export function navigateToCoords(
   // Wall or shot-wall ahead on the path: stop and shoot to bulldoze through.
   // Walls take 5 shots, shot-walls take 1. Only shoot if we have ammo.
   if ((wpTerrain === 0 || wpTerrain === 8) && wpCost < 1000) {
-    const wpBWorldX = ((wpTile & 0xFF) << 8) + 128;
-    const wpBWorldY = (((wpTile >> 8) & 0xFF) << 8) + 128;
-    const wallDist = computeDistanceBetween(fromX, fromY, wpBWorldX, wpBWorldY);
-    if (wallDist < 1792) {
-      // In range — aim and fire
-      turnTowardsXY(a4, fromX, fromY, wpBWorldX, wpBWorldY, currentDir);
-      setSpeed(a4, 0, currentSpd);
-      a4.firingWord |= 0x10;  // fire
-      return;
+    if (a4.myTankShells <= 0) {
+      // No shells → can't bulldoze this wall. A cached path (planned when we had ammo) still routes
+      // through it; force a recompute — setRouteCosts now makes walls impassable at 0 shells, so A*
+      // reroutes around. Don't stop-and-fire-nothing here (that's the 0-ammo freeze).
+      a4.worldCostsInitDone = 0;
+    } else {
+      const wpBWorldX = ((wpTile & 0xFF) << 8) + 128;
+      const wpBWorldY = (((wpTile >> 8) & 0xFF) << 8) + 128;
+      const wallDist = computeDistanceBetween(fromX, fromY, wpBWorldX, wpBWorldY);
+      if (wallDist < 1792) {
+        // In range — aim and fire
+        turnTowardsXY(a4, fromX, fromY, wpBWorldX, wpBWorldY, currentDir);
+        setSpeed(a4, 0, currentSpd);
+        a4.firingWord |= 0x10;  // fire
+        return;
+      }
     }
   }
 
@@ -911,6 +936,17 @@ export function navigateToCoords(
   if (!a4.tankOnBoat) {
     if (dist < 640)      setMaxSpeed(a4, 4);
     else if (dist < 896) setMaxSpeed(a4, 8);
+  }
+
+  if (typeof process !== 'undefined' && process.env.NAVDBG === '1'
+      && a4.tickCounter >= Number(process.env.NAVLO ?? 0) && a4.tickCounter <= Number(process.env.NAVHI ?? 1e9)) {
+    const carrotDir = directionTo(fromX, fromY, carrotX, carrotY) & 0xFF;
+    const cx = (carrotX >> 8) & 0xFF, cy = (carrotY >> 8) & 0xFF;
+    const angC = computeDirectionDelta(currentDir & 0xFF, carrotDir);
+    // eslint-disable-next-line no-console
+    console.log(`  [NAV t=${a4.tickCounter}] tank=(${a4.tankTileX},${a4.tankTileY}) idx=${idx}/${path.length} `
+      + `wp=(${wpX},${wpY}) carrot=(${cx},${cy}) face=${currentDir & 0xFF} carrotDir=${carrotDir} angCarrot=${angC} `
+      + `getTurnSpd=${speed} maxSpd=${a4.maxSpeed} steer=0x${a4.steeringWord.toString(16)} wpTerr=${wpTerrain} wpCost=${wpCost} dist=${dist}`);
   }
 
   setSpeed(a4, a4.maxSpeed, currentSpd);

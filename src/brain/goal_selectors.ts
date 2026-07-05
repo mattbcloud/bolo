@@ -415,12 +415,25 @@ export function fixPillGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.pillToFixTarget;
   if (target === null) return 0xFFFF;
 
-  // Don't commit to a repair the tank CANNOT perform. Repairing costs trees
-  // (treesForRepair: armour≥11→1, ≥7→2, ≥3→3, else 4) and the brain has no FixPill
-  // tree-gathering path, so with too few trees goalFixPill just parks the tank idle
-  // next to the pill FOREVER — and FixPill stays the cheapest goal so it never yields
-  // to GetPill/GetBase. (Observed live: a full-armour "frozen" tank stuck on FixPill(1)
-  // with 0 trees.) Require the trees up front; otherwise yield to an achievable goal.
+  // RECLAIM vs REPAIR gating (goalFixPill splits the same way): a non-self-placed friendly pill
+  // is RECLAIMED (picked up to redeploy), not repaired. Reclaiming costs NO trees — an armour-0
+  // pill (e.g. our own boxes SCATTERED on the ground when we died, or a teammate's dead pill in a
+  // pill war) is collected by simply driving onto its cell; a still-armoured one is shot down to 0
+  // first, which needs SHELLS. Only the REPAIR path (a self-placed pill we own) costs trees. The
+  // old code applied the trees-gate to EVERYTHING, so a dropped pill (armour 0 → treesNeeded 4)
+  // was unreachable to a low-on-trees tank — it could never go back and pick up the pillboxes it
+  // dropped on death (user directive; matches the doctrine "don't be afraid to pick up a dead pill").
+  const RECLAIM = typeof process === 'undefined' || process.env.RECLAIM !== '0';
+  if (RECLAIM && !a4.isSelfPlacedPill(target)) {
+    if (target.armour > 0 && (state.tank.shells & 0xFF) === 0) return 0xFFFF;   // need shells to shoot it down
+    return fixPillCostForPill(a4, state, target);
+  }
+
+  // Repair path (self-placed pill): costs trees (treesForRepair: armour≥11→1, ≥7→2, ≥3→3, else 4)
+  // and the brain has no FixPill tree-gathering path, so with too few trees goalFixPill just parks
+  // the tank idle next to the pill FOREVER — and FixPill stays the cheapest goal so it never yields
+  // to GetPill/GetBase. (Observed live: a full-armour "frozen" tank stuck on FixPill(1) with 0
+  // trees.) Require the trees up front; otherwise yield to an achievable goal.
   const treesNeeded = target.armour >= 11 ? 1 : target.armour >= 7 ? 2 : target.armour >= 3 ? 3 : 4;
   if (state.tank.resourceCount < treesNeeded) return 0xFFFF;
 
@@ -711,6 +724,24 @@ export function tourBasesGoalCost(a4: A4State, _state: BrainState): number {
   return 1;
 }
 
+/** True if the straight tank→target line crosses a DEEP-SEA tile (terrain 10, `^`). Deep sea is
+ *  traversable via boat, so navigateToCoords will route a chase straight into the ocean; we use this
+ *  to refuse KillTank targets on the far side of the sea (the tank drove into deep water while firing
+ *  at an across-water/stale enemy — live bug). River (terrain 1) is NOT included: those are normal
+ *  crossings a land route usually skirts, and excluding them avoids false-rejecting reachable foes. */
+function _lineCrossesDeepSea(a4: A4State, x0: number, y0: number, x1: number, y1: number): boolean {
+  const tx0 = (x0 >> 8) & 0xFF, ty0 = (y0 >> 8) & 0xFF;
+  const tx1 = (x1 >> 8) & 0xFF, ty1 = (y1 >> 8) & 0xFF;
+  const steps = Math.max(Math.abs(tx1 - tx0), Math.abs(ty1 - ty0));
+  if (steps === 0) return false;
+  for (let i = 1; i <= steps; i++) {
+    const x = Math.round(tx0 + ((tx1 - tx0) * i) / steps) & 0xFF;
+    const y = Math.round(ty0 + ((ty1 - ty0) * i) / steps) & 0xFF;
+    if ((a4.worldMap[((y & 0xFF) << 8) | (x & 0xFF)] & 0x0F) === 10) return true;
+  }
+  return false;
+}
+
 /**
  * TankToKill selector: scan men array and set a4.tankToKillTarget.
  * Simplified version of TankToKill (0x00cbc8) / MarkKillableTanks (0x00cc3e).
@@ -731,6 +762,12 @@ export function selectTankToKill(a4: A4State, state: BrainState): EnemyTankState
     const dist = man.distanceMetric;
     const rangeLimit = (state.tank.shells >= 4) ? 2560 : 1024;
     if (dist > rangeLimit) continue;
+
+    // Don't chase an enemy across DEEP SEA — the chase would route the tank into the ocean, firing
+    // the whole way (water blocks neither LOS nor shells). Skip so KillTank yields to a land goal.
+    // Also refuses targets while the tank is adrift in the sea (every line crosses deep water), so it
+    // stops chasing DEEPER and lets a goal with an on-boat "get ashore" guard bring it back to land.
+    if (_lineCrossesDeepSea(a4, state.tank.x, state.tank.y, man.x, man.y)) continue;
 
     const cost = killTankCostForTank(a4, state, man);
     if (cost < bestCost) {

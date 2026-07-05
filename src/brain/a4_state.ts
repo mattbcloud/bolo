@@ -214,6 +214,14 @@ export class A4State {
   /** True when a water route is significantly shorter than the dry route */
   boatNeeded = false;
 
+  /** Raw GOAL destination tile last passed to navigateToCoords (before any boat redirect). When it
+   *  changes, a boatNeeded latch from the PREVIOUS destination is stale (its boat build tile targets
+   *  the old water route) and must be cleared — else a tank that latched a boat near water for one
+   *  goal keeps redirecting to that old boat tile after switching goals, idling at the water's edge
+   *  (live: GetBase / Refuel stuck idle near water). -1 = unset. */
+  navReqDestTileX = -1;
+  navReqDestTileY = -1;
+
   /** Tile X where the boat should be built (first river tile on the wet path) */
   boatBuildTileX = 0;
 
@@ -1117,12 +1125,25 @@ export class A4State {
   /** A4[7462] byte — Refuel: state machine variable */
   refuelState = 0;
 
+  /** Consecutive ticks the refuel navigation has failed to route to the base (port addition). When
+   *  it crosses a threshold the boat-acquisition latch is cleared + a fresh dry path is forced, so a
+   *  low-armour tank can't sit spinning forever ~3tx from a reachable ally refuel base (live stall). */
+  refuelNavStall = 0;
+
   /** Close-the-kill latch (port addition). Set while the tank is finishing a nearly
    *  dead pill (armour ≤ a few) from CONFIRMED cover: it holds still and edge-fires,
    *  and refuelGoalCost suppresses the emergency break-off so the tank lands the last
    *  hits instead of retreating and leaving the pill stuck at ~3 armour forever. Only
    *  set when checkBarriers confirms the pill→tank shot is blocked (so staying is safe). */
   coverFinishHold = 0;
+
+  /** Cover-fire dead-stop latch (port addition). Set while the tank is parked ON its cover firing
+   *  slot grazing the pill. doCommonStuff's opportunistic forward bits otherwise cancel the slot's
+   *  brake (accelerating===braking → coast), so the tank creeps ~1px/tick off the exact firing
+   *  cell and its narrow graze mostly MISSES (measured: kill slowed ~10× vs a dead-still tank).
+   *  aindy_think strips the drive bits + forces the brake when this is set — same fix as the refuel
+   *  and PlacePill holds — so the hull holds the cell dead-still and every graze lands. */
+  coverFireHold = 0;
 
   /** Latched cover placement (port addition). The cover (wall or captured pillbox) must sit on the
    *  pill's neighbour toward the TANK (the approach side), so the tank fires from BEHIND it — NOT
@@ -1134,6 +1155,31 @@ export class A4State {
   coverTileX = -1;
   coverTileY = -1;
   coverTilePill = -1;
+
+  /** Retreat-cool-return latch (port addition; Puppy Love's two-pass doctrine). While the tank
+   *  fires from behind cover the pill's return fire degrades a WALL cover (~11 hits) and HEATS the
+   *  pill (fires faster → burns the wall down faster). When the wall is fully lost the tank pulls
+   *  OUT of range until this tick, letting the pill COOL (speed resets while idle) and the builder
+   *  rebuild fresh cover, then re-engages. 0 = engaging. (In-place `repair` of a damaged `}` wall —
+   *  0 trees, builder is never targeted — is preferred; this cool cycle is the fallback when the
+   *  wall is gone entirely.) */
+  coverCoolUntil = 0;
+
+  /** Cover-method establish timer + abandon cooldown (port addition). The cover method holds the tank
+   *  (setSpeed 0) out of range while the builder builds/repairs cover. If the builder can't finish
+   *  (killed, unreachable tile, long trip) the tank would hold FOREVER (live freeze: GetPill
+   *  hold-dispatch, builder out, cover never appears). coverEngageStartTick resets whenever cover IS
+   *  present; if it stays absent past a timeout we abandon the cover method and charge WITHOUT cover
+   *  (coverAbandonUntilTick cooldown). Not a pill blacklist — the pill is still attacked, just without
+   *  cover. The doc's finding: builder-based cover is impractical in live multi-pill play. */
+  coverEngageStartTick = 0;
+  coverAbandonUntilTick = 0;
+
+  /** Tank armour last seen inside the cover-fire loop. A genuine wall FAILURE is unambiguous — the
+   *  tank TAKES A HIT (armour drops) while in the pill's range — whereas the brain's checkBarriers
+   *  LOS test disagrees with the engine's shell-vs-wall test at grazing edge cases and false-flags
+   *  exposure. An armour drop is the ground-truth signal to bail into a cool pass. -1 = unseen. */
+  coverPrevArmour = -1;
 
   /** A4[13895] byte — NewRefuel: sub-state machine variable */
   newRefuelState = 0;

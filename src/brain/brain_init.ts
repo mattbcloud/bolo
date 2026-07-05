@@ -231,10 +231,13 @@ export function setRouteCosts(a4: A4State): void {
   // walls to bulldoze them. With enough health the tank can shoot through.
   // 5 shots to destroy one wall section. Cost 200 makes A* only choose this
   // when it saves a significant detour (~50 road tiles).
-  costs[0] = a4.myTankArmor >= 5 ? 200 : 1000;
+  // Bulldozing a wall means SHOOTING it (5 shots) — a tank with 0 shells can't, so a wall on the
+  // route is impassable to it (else A* routes through it and the follower stops to "bulldoze" a wall
+  // it can never break → stop-and-fire-nothing FOREVER: the live 0-ammo Refuel/GetPill freeze).
+  costs[0] = (a4.myTankArmor >= 5 && a4.myTankShells > 0) ? 200 : 1000;
 
-  // Shot-wall (8): damaged building, cheaper to push through.
-  costs[8]  = a4.myTankArmor > 0 ? 24 : 1000;
+  // Shot-wall (8): damaged building, cheaper to push through — but still needs a shell to break.
+  costs[8]  = (a4.myTankArmor > 0 && a4.myTankShells > 0) ? 24 : 1000;
 
   // River (1): cost depends on boat + resource level.
   //   - On a boat: cheap (3) — rivers are the highway.

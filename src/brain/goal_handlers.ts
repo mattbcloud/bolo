@@ -172,28 +172,44 @@ function _coverFiringSlot(
   const dy = Math.sign(wrap(covY - (pill.tileY & 0xFF)));
   if (dx === 0 && dy === 0) return null;
   const perps = [[-dy, dx], [dy, -dx]] as const;      // the two lateral offset axes
+  const REACH = 1728;   // a tank shell (firingRange 7) reaches ~6.75 tiles before it expires
+  const HIT_OFF = 96;   // a graze aimed ≤96 off-centre lands inside the 127-unit hit radius
   let best: { x: number; y: number } | null = null, bestScore = Infinity;
-  for (const r of [2, 3, 4]) {                        // tiles out along the cover axis
-    for (const [ox, oy] of perps) {
-      for (const lat of [1, 2]) {                     // lateral offset in tiles
+  // Fire from RANGE at a lateral angle (~15-30° off the cover axis), NOT point-blank behind
+  // the cover. Reverse-engineered from live human play: up close a single cover tile subtends
+  // a huge angle, so the only graze that clears it is ~112+ off-centre — right at the 127 hit
+  // radius — and it misses (measured: target stuck at armour 11-15 while the tank fired). From
+  // ~6 tiles offset to one side, the wall subtends a SMALL angle: a small graze clears its edge
+  // and lands comfortably inside 127, while the pill's centre-aimed return fire still runs into
+  // the wall. So the winning slot is far + offset, not near + in-line.
+  for (const r of [6, 5]) {                           // tiles out along the cover axis
+    for (const lat of [2, 3]) {                       // lateral offset (→ ~18-31° from the axis)
+      for (const [ox, oy] of perps) {
         const fx = (pill.tileX + dx * r + ox * lat) & 0xFF;
         const fy = (pill.tileY + dy * r + oy * lat) & 0xFF;
         const raw = a4.worldMap[((fy & 0xFF) << 8) | (fx & 0xFF)];
         const terr = raw & 0x0F;
         if (terr === 0 || (raw & 0x80) || (a4.examineTerrainCostTable[terr] ?? 1000) >= 1000) continue; // impassable
         const fcx = (fx << 8) + 128, fcy = (fy << 8) + 128;
+        const dist = computeDistanceBetween(fcx, fcy, pillCx, pillCy);
+        if (dist > REACH) continue;                                              // out of shell reach → can't hit
         // (a) cover must block the pill's centre-aimed return fire from this slot.
-        if (_checkBarriers(a4, fcx, fcy, pillCx, pillCy) === 0) continue;         // exposed → skip
-        // (b) at least one pill edge must be grazeable (matches shootPillFromCover's ±112 edges).
+        if (_checkBarriers(a4, fcx, fcy, pillCx, pillCy) === 0) continue;        // exposed → skip
+        // (b) a HITTING graze (≤HIT_OFF off-centre) must clear the cover on some side.
         const dSlotToPill = directionTo(fcx, fcy, pillCx, pillCy) & 0xFF;
-        const e1 = locationFromDir((dSlotToPill + 64) & 0xFF, 112, pillCx, pillCy);
-        const e2 = locationFromDir((dSlotToPill + 192) & 0xFF, 112, pillCx, pillCy);
+        const e1 = locationFromDir((dSlotToPill + 64) & 0xFF, HIT_OFF, pillCx, pillCy);
+        const e2 = locationFromDir((dSlotToPill + 192) & 0xFF, HIT_OFF, pillCx, pillCy);
         const grazeable = _checkBarriers(a4, fcx, fcy, e1.x & 0xFFFF, e1.y & 0xFFFF) === 0
                        || _checkBarriers(a4, fcx, fcy, e2.x & 0xFFFF, e2.y & 0xFFFF) === 0;
         if (!grazeable) continue;
         const danger = a4.dangerMap[((fy & 0xFF) << 8) | (fx & 0xFF)] ?? 0;
         const travel = computeDistanceBetween(state.tank.x, state.tank.y, fcx, fcy) >> 8;
-        const score = danger * 100 + travel + r;      // prefer safe, close, snug to the cover
+        // Prefer SAFE, then the best cover-BLOCK margin (a smaller lat/r keeps the return
+        // fire's centre line deeper inside the wall tile — lat/r→0.5 sits on the wall's edge
+        // and is ragged), then a range near the ~6.3-tile sweet spot the sweep validated
+        // (dealt 15/15, taken 0 at range 6 / lat 2). Least travel breaks ties.
+        const marginPenalty = Math.round((lat / r) * 1000);   // lower = deeper behind the wall
+        const score = danger * 100000 + marginPenalty + Math.abs(dist - 1620) + travel;
         if (score < bestScore) { bestScore = score; best = { x: fcx, y: fcy }; }
       }
     }
@@ -223,6 +239,11 @@ function _coverFiringSlot(
 function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pillDistPh: number): boolean {
   const tank = state.tank;
   if (pill.armour <= 0 || tank.onBoat) { a4.coverTilePill = -1; return false; }  // dead → capture; afloat → not now
+  // Cover method on cooldown (a previous attempt couldn't get cover up in time and would have frozen
+  // the tank) → engage WITHOUT cover; charge-and-capture instead of holding for a builder that fails.
+  if (a4.tickCounter < a4.coverAbandonUntilTick) { a4.coverTilePill = -1; return false; }
+  const COVER_ESTABLISH_TIMEOUT = 450;   // ticks the tank may hold WITHOUT cover before giving up
+  const COVER_ABANDON_COOLDOWN  = 3000;  // then don't retry cover for a while (charge directly)
 
   const PILL_RANGE  = 1919;    // world_pillbox.ts effective fire range
   const SAFE_BUILD  = 2080;    // only deploy the builder beyond this (range + coast margin)
@@ -255,11 +276,24 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
     a4.coverTileX = (pill.tileX + tdx) & 0xFF;
     a4.coverTileY = (pill.tileY + tdy) & 0xFF;
     a4.coverTilePill = pillTilePacked;
+    a4.coverEngageStartTick = a4.tickCounter;   // start the "can we get cover up?" timer for this pill
   }
   const covX = a4.coverTileX & 0xFF, covY = a4.coverTileY & 0xFF;
   const covRaw = a4.worldMap[((covY & 0xFF) << 8) | (covX & 0xFF)];
   const covTerr = covRaw & 0x0F;
   const coverPresent = covTerr === 0 || covTerr === 5 || covTerr === 8 || covTerr === 12; // wall/forest/shot-wall/pill
+ 
+  // Establish-timeout: while cover IS up the timer resets (we're making progress / grinding). If cover
+  // stays ABSENT past the timeout, the builder can't get it up here (killed / unreachable / no
+  // buildable tile) and we'd hold out of range forever — so ABANDON the cover method and charge the
+  // pill without cover for a while. This is the fix for the live GetPill "hold-dispatch" freeze.
+  if (coverPresent) {
+    a4.coverEngageStartTick = a4.tickCounter;
+  } else if (a4.tickCounter - a4.coverEngageStartTick > COVER_ESTABLISH_TIMEOUT) {
+    a4.coverAbandonUntilTick = a4.tickCounter + COVER_ABANDON_COOLDOWN;
+    a4.coverTilePill = -1;
+    return false;
+  }
 
   // DO NOT hand off when the pill is nearly dead. The old code returned to the "normal approach"
   // at armour ≤4 — but that path is cover-BLIND: the cover sits on the pill→tank line by design,
@@ -330,7 +364,48 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
         a4.coverBuilderDispatchTick = a4.tickCounter;
       }
     }
-    setSpeed(a4, 0, tank.speed & 0xFF);   // hold out of range while the builder works
+    setSpeed(a4, 0, tank.speed & 0xFF);  // hold out of range while the builder works
+    return true;
+  }
+
+  // ── RETREAT-COOL-RETURN (Puppy Love's two-pass doctrine) ──────────────────────────────────────
+  // A WALL cover degrades under the pill's return fire (~11 hits) and the pill HEATS as we damage it
+  // (fires every ~6 ticks at low armour → burns the wall down fast). We CANNOT repair the wall while
+  // the pill is firing: its shells are aimed at the tank's centre and fly straight into the wall, so
+  // the builder standing there to repair would be killed by an incoming shell (shell.ts kills any
+  // builder within half a tile of a shell). The builder is only safe when the pill is DORMANT — i.e.
+  // when NO tank is in its range. So: fire until the wall shows damage, then RETREAT out of range
+  // (the pill loses its target and holds fire), let the builder REPAIR the wall (`}`→`|`, 0 trees) or
+  // rebuild it, let the pill COOL, then RETURN and fire the next pass. Repeat until the pill is dead.
+  // A durable captured-PILLBOX cover (terrain 12) shoots back and isn't a brick, so skip the cycle.
+  const COOL_TICKS = 220;   // ~9s out of range: pill cools several refire steps + builder round-trip
+  // Fire through the WHOLE wall lifetime (~11 hits) — a wall degraded to a shot-wall STILL blocks, so
+  // the tank stays safe and keeps grinding. Only bail when the wall actually FAILS: the pill regains
+  // line-of-sight to the tank's centre (checkBarriers === 0 while in range) = we're exposed and about
+  // to be shot. That's the moment to pull out and reset the pass. Retreating on mere wall DAMAGE
+  // instead cut the damage output to ~nothing (fired a few shots, then cooled forever).
+  // A genuine wall FAILURE is unambiguous: the tank TAKES A HIT (armour drops) while in the pill's
+  // range — the wall no longer stops the return fire. (The brain's checkBarriers LOS test disagrees
+  // with the engine's shell-vs-wall test at grazing edge cases and false-flags exposure the instant
+  // the tank reaches the slot, so it can't be the trigger — armour-drop is ground truth.)
+  const armourNow = tank.armor & 0xFF;
+  // Push through the FINISH: once the pill is nearly dead (≤2), don't retreat on a hit — hold and
+  // land the last shot or two (the doctrine's final pass: "you'll take some damage, suck it up").
+  // A full-armour tank easily absorbs 1-2 hits, and bailing here is exactly what leaves pills stuck
+  // at armour 1 forever (the capture floor).
+  const tookHit = a4.coverPrevArmour >= 0 && armourNow < a4.coverPrevArmour
+    && pillDistPh <= PILL_RANGE + 512 && pill.armour > 2;
+  a4.coverPrevArmour = armourNow;
+  if (a4.coverCoolUntil > a4.tickCounter || tookHit) {
+    if (tookHit && a4.coverCoolUntil <= a4.tickCounter) a4.coverCoolUntil = a4.tickCounter + COOL_TICKS;  // start a cool pass
+    if (pillDistPh < RETREAT_TO) { retreat(RETREAT_TO); return true; }   // pull the tank out of range first
+    // Out of range now — the pill is dormant, so the builder can safely refresh the wall: REPAIR a
+    // damaged `}` (0 trees) in place, else the !coverPresent branch above rebuilds a wall that's gone.
+    if (covTerr === 8 && tank.builderInTank && !a4.pendingBuilderAction) {
+      a4.pendingBuilderAction = { action: 'repair', trees: 0, tileX: covX, tileY: covY };
+      a4.coverBuilderDispatchTick = a4.tickCounter;
+    }
+    setSpeed(a4, 0, tank.speed & 0xFF);  // hold out of range while it cools + the wall is refreshed
     return true;
   }
 
@@ -350,13 +425,16 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
     const sTileX = (slot.x >> 8) & 0xFF, sTileY = (slot.y >> 8) & 0xFF;
     if (a4.tankTileX !== sTileX || a4.tankTileY !== sTileY) {
       navigateToCoords(a4, slot.x & 0xFFFF, slot.y & 0xFFFF, 0);   // drive onto the slot
+     
       return true;
     }
     // On the slot, behind the cover → graze the pill's edge; its return fire hits the cover.
     a4.shootPillDirection = directionTo(tank.x, tank.y, pill.x, pill.y) & 0xFF;
     const fired = _shootPillFromCover(a4, state, pill);
     setSpeed(a4, 0, tank.speed & 0xFF);
-    if (fired) a4.coverFinishHold = 1;   // covered + holding still → don't break off to refuel
+    a4.coverFireHold = 1;                 // dead-stop on the exact firing cell (see aindy_think)
+    if (fired) a4.coverFinishHold = 1;    // covered + holding still → don't break off to refuel
+   
     return true;
   }
 
@@ -370,12 +448,14 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
   const bTileX = (behind.x >> 8) & 0xFF, bTileY = (behind.y >> 8) & 0xFF;
   if (a4.tankTileX !== bTileX || a4.tankTileY !== bTileY) {
     navigateToCoords(a4, behind.x & 0xFFFF, behind.y & 0xFFFF, 0);
+   
     return true;
   }
   a4.shootPillDirection = directionTo(tank.x, tank.y, pill.x, pill.y) & 0xFF;
   const fired = _shootPillFromCover(a4, state, pill);
   setSpeed(a4, 0, tank.speed & 0xFF);
   if (fired) a4.coverFinishHold = 1;
+ 
   return true;
 }
 
@@ -1038,8 +1118,9 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   const pill = a4.pillToGetTarget;
   if (pill === null) return;
 
-  // Cleared every tick; only the close-the-kill branch below re-sets it.
+  // Cleared every tick; only the close-the-kill / cover-slot branches below re-set them.
   a4.coverFinishHold = 0;
+  a4.coverFireHold = 0;
 
   // Phase 0: Target change detection (index-based — PillState objects are recreated each tick)
   if (pill.index !== a4.newGetPillTargetIndex) {
@@ -1681,7 +1762,10 @@ export function goalKillTank(a4: A4State, state: BrainState): void {
   // "shooting blindly during KillTank" the user saw (killtank_los.test: 58% of shots had no LOS).
   // Only fire when the line to the enemy is clear; when it's blocked, REPOSITION to open a shot
   // (mirrors GetPill's LOS-split) instead of wasting ammo on the obstacle.
-  const hasLOS = _checkBarriers(a4, state.tank.x, state.tank.y, target.x, target.y) === 0;
+  // Never FIRE while afloat: a shell fired from a boat aimed across water is the "blindly firing
+  // in the sea" the user saw. Combat resumes once the tank is ashore (onBoat clears); navigation
+  // still carries it toward land/the enemy this tick.
+  const hasLOS = !state.tank.onBoat && _checkBarriers(a4, state.tank.x, state.tank.y, target.x, target.y) === 0;
 
   // Distance-based dispatch (binary 0x002a8e):
   if (dist > 1792) {
@@ -1759,6 +1843,31 @@ function _refuelNavigateToBase(a4: A4State, state: BrainState): void {
   // Check if arrived
   if (a4.tankTileX === base.tileX && a4.tankTileY === base.tileY) {
     a4.refuelState = 4;
+    a4.refuelNavStall = 0;
+    return;
+  }
+
+  // NoRoute RECOVERY (live: low-armour tank stuck spinning ~3tx from a stocked ALLY refuel base,
+  // route:MISS for 1000+ ticks — the tank sits at armour 0 and never fuels). The base tile is
+  // passable (cost 3) and reachable on land in the brain's own map, so a persistent noRoute points
+  // at a stale BOAT latch: the tank sits next to deep sea, and if boatNeeded latched onto a phantom
+  // boat point the route can never resolve. When refuel keeps failing to route, clear the boat
+  // acquisition state and force a fresh DRY path — no base blacklisting (forbidden), just a re-plan.
+  if (a4.noLocalRouteFlag && !state.tank.onBoat) {
+    if (++a4.refuelNavStall >= 20) {
+      a4.refuelNavStall = 0;
+      a4.boatNeeded = false;
+      a4.boatAcquireSinceTick = 0;
+      a4.boatBuildTileX = -1;
+      a4.worldCostsInitDone = 0;   // force a fresh path recompute next tick (dry costs)
+      if ((globalThis as any).__BRAIN_DBG__ !== false) {
+        // eslint-disable-next-line no-console
+        console.log(`[REFUEL-NOROUTE] base[${base.tileX},${base.tileY}] tank[${a4.tankTileX},${a4.tankTileY}] ` +
+          `onBoat=${state.tank.onBoat} boatNeeded=${a4.boatNeeded} boatFailUntil=${a4.boatFailedUntilTick} tick=${a4.tickCounter}`);
+      }
+    }
+  } else {
+    a4.refuelNavStall = 0;
   }
 }
 

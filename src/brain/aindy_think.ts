@@ -58,6 +58,18 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
   a4.firingWord          = 0;
   a4.shotFiredThisTick   = 0;
   a4.pendingBuilderAction = null;   // cleared each tick; set by goalFixPill / doBuilding
+  // coverFireHold is an intra-tick signal: the GetPill cover-fire branch sets it (later this tick)
+  // to suppress doCommonStuff so the graze owns the hull. It MUST be cleared here every tick — it
+  // was only reset inside goalNewGetPill, so when the goal switched away (GetBase / KillTank) while
+  // it was set, it stayed stuck 1 and doCommonStuff early-returned forever, freezing the tank (no
+  // base shelling / no enemy fire — both goals rely on doCommonStuff to shoot). Only GetPill re-sets it.
+  a4.coverFireHold = 0;
+  // coverFinishHold (suppresses the emergency-refuel break-off while finishing a pill from cover) is
+  // read cross-tick by refuelGoalCost in ChooseGoal below, so it can't be blanket-cleared here — but
+  // it must not leak to other goals (a stuck 1 would keep a wounded GetBase/KillTank tank from
+  // refuelling). a4.currentGoal still holds LAST tick's goal here, so clear it unless we were just on
+  // GetPill (which re-evaluates it every tick).
+  if (a4.currentGoal !== Goal.GET_PILL) a4.coverFinishHold = 0;
 
   // Clear the builder-dispatched gate (newGetPillAttackMode) when the builder
   // TRANSITIONS from deployed → in-tank (i.e., it just returned).
