@@ -10,7 +10,12 @@ import { WorldPillbox } from './objects/world_pillbox';
 import { WorldBase } from './objects/world_base';
 import { FloodFill } from './objects/flood_fill';
 
-const { round, random, floor } = Math;
+const { round, floor } = Math;
+// NB: do NOT capture Math.random here. Destructuring it at module load pins the
+// ORIGINAL (unseeded) RNG, so the headless harness's seedHarness() — which overrides
+// the GLOBAL Math.random for determinism — can't reach getRandomStart(). That made
+// each spawn pick a random start direction, so the same seed diverged run-to-run (the
+// long-standing "heisenbug"). Call Math.random() directly so the seeded override wins.
 
 // Terrain data
 
@@ -286,7 +291,7 @@ export class WorldMap extends Map {
   }
 
   getRandomStart(): any {
-    return this.starts[round(random() * (this.starts.length - 1))];
+    return this.starts[round(Math.random() * (this.starts.length - 1))];
   }
 }
 

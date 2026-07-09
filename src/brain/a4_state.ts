@@ -919,6 +919,14 @@ export class A4State {
   /** Reclaim sub-mode: 1 once goalFixPill commits to picking up (not repairing) the target. */
   reclaimInProgress = 0;
 
+  /** FixPill noRoute-abandon: first tick a persistent noRoute was seen (0 when routing OK).
+   *  If FixPill can't route to its pill for a sustained span — e.g. reclaim adjacent to a pill
+   *  whose LOS is blocked by a neighbouring base so it neither fires nor advances, oscillating
+   *  forever (live green-tank freeze) — fixPillGoalCost yields until fixPillFailedUntilTick so
+   *  another goal takes over. Mirrors getBaseFailedUntilTick / getManFailedUntilTick. */
+  fixPillNoRouteSinceTick = 0;
+  fixPillFailedUntilTick = 0;
+
   /** A4[13909] byte — FixPill: "send pill target broadcast" flag */
   fixPillSendBroadcast = 0;
 
@@ -1244,6 +1252,14 @@ export class A4State {
    *  aindy_think to strip doCommonStuff's forward bits so the brake isn't cancelled
    *  (accelerating+braking = coast → the tank drifts instead of holding still). */
   placePillHold = 0;
+
+  /** PlacePill: tick when the builder was first seen DEPLOYED (out of tank) while PlacePill
+   *  needs it to plant/farm; 0 while the builder is in the tank. If it stays deployed past a
+   *  timeout the builder is ORPHANED (e.g. an emergency Refuel dragged the tank tiles away
+   *  mid-plant, stranding the builder) — placePillGoalCost then yields so GetMan can fetch it
+   *  instead of freezing on a plant-hold forever (live bug: PlacePill(1) held on base, builderIn
+   *  false, pend none, indefinitely). Resets the instant the builder is back in the tank. */
+  placePillBuilderOutSince = 0;
 
   /** A4[13884] byte — PlacePill: BaseToBuild tile X */
   placePillBaseTileX = 0;

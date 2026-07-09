@@ -384,6 +384,27 @@ export function placePillGoalCost(a4: A4State, state: BrainState): number {
 
   const carried = state.tank.pillsCarried & 0xFF;
 
+  // ORPHANED-BUILDER yield. PlacePill can only farm/plant with the builder IN the tank
+  // (builder.performOrder is a no-op while it's deployed). If the builder got stranded — e.g.
+  // an emergency Refuel dragged the tank tiles away mid-plant, leaving the builder behind and
+  // unable to catch up (common near water) — PlacePill would hold on the base forever waiting
+  // for a builder that never returns, and GetMan (which would fetch it) is starved because
+  // PlacePill wins the cost-1 tie on the lower goal index. Track how long the builder has been
+  // out; once it exceeds a normal (adjacent) farm/plant round-trip, yield so GetMan retrieves
+  // it. Resets the instant the builder is back in the tank, so PlacePill resumes immediately.
+  const BUILDER_ORPHAN_TICKS = 400;
+  if (carried && !state.tank.builderInTank && !state.tank.onBoat) {
+    if (a4.placePillBuilderOutSince === 0) a4.placePillBuilderOutSince = a4.tickCounter;
+    else if (a4.tickCounter - a4.placePillBuilderOutSince > BUILDER_ORPHAN_TICKS) {
+      // Orphaned past a normal round-trip. Yield so GetMan can fetch it; if GetMan can't
+      // either (unreachable → its own cooldown), another goal runs and a fresh builder
+      // eventually parachutes/returns. Resumes the instant builderInTank flips true.
+      return 0xFFFF;
+    }
+  } else {
+    a4.placePillBuilderOutSince = 0;
+  }
+
   // DEPLOY captured pillboxes to defend bases. Cost 1 beats GetBase/Explore yet yields to emergency
   // Refuel / close base-capture / tank-kill (cost 0). Reserve at MOST ONE pill for the cover method
   // (a captured pill is the best cover — _coverMethodAttack plants it next to the target): while
@@ -414,6 +435,10 @@ export function exploreGoalCost(a4: A4State, _state: BrainState): number {
 export function fixPillGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.pillToFixTarget;
   if (target === null) return 0xFFFF;
+
+  // noRoute-abandon cooldown: FixPill proved unable to route to the pill (see goalFixPill).
+  // Yield so the tank does something reachable instead of freezing on it.
+  if (a4.tickCounter < a4.fixPillFailedUntilTick) return 0xFFFF;
 
   // RECLAIM vs REPAIR gating (goalFixPill splits the same way): a non-self-placed friendly pill
   // is RECLAIMED (picked up to redeploy), not repaired. Reclaiming costs NO trees — an armour-0
@@ -571,6 +596,14 @@ export function killManGoalCost(a4: A4State, state: BrainState): number {
   // Out of ammo → we can't shoot the man; pursuing it just circles a target we can't kill and
   // starves Refuel (live bug: ammo=0 tank stuck flip-flopping KillMan/KillTank, spinning in place).
   if (state.tank.ammo === 0) return 0xFFFF;
+  // On a boat the tank can't shoot a man — get ashore first (mirrors the GetPill/GetBase on-boat
+  // guards). And a man reported on a DEEP-SEA tile is stale/bogus (a real builder can't stand on
+  // deep water). Either way, yield so the tank does something reachable rather than freezing on
+  // KillMan (live: on-boat tank stuck ACC|BRK on a man target sitting on its own deep-sea tile,
+  // dm=0, for thousands of ticks — the very-close branch's goalExplore+brake net to zero thrust).
+  if (state.tank.onBoat) return 0xFFFF;
+  const mtx = (target.x >> 8) & 0xFF, mty = (target.y >> 8) & 0xFF;
+  if ((a4.worldMap[(mty << 8) | mtx] & 0x0F) === 10) return 0xFFFF;
   return killManCostForTank(a4, state, target);
 }
 

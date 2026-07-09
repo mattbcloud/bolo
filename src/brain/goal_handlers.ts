@@ -784,6 +784,21 @@ export function goalFixPill(a4: A4State, state: BrainState): void {
   const pill = a4.pillToFixTarget;
   if (pill === null) return;
 
+  // noRoute-abandon safety. Reads the previous tick's nav result (noLocalRouteFlag persists
+  // until the next navigate). If FixPill has been unable to route to the pill for a sustained
+  // span, arm a cooldown so fixPillGoalCost yields — otherwise it can oscillate on a noRoute
+  // forever (live: reclaim adjacent to a pill, LOS falsely blocked by the neighbouring base,
+  // spd=0 ctrl:ACC route:MISS for thousands of ticks). Clears the instant routing succeeds.
+  if (a4.noLocalRouteFlag) {
+    if (a4.fixPillNoRouteSinceTick === 0) a4.fixPillNoRouteSinceTick = a4.tickCounter;
+    else if (a4.tickCounter - a4.fixPillNoRouteSinceTick > 150) {
+      a4.fixPillFailedUntilTick = a4.tickCounter + 3000;
+      a4.fixPillNoRouteSinceTick = 0;
+    }
+  } else {
+    a4.fixPillNoRouteSinceTick = 0;
+  }
+
   // ── RECLAIM branch ──────────────────────────────────────────────────────
   // A damaged ally pill we did NOT place: don't weld it in place — pick it up and
   // relocate/redeploy it. The brain only knows pill ownership by team, so "ours to
@@ -1660,11 +1675,12 @@ export function goalKillMan(a4: A4State, state: BrainState): void {
 
     if (dist >= 0x700) {        // > 1792: far
       navigateToCoords(a4, man.x, man.y, 0);
-    } else if (dist < 0x100) {  // < 256: very close — explore
+    } else if (dist < 0x100) {  // < 256: very close — switch away and re-approach
+      // Just explore/reposition. The old code ALSO set steeringWord |= 0x20 (brake) here — but
+      // goalExplore already set the ACCELERATE bit toward its target, so ACC|BRK netted to ZERO
+      // thrust: the tank turned in place but never moved, so dist stayed pinned and it froze on
+      // KillMan forever (live: spd=0 ctrl:ACC|BRK, dm=0, thousands of ticks). Let explore drive.
       goalExplore(a4, state);
-      if (state.tank.shellCount > 2) {
-        a4.steeringWord |= 0x20;   // brake / movement flag
-      }
     } else {
       // Medium range: FACE the man first, THEN shoot — never turn and creep in the same tick.
       // shoot() sets a FORWARD creep bit whenever shellCount<14; combined with its turn-toward-

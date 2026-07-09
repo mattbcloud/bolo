@@ -2308,9 +2308,23 @@ export class BoloClientWorld extends ClientWorld {
         const pdist = p ? Math.round(Math.hypot(p.tileX - a4.tankTileX, p.tileY - a4.tankTileY)) : 0;
         const apdist = Math.round(Math.hypot(apX - a4.tankTileX, apY - a4.tankTileY));
         goalTgtStr = p ? `pill[${p.tileX},${p.tileY}]d=${pdist}tx AP[${apX},${apY}]d=${apdist}tx tank[${a4.tankTileX},${a4.tankTileY}]` : 'none';
+      } else if (goalIdx === 2) { // FixPill
+        const p = a4.pillToFixTarget;
+        if (p) {
+          const pdist = Math.round(Math.hypot(p.tileX - a4.tankTileX, p.tileY - a4.tankTileY));
+          const self = a4.isSelfPlacedPill(p) ? 1 : 0;
+          goalTgtStr = `pill[${p.tileX},${p.tileY}]d=${pdist}tx arm=${(p as any).armour} self=${self} reclaim=${a4.reclaimInProgress} failUntil=${a4.fixPillFailedUntilTick} tank[${a4.tankTileX},${a4.tankTileY}]`;
+        } else goalTgtStr = 'none';
       } else if (goalIdx === 3) { // GetBase
         const b = a4.baseToGetTarget;
-        goalTgtStr = b ? `base[${b.tileX},${b.tileY}]d=${b.distToTank>>8}tx` : 'none';
+        if (b) {
+          const ob = (b as any).oronaBase;
+          const ti = ((b.tileY & 0xFF) << 8) | (b.tileX & 0xFF);
+          const raw = a4.worldMap[ti];
+          const blocked = (raw & 0x40) !== 0 ? 1 : 0;
+          const onCell = ob?.cell === this.player?.cell ? 1 : 0;
+          goalTgtStr = `base[${b.tileX},${b.tileY}]d=${b.distToTank>>8}tx blk=${blocked} bArm=${ob?.armour} bTeam=${ob?.team} tTeam=${this.player?.team} sh=${this.player?.shells} range=${state.tank.shellCount} onCell=${onCell} tank[${a4.tankTileX},${a4.tankTileY}]`;
+        } else goalTgtStr = 'none';
       } else if (goalIdx === 9) { // Refuel
         const r = a4.refuelBaseTarget;
         // Task#4 diagnostic: why does a tank parked ON a stocked base not refuel?
