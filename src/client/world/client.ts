@@ -347,7 +347,7 @@ export class BoloClientWorld extends ClientWorld {
             <select id="mode-select" style="
               margin-left: 10px;
               padding: 4px 8px;
-              width: 300px;
+              width: auto;
               border: 1px solid black;
               background: white;
               font-family: 'Chicago', 'Charcoal', sans-serif;
