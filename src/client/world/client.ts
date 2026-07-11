@@ -353,9 +353,9 @@ export class BoloClientWorld extends ClientWorld {
               font-family: 'Chicago', 'Charcoal', sans-serif;
               font-size: 12px;
             ">
-              <option value="open" selected>Open — full bullets, mines &amp; trees</option>
-              <option value="tournament">Tournament — bullets = 2 × neutral bases; no mines/trees</option>
-              <option value="strict">Strict Tournament — always 0 bullets</option>
+              <option value="open" selected>Open</option>
+              <option value="tournament">Tourney</option>
+              <option value="strict">Strict</option>
             </select>
           </div>
           <button id="create-game-btn" class="btn" disabled>Create Game</button>
@@ -1243,6 +1243,17 @@ export class BoloClientWorld extends ClientWorld {
               <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🎯 How to Win</div>
               <div style="font-size: 11px; line-height: 1.4;">
                 Capture ALL bases on the map. Work with teammates on your color team to control territory, build defenses, and eliminate enemy bases.
+              </div>
+            </div>
+
+            <!-- GAME MODES -->
+            <div style="margin-bottom: 14px;">
+              <div style="font-weight: bold; margin-bottom: 4px; font-size: 13px;">🕹️ Game Modes</div>
+              <div style="font-size: 11px; line-height: 1.4;">
+                Chosen when a game is created. All modes give full armor (health) on every respawn — they differ only in what ammo you respawn with.<br>
+                <strong>Open:</strong> Training mode. Respawn with full bullets, mines, and trees. Play continues indefinitely.<br>
+                <strong>Tourney:</strong> Respawn bullets = 2 × the number of neutral (uncaptured) bases, up to 40; no mines or trees. As bases get claimed the allotment shrinks, so once a team controls every base its opponents respawn empty and can't refuel — effectively ending the game.<br>
+                <strong>Strict:</strong> Respawn with 0 bullets always (even your first spawn); no mines or trees. Rearm only by capturing and parking on bases.
               </div>
             </div>
 
