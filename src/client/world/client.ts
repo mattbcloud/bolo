@@ -1224,13 +1224,39 @@ export class BoloClientWorld extends ClientWorld {
   }
 
   /**
+   * Load Google Analytics (gtag.js). Called ONLY after cookie consent has been
+   * granted — never on first visit before Accept, and never after Decline.
+   * Idempotent: safe to call on every consented page load.
+   */
+  loadGoogleAnalytics(): void {
+    const GA_ID = 'G-1JT0HW5V39';
+    if (document.getElementById('ga-gtag')) return; // already loaded
+
+    const script = document.createElement('script');
+    script.id = 'ga-gtag';
+    script.async = true;
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${GA_ID}`;
+    document.head.appendChild(script);
+
+    const w = window as any;
+    w.dataLayer = w.dataLayer || [];
+    w.gtag = function gtag() { w.dataLayer.push(arguments); };
+    w.gtag('js', new Date());
+    w.gtag('config', GA_ID);
+  }
+
+  /**
    * First-visit cookie policy. Shows a modal system.css alert box over the whole
    * site (dimmed, non-interactive backdrop) until the user accepts. Declining
-   * redirects away. Consent is remembered in a cookie so it only shows once.
+   * redirects away. Consent is remembered in a cookie so it only shows once, and
+   * Google Analytics is loaded only once consent has been granted.
    */
   showCookieConsent(): void {
-    // Already consented? Don't show again.
-    if (document.cookie.split('; ').some((c) => c.startsWith('cookieConsent='))) return;
+    // Already consented? Skip the modal, but honour the consent by loading GA.
+    if (document.cookie.split('; ').some((c) => c.startsWith('cookieConsent='))) {
+      this.loadGoogleAnalytics();
+      return;
+    }
     // Guard against a double-insert.
     if (document.getElementById('cookie-consent-overlay')) return;
 
@@ -1274,6 +1300,8 @@ export class BoloClientWorld extends ClientWorld {
     const accept = () => {
       // Remember consent for a year so the policy only shows on first visit.
       document.cookie = `cookieConsent=accepted; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`;
+      // Consent granted — now (and only now) start Google Analytics.
+      this.loadGoogleAnalytics();
       document.removeEventListener('keydown', onKeyDown, true);
       overlay.remove();
     };
