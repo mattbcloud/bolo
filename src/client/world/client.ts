@@ -333,7 +333,8 @@ export class BoloClientWorld extends ClientWorld {
             <select id="map-select" style="
               margin-left: 10px;
               padding: 4px 8px;
-              width: 300px;
+              width: auto;
+              max-width: 300px;
               border: 1px solid black;
               background: white;
               font-family: 'Chicago', 'Charcoal', sans-serif;
@@ -469,6 +470,19 @@ export class BoloClientWorld extends ClientWorld {
       select.innerHTML = sortedMaps.map((map: any) =>
         `<option value="${map.name}">${map.name}</option>`
       ).join('');
+
+      // Size the select to fit the LONGEST option name (width:auto only fits the
+      // selected one). Measure each name's rendered width in the select's own font.
+      const cs = getComputedStyle(select);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.font = `${cs.fontSize} ${cs.fontFamily}`;
+        let maxW = 0;
+        for (const map of sortedMaps) maxW = Math.max(maxW, ctx.measureText(map.name).width);
+        // + horizontal padding (16) + dropdown arrow + border allowance (~28).
+        select.style.width = `${Math.ceil(maxW) + 44}px`;
+      }
 
       const createBtn = document.getElementById('create-game-btn') as HTMLButtonElement;
       if (createBtn) createBtn.disabled = false;
