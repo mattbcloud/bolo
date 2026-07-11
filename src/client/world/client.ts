@@ -342,21 +342,22 @@ export class BoloClientWorld extends ClientWorld {
               <option value="">Loading maps...</option>
             </select>
           </div>
-          <fieldset style="margin-bottom: 10px;">
-            <legend>Game Mode</legend>
-            <div class="field-row">
-              <input type="radio" id="mode-open" name="game-mode" value="open" checked>
-              <label for="mode-open">Open — respawn with full bullets, mines &amp; trees</label>
-            </div>
-            <div class="field-row">
-              <input type="radio" id="mode-tournament" name="game-mode" value="tournament">
-              <label for="mode-tournament">Tournament — bullets = 2 × neutral bases; no mines/trees</label>
-            </div>
-            <div class="field-row">
-              <input type="radio" id="mode-strict" name="game-mode" value="strict">
-              <label for="mode-strict">Strict Tournament — always respawn with 0 bullets</label>
-            </div>
-          </fieldset>
+          <div style="margin-bottom: 10px; font-size: 12px;">
+            <label for="mode-select">Game Mode:</label>
+            <select id="mode-select" style="
+              margin-left: 10px;
+              padding: 4px 8px;
+              width: 300px;
+              border: 1px solid black;
+              background: white;
+              font-family: 'Chicago', 'Charcoal', sans-serif;
+              font-size: 12px;
+            ">
+              <option value="open" selected>Open — full bullets, mines &amp; trees</option>
+              <option value="tournament">Tournament — bullets = 2 × neutral bases; no mines/trees</option>
+              <option value="strict">Strict Tournament — always 0 bullets</option>
+            </select>
+          </div>
           <button id="create-game-btn" class="btn" disabled>Create Game</button>
         </div>
 
@@ -513,7 +514,7 @@ export class BoloClientWorld extends ClientWorld {
     if (!select || !select.value) return;
 
     const mapName = select.value;
-    const gameMode = (document.querySelector('input[name="game-mode"]:checked') as HTMLInputElement)?.value || 'open';
+    const gameMode = (document.getElementById('mode-select') as HTMLSelectElement)?.value || 'open';
 
     try {
       const response = await fetch('/api/games', {
