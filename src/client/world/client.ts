@@ -2405,6 +2405,43 @@ export class BoloClientWorld extends ClientWorld {
         }
         console.log(`[MAP] tank@(${cx},${cy}) boat=${state.tank.onBoat?1:0}  @tank *path(land) +path(water) | ~/^water b=boat ==road #wall Fforest .grass Bbase Ppill\n` + rows.join('\n'));
       }
+
+      // ── Structured state dump (POST → /tmp/bolo-brain-state.jsonl on the server) ────────────
+      // A COMPLETE, machine-readable snapshot of what the brain actually sees each ~1s — far
+      // richer than the one-line HUD, so offline analysis (and a file-watcher) reads the TRUE
+      // world instead of a hand-picked summary. Crucially includes the full other-tank roster with
+      // the exact flags that gate KillTank (team / isEnemy / attackable / active / distance), the
+      // whole goal-cost vector, my tank, and object counts. Fire-and-forget; never breaks the tick.
+      // Silence with `window.__STATEDUMP__ = false` in the console.
+      if ((globalThis as any).__STATEDUMP__ !== false) {
+        try {
+          const costs: Record<string, number> = {};
+          for (const g of a4.goals) costs[GN[g.goalIndex] ?? String(g.goalIndex)] = g.cost;
+          const dump = {
+            t: a4.tickCounter,
+            me: {
+              team: this.player?.team ?? null,
+              tile: [a4.tankTileX & 0xFF, a4.tankTileY & 0xFF],
+              armour: state.tank.armor & 0xFF, shells: (state.tank as any).shells, ammo: state.tank.ammo,
+              onBoat: !!state.tank.onBoat, goal: GN[goalIdx] ?? goalIdx, goalCost: best.cost,
+              ctrl, idle: controlsIdle,
+            },
+            costs,
+            killTankTarget: a4.tankToKillTarget
+              ? { team: a4.tankToKillTarget.team, distTx: Math.round((a4.tankToKillTarget.distanceMetric ?? 0) / 256) }
+              : null,
+            tanks: (state.tanks ?? []).map((m: any) => ({
+              idx: m.index, team: m.team, isEnemy: !!m.isEnemy, attackable: !!m.attackable,
+              active: !!m.active, tile: [(m.x >> 8) & 0xFF, (m.y >> 8) & 0xFF],
+              distTx: Math.round((m.distanceMetric ?? 0) / 256),
+            })),
+            rawTanks: (this.tanks ?? []).length,
+            pills: (state.pills ?? []).length,
+            bases: (state.bases ?? []).length,
+          };
+          void fetch('/api/brain-state', { method: 'POST', body: JSON.stringify(dump), keepalive: true }).catch(() => {});
+        } catch { /* diagnostics must never break the tick */ }
+      }
     }
   }
 

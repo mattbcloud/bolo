@@ -290,6 +290,18 @@ export function syncBrainState(a4: A4State, state: BrainState): void {
   a4.pillCount = state.pillCount;
   a4.baseCount = state.baseCount;
 
+  // ── Refresh the enemy tank/men roster EVERY TICK ───────────────────────────
+  // This was the long-standing "spin on a ghost" bug: a4.men was set ONCE in brainOpen
+  // (_syncMen) and never refreshed here, so the target selectors (manToKill/selectTankToKill)
+  // and computeTankDist scanned enemies FROZEN at their initial positions. As the tank drove
+  // toward a frozen spot the recomputed distance fell to ~0 → KillMan/KillTank cost 0 → it
+  // locked on and orbited an empty tile where an enemy USED to be (and never dropped enemies
+  // that died/left). addTanks also stamped 0x40 (blocked) into worldMap at those frozen tiles
+  // → corrupt terrain. removeTanks() is a no-op precisely because it ASSUMES "Orona provides a
+  // fresh men array each tick" — this assignment is what finally makes that assumption true.
+  a4.men = state.tanks;
+  a4.myMan = state.tank.manPtr;
+
   // ── Copy tank state ────────────────────────────────────────────────────────
   const t = state.tank;
   a4.tankTileX    = t.tileX;

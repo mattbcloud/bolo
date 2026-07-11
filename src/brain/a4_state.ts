@@ -1153,6 +1153,16 @@ export class A4State {
    *  and PlacePill holds — so the hull holds the cell dead-still and every graze lands. */
   coverFireHold = 0;
 
+  /** GetBase close-engage hold (port addition). Set while GetBase is engaging its target base at
+   *  close range — shooting it down, driving onto a capturable (armour≤9) base, or holding on the
+   *  cell to capture. Without it, doCommonStuff's opportunistic aim at a NEARBY ENEMY (a moving tank
+   *  or man in range) fights GetBase's aim/steer at the STATIONARY base: the hull spins toward the
+   *  enemy every tick and never settles, so shots miss the base (it regenerates) and the tank never
+   *  drives onto the cell (live freeze: tank spun CCW diagonally adjacent to a bArm=7 capturable base
+   *  while it regenerated 7→50). Like coverFireHold/onBoat, it makes doCommonStuff early-return so the
+   *  base engagement owns the hull. Cleared every tick in aindy_think; only goalGetBase re-sets it. */
+  getBaseEngageHold = 0;
+
   /** Latched cover placement (port addition). The cover (wall or captured pillbox) must sit on the
    *  pill's neighbour toward the TANK (the approach side), so the tank fires from BEHIND it — NOT
    *  toward the independently-chosen AP, which can land on the far side of the pill and leave the

@@ -192,7 +192,60 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       }
     }
 
+    if (++this._stateDumpTick % 50 === 0) this._dumpAuthoritativeState();
+
     this.sendPackets();
+  }
+
+  private _stateDumpTick = 0;
+
+  /**
+   * Server-AUTHORITATIVE state dump (debug ground truth). The AI brain runs client-side on a
+   * possibly-STALE view (its cached worldMap, phantom targets); the brain-state dump faithfully
+   * records that view but it can diverge from reality. This writes the TRUE simulation state —
+   * every real tank, every deployed builder/man, and the REAL terrain around each tank — to
+   * /tmp/bolo-server-state.jsonl so analysis can (a) know what's actually there and (b) DIFF it
+   * against the brain's belief to locate stale-perception bugs. Every 50 ticks (~1/s). Never throws.
+   */
+  private _dumpAuthoritativeState(): void {
+    try {
+      const tanks = this.tanks.map((t: any) => ({
+        idx: t.tank_idx,
+        name: t.name ?? null,
+        team: t.team,
+        tile: (t.x != null && t.y != null) ? [(t.x >> 8) & 0xFF, (t.y >> 8) & 0xFF] : null,
+        armour: t.armour,
+        onBoat: !!t.onBoat,
+      }));
+      // Deployed builders (the "men" the brain hunts). order 0 = inTank (position null); anything
+      // else with a position is a real man on the ground.
+      const men: any[] = [];
+      for (const t of this.tanks) {
+        const b = t.builder?.$ ?? t.builder;
+        if (b && b.order !== 0 && b.x != null && b.y != null) {
+          men.push({ team: b.team ?? t.team, order: b.order, tile: [(b.x >> 8) & 0xFF, (b.y >> 8) & 0xFF], ownerIdx: t.tank_idx });
+        }
+      }
+      // REAL terrain (9x9) around each tank — ground truth to compare against the brain's worldMap.
+      const terrain: Record<string, string[]> = {};
+      for (const t of this.tanks) {
+        if (t.x == null || t.y == null) continue;
+        const cx = (t.x >> 8) & 0xFF, cy = (t.y >> 8) & 0xFF;
+        const rows: string[] = [];
+        for (let dy = -4; dy <= 4; dy++) {
+          let row = '';
+          for (let dx = -4; dx <= 4; dx++) {
+            const c = this.map.cellAtTile((cx + dx) & 0xFF, (cy + dy) & 0xFF);
+            row += c?.type?.ascii ?? '?';
+          }
+          rows.push(row);
+        }
+        terrain[`${cx},${cy}`] = rows;
+      }
+      const dump = { ts: Date.now(), tick: this._stateDumpTick, tanks, men, terrain,
+        pills: this.map.pills.length, bases: this.map.bases.length };
+      fs.appendFile('/tmp/bolo-server-state.jsonl', JSON.stringify(dump) + '\n', () => {});
+    } catch { /* diagnostics must never break the server tick */ }
   }
 
   /**
@@ -796,6 +849,33 @@ export class Application {
         console.error('[API ERROR] /api/maps failed:', error);
         res.statusCode = 500;
         res.end(JSON.stringify({ error: 'Internal server error', message: String(error) }));
+      }
+    });
+
+    // Brain state dump sink (debug). The AI brain runs client-side and can't write files, so it
+    // POSTs a structured per-tick snapshot here and we append it as JSONL to a file a shell/watcher
+    // can tail — giving offline analysis the TRUE world the brain sees, not the one-line HUD.
+    // GET ?clear=1 truncates the file (start a fresh capture).
+    this.connectServer.use('/api/brain-state', (req: any, res: any) => {
+      const FILE = '/tmp/bolo-brain-state.jsonl';
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (chunk: any) => { body += chunk; if (body.length > 1_000_000) req.destroy(); });
+        req.on('end', () => {
+          try {
+            fs.appendFile(FILE, body.replace(/\n/g, ' ').trim() + '\n', () => {});
+            res.end('{"ok":true}');
+          } catch (error) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: String(error) }));
+          }
+        });
+      } else if (req.method === 'GET' && /[?&]clear=1/.test(req.url ?? '')) {
+        fs.writeFile(FILE, '', () => {});
+        res.end('{"ok":true,"cleared":true}');
+      } else {
+        res.end('{"ok":true,"hint":"POST a JSON snapshot (appended to ' + FILE + '); GET ?clear=1 to reset"}');
       }
     });
 

@@ -64,6 +64,9 @@ export function aIndy_Think(a4: A4State, state: BrainState): BrainControls {
   // it was set, it stayed stuck 1 and doCommonStuff early-returned forever, freezing the tank (no
   // base shelling / no enemy fire — both goals rely on doCommonStuff to shoot). Only GetPill re-sets it.
   a4.coverFireHold = 0;
+  // getBaseEngageHold is the same class of intra-tick signal (only goalGetBase re-sets it, when it's
+  // close-engaging its target base). Cleared globally here so it can't leak to another goal.
+  a4.getBaseEngageHold = 0;
   // coverFinishHold (suppresses the emergency-refuel break-off while finishing a pill from cover) is
   // read cross-tick by refuelGoalCost in ChooseGoal below, so it can't be blanket-cleared here — but
   // it must not leak to other goals (a stuck 1 would keep a wounded GetBase/KillTank tank from

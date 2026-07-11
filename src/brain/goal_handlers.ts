@@ -994,6 +994,9 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
       // stopping (the same "won't stop" bug as the refuel-on-base fix).
       setSpeed(a4, 0, state.tank.speed & 0xFF);
       shoot(a4, target.x, target.y, state);
+      // Own the hull: stop doCommonStuff aiming at a nearby enemy from spinning us off the base
+      // (the shots would miss and the base regenerates — live GetBase spin-freeze).
+      a4.getBaseEngageHold = 1;
     }
     return;   // skip blacklisting while actively shooting
   }
@@ -1006,10 +1009,14 @@ export function goalGetBase(a4: A4State, state: BrainState): void {
   // tank just slides off a tile it never actually captured. A dead stop = clean capture.
   if (a4.tankTileX === (target.tileX & 0xFF) && a4.tankTileY === (target.tileY & 0xFF)) {
     setSpeed(a4, 0, state.tank.speed & 0xFF);
+    a4.getBaseEngageHold = 1;   // hold the cell for findSubject() — don't let combat nudge us off
     return;
   }
 
-  // Otherwise approach and drive onto it.
+  // Otherwise approach and drive onto it. When CLOSE to a capturable (passable) base, own the hull
+  // so an opportunistic enemy-aim can't spin us in place instead of driving the last tile onto the
+  // cell (live: tank stuck spinning 1 diagonal tile off a bArm=7 base while it regenerated to 50).
+  if (target.distToTank <= 0x0300) a4.getBaseEngageHold = 1;   // ~3 tiles
   navigateToCoords(a4, target.x, target.y, 0);
 
   // On route failure: clear the flag and apply a cooldown so the brain

@@ -877,6 +877,13 @@ export function doCommonStuff(
   // forward bits to cancel the slot brake), so it stays on the exact cell.
   if (a4.coverFireHold) return;
 
+  // ── GetBase close-engage: let the base capture/shoot own the hull ─────
+  // Same as the cover-fire case: while GetBase is engaging its target base at close range, an
+  // opportunistic aim at a nearby enemy tank/man would spin the hull off the STATIONARY base every
+  // tick, so shots miss (the base regenerates) and the tank never settles onto the capturable cell.
+  // Suppress opportunistic combat so goalGetBase's own aim/steer settles and the capture lands.
+  if (a4.getBaseEngageHold) return;
+
   // ── Phase 1: Auto-fire at short range ────────────────────────────────
   // Verified from assembly 0x008222: when shellCount < 14 AND not shotAtMan → fire.
   if ((tank.shellCount & 0xFF) < 14) {
