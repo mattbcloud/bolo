@@ -273,6 +273,9 @@ export class BoloClientWorld extends ClientWorld {
     this.vignette = vignette;
     this.heartbeatTimer = 0;
 
+    // First-visit cookie policy — blocks the site until the user accepts.
+    this.showCookieConsent();
+
     // Check if we have a game ID in the URL
     const m = /^\?([a-z]{20})$/.exec(location.search);
     if (m) {
@@ -1218,6 +1221,78 @@ export class BoloClientWorld extends ClientWorld {
       }
     `;
     document.head.appendChild(style);
+  }
+
+  /**
+   * First-visit cookie policy. Shows a modal system.css alert box over the whole
+   * site (dimmed, non-interactive backdrop) until the user accepts. Declining
+   * redirects away. Consent is remembered in a cookie so it only shows once.
+   */
+  showCookieConsent(): void {
+    // Already consented? Don't show again.
+    if (document.cookie.split('; ').some((c) => c.startsWith('cookieConsent='))) return;
+    // Guard against a double-insert.
+    if (document.getElementById('cookie-consent-overlay')) return;
+
+    this.addSystemCSSStyles();
+
+    const overlayHTML = `
+      <div id="cookie-consent-overlay" style="
+        position: fixed;
+        inset: 0;
+        z-index: 100000;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">
+        <div class="window" role="alertdialog" aria-modal="true"
+             aria-describedby="cookie-consent-text" style="width: 420px; min-width: 0;">
+          <div class="title-bar">
+            <h1 class="title">Cookie Policy</h1>
+          </div>
+          <div class="separator"></div>
+          <div class="window-pane" style="overflow: visible; height: auto; padding: 20px;">
+            <p id="cookie-consent-text" style="margin: 0 0 18px 0; font-size: 12px; line-height: 1.5;">
+              Play-bolo.com use cookies to save game settings and record anonymized metrics.
+            </p>
+            <div style="display: flex; justify-content: flex-end; gap: 12px;">
+              <button id="cookie-decline-btn" class="btn">Decline</button>
+              <button id="cookie-accept-btn" class="btn btn-default">Accept</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', overlayHTML);
+
+    const overlay = document.getElementById('cookie-consent-overlay') as HTMLElement;
+    const acceptBtn = document.getElementById('cookie-accept-btn') as HTMLButtonElement;
+    const declineBtn = document.getElementById('cookie-decline-btn') as HTMLButtonElement;
+
+    const accept = () => {
+      // Remember consent for a year so the policy only shows on first visit.
+      document.cookie = `cookieConsent=accepted; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`;
+      document.removeEventListener('keydown', onKeyDown, true);
+      overlay.remove();
+    };
+    const decline = () => {
+      window.location.href = 'https://en.wikipedia.org/wiki/Bolo_(1987_video_game)';
+    };
+    // Accept is the default choice — Enter/Return activates it.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        accept();
+      }
+    };
+
+    acceptBtn.addEventListener('click', accept);
+    declineBtn.addEventListener('click', decline);
+    document.addEventListener('keydown', onKeyDown, true);
+    acceptBtn.focus();
   }
 
   /**
