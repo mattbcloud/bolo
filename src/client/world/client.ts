@@ -342,10 +342,21 @@ export class BoloClientWorld extends ClientWorld {
               <option value="">Loading maps...</option>
             </select>
           </div>
-          <div class="field-row" style="margin-bottom: 10px; margin-left: 0;">
-            <input type="checkbox" id="tournament-mode">
-            <label for="tournament-mode">Tournament Mode (full ammo only on first spawn)</label>
-          </div>
+          <fieldset style="margin-bottom: 10px;">
+            <legend>Game Mode</legend>
+            <div class="field-row">
+              <input type="radio" id="mode-open" name="game-mode" value="open" checked>
+              <label for="mode-open">Open — respawn with full bullets, mines &amp; trees</label>
+            </div>
+            <div class="field-row">
+              <input type="radio" id="mode-tournament" name="game-mode" value="tournament">
+              <label for="mode-tournament">Tournament — bullets = 2 × neutral bases; no mines/trees</label>
+            </div>
+            <div class="field-row">
+              <input type="radio" id="mode-strict" name="game-mode" value="strict">
+              <label for="mode-strict">Strict Tournament — always respawn with 0 bullets</label>
+            </div>
+          </fieldset>
           <button id="create-game-btn" class="btn" disabled>Create Game</button>
         </div>
 
@@ -502,13 +513,13 @@ export class BoloClientWorld extends ClientWorld {
     if (!select || !select.value) return;
 
     const mapName = select.value;
-    const tournamentMode = (document.getElementById('tournament-mode') as HTMLInputElement)?.checked || false;
+    const gameMode = (document.querySelector('input[name="game-mode"]:checked') as HTMLInputElement)?.value || 'open';
 
     try {
       const response = await fetch('/api/games', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mapName, tournamentMode })
+        body: JSON.stringify({ mapName, gameMode })
       });
 
       const game = await response.json();
@@ -2427,6 +2438,13 @@ export class BoloClientWorld extends ClientWorld {
               ctrl, idle: controlsIdle,
             },
             costs,
+            // Active-goal target + routing/motion — the "why is it stuck" fields. goalTgt is the
+            // same rich per-goal string the HUD builds (pill/AP/base/man coords, distances, route).
+            goalTgt: goalTgtStr,
+            route: a4.navCacheValid ? 'ok' : 'miss',
+            noRoute: a4.noLocalRouteFlag,
+            facing: state.tank.direction & 0xFF,
+            speed: Math.round((state.tank.speed ?? 0) * 10) / 10,
             killTankTarget: a4.tankToKillTarget
               ? { team: a4.tankToKillTarget.team, distTx: Math.round((a4.tankToKillTarget.distanceMetric ?? 0) / 256) }
               : null,

@@ -45,7 +45,13 @@ export class BoloServerWorld extends ServerWorld {
         this.tanks = [];
         this.emptyStartTime = null; // Track when game became empty
         this.teamScoresTick = 0; // Counter for sending team scores
-        this.tournamentMode = false; // Tournament mode: full ammo only on first spawn
+        // Classic Bolo game mode — differs ONLY in respawn resupply (armour always full = 40):
+        //   'open'       training: respawn full bullets (40) + full mines + full trees.
+        //   'tournament' respawn bullets = min(40, 2 × neutral-base count); 0 mines, 0 trees.
+        //   'strict'     respawn 0 bullets ALWAYS (even first spawn); 0 mines, 0 trees.
+        // No victory condition — the "all bases owned" lockout is emergent from the ammo economy.
+        this.gameMode = 'open';
+        this._stateDumpTick = 0;
         this.map = map;
         this.boloInit();
         this.clients = [];
@@ -152,7 +158,59 @@ export class BoloServerWorld extends ServerWorld {
                 }
             }
         }
+        if (++this._stateDumpTick % 50 === 0)
+            this._dumpAuthoritativeState();
         this.sendPackets();
+    }
+    /**
+     * Server-AUTHORITATIVE state dump (debug ground truth). The AI brain runs client-side on a
+     * possibly-STALE view (its cached worldMap, phantom targets); the brain-state dump faithfully
+     * records that view but it can diverge from reality. This writes the TRUE simulation state —
+     * every real tank, every deployed builder/man, and the REAL terrain around each tank — to
+     * /tmp/bolo-server-state.jsonl so analysis can (a) know what's actually there and (b) DIFF it
+     * against the brain's belief to locate stale-perception bugs. Every 50 ticks (~1/s). Never throws.
+     */
+    _dumpAuthoritativeState() {
+        try {
+            const tanks = this.tanks.map((t) => ({
+                idx: t.tank_idx,
+                name: t.name ?? null,
+                team: t.team,
+                tile: (t.x != null && t.y != null) ? [(t.x >> 8) & 0xFF, (t.y >> 8) & 0xFF] : null,
+                armour: t.armour,
+                onBoat: !!t.onBoat,
+            }));
+            // Deployed builders (the "men" the brain hunts). order 0 = inTank (position null); anything
+            // else with a position is a real man on the ground.
+            const men = [];
+            for (const t of this.tanks) {
+                const b = t.builder?.$ ?? t.builder;
+                if (b && b.order !== 0 && b.x != null && b.y != null) {
+                    men.push({ team: b.team ?? t.team, order: b.order, tile: [(b.x >> 8) & 0xFF, (b.y >> 8) & 0xFF], ownerIdx: t.tank_idx });
+                }
+            }
+            // REAL terrain (9x9) around each tank — ground truth to compare against the brain's worldMap.
+            const terrain = {};
+            for (const t of this.tanks) {
+                if (t.x == null || t.y == null)
+                    continue;
+                const cx = (t.x >> 8) & 0xFF, cy = (t.y >> 8) & 0xFF;
+                const rows = [];
+                for (let dy = -4; dy <= 4; dy++) {
+                    let row = '';
+                    for (let dx = -4; dx <= 4; dx++) {
+                        const c = this.map.cellAtTile((cx + dx) & 0xFF, (cy + dy) & 0xFF);
+                        row += c?.type?.ascii ?? '?';
+                    }
+                    rows.push(row);
+                }
+                terrain[`${cx},${cy}`] = rows;
+            }
+            const dump = { ts: Date.now(), tick: this._stateDumpTick, tanks, men, terrain,
+                pills: this.map.pills.length, bases: this.map.bases.length };
+            fs.appendFile('/tmp/bolo-server-state.jsonl', JSON.stringify(dump) + '\n', () => { });
+        }
+        catch { /* diagnostics must never break the server tick */ }
     }
     /**
      * Emit a sound effect from the given location. `owner` is optional.
@@ -677,6 +735,36 @@ export class Application {
                 res.end(JSON.stringify({ error: 'Internal server error', message: String(error) }));
             }
         });
+        // Brain state dump sink (debug). The AI brain runs client-side and can't write files, so it
+        // POSTs a structured per-tick snapshot here and we append it as JSONL to a file a shell/watcher
+        // can tail — giving offline analysis the TRUE world the brain sees, not the one-line HUD.
+        // GET ?clear=1 truncates the file (start a fresh capture).
+        this.connectServer.use('/api/brain-state', (req, res) => {
+            const FILE = '/tmp/bolo-brain-state.jsonl';
+            res.setHeader('Content-Type', 'application/json');
+            if (req.method === 'POST') {
+                let body = '';
+                req.on('data', (chunk) => { body += chunk; if (body.length > 1000000)
+                    req.destroy(); });
+                req.on('end', () => {
+                    try {
+                        fs.appendFile(FILE, body.replace(/\n/g, ' ').trim() + '\n', () => { });
+                        res.end('{"ok":true}');
+                    }
+                    catch (error) {
+                        res.statusCode = 500;
+                        res.end(JSON.stringify({ error: String(error) }));
+                    }
+                });
+            }
+            else if (req.method === 'GET' && /[?&]clear=1/.test(req.url ?? '')) {
+                fs.writeFile(FILE, '', () => { });
+                res.end('{"ok":true,"cleared":true}');
+            }
+            else {
+                res.end('{"ok":true,"hint":"POST a JSON snapshot (appended to ' + FILE + '); GET ?clear=1 to reset"}');
+            }
+        });
         this.connectServer.use('/api/games', (req, res) => {
             if (req.method === 'GET') {
                 // List active games
@@ -708,7 +796,7 @@ export class Application {
                 req.on('data', (chunk) => body += chunk);
                 req.on('end', () => {
                     try {
-                        const { mapName, tournamentMode } = JSON.parse(body);
+                        const { mapName, gameMode } = JSON.parse(body);
                         const mapDescriptor = this.maps.get(mapName);
                         if (!mapDescriptor) {
                             res.statusCode = 404;
@@ -727,7 +815,7 @@ export class Application {
                                 return;
                             }
                             try {
-                                const game = this.createGame(data, tournamentMode);
+                                const game = this.createGame(data, gameMode);
                                 game.map.name = mapName; // Store map name for reference
                                 res.setHeader('Content-Type', 'application/json');
                                 res.end(JSON.stringify({
@@ -821,15 +909,15 @@ export class Application {
         }
         return gid;
     }
-    createGame(mapData, tournamentMode = false) {
+    createGame(mapData, gameMode = 'open') {
         const map = WorldMap.load(mapData);
         const gid = this.createGameId();
         const game = new BoloServerWorld(map);
         this.games[gid] = game;
         game.gid = gid;
         game.url = `${this.options.general.base}/match/${gid}`;
-        game.tournamentMode = tournamentMode;
-        console.log(`Created game '${gid}' (tournament mode: ${tournamentMode})`);
+        game.gameMode = (gameMode === 'tournament' || gameMode === 'strict') ? gameMode : 'open';
+        console.log(`Created game '${gid}' (mode: ${game.gameMode})`);
         this.startLoop();
         return game;
     }

@@ -8,7 +8,7 @@ import * as sounds from './sounds';
 import { WorldPillbox } from './objects/world_pillbox';
 import { WorldBase } from './objects/world_base';
 import { FloodFill } from './objects/flood_fill';
-const { round, random, floor } = Math;
+const { round, floor } = Math;
 const TERRAIN_TYPE_ATTRIBUTES = {
     '|': { tankSpeed: 0, tankTurn: 0.0, manSpeed: 0 },
     ' ': { tankSpeed: 3, tankTurn: 0.25, manSpeed: 0 },
@@ -254,7 +254,7 @@ export class WorldMap extends Map {
         return this.cellAtTile(floor(x / TILE_SIZE_WORLD), floor(y / TILE_SIZE_WORLD));
     }
     getRandomStart() {
-        return this.starts[round(random() * (this.starts.length - 1))];
+        return this.starts[round(Math.random() * (this.starts.length - 1))];
     }
 }
 export default WorldMap;

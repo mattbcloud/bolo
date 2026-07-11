@@ -21,7 +21,7 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     tanks: any[];
     emptyStartTime: number | null;
     teamScoresTick: number;
-    tournamentMode: boolean;
+    gameMode: 'open' | 'tournament' | 'strict';
     boloInit: () => void;
     addTank: (tank: any) => void;
     removeTank: (tank: any) => void;
@@ -41,6 +41,16 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
      * Update, and then send packets to the client.
      */
     tick(): void;
+    private _stateDumpTick;
+    /**
+     * Server-AUTHORITATIVE state dump (debug ground truth). The AI brain runs client-side on a
+     * possibly-STALE view (its cached worldMap, phantom targets); the brain-state dump faithfully
+     * records that view but it can diverge from reality. This writes the TRUE simulation state —
+     * every real tank, every deployed builder/man, and the REAL terrain around each tank — to
+     * /tmp/bolo-server-state.jsonl so analysis can (a) know what's actually there and (b) DIFF it
+     * against the brain's belief to locate stale-perception bugs. Every 50 ticks (~1/s). Never throws.
+     */
+    private _dumpAuthoritativeState;
     /**
      * Emit a sound effect from the given location. `owner` is optional.
      */
@@ -109,7 +119,7 @@ export declare class Application {
     resetDemo(cb?: (err: string | null) => void): void;
     haveOpenSlots(): boolean;
     createGameId(): string;
-    createGame(mapData: Buffer, tournamentMode?: boolean): any;
+    createGame(mapData: Buffer, gameMode?: 'open' | 'tournament' | 'strict'): any;
     closeGame(game: any): void;
     registerIrcClient(irc: any): void;
     listen(...args: any[]): void;

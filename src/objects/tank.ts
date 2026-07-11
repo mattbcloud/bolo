@@ -118,16 +118,29 @@ export class Tank extends BoloObject {
     // Increment spawn count
     this.spawnCount++;
 
-    // In tournament mode, only give full ammo on first spawn
-    if (this.world.tournamentMode && this.spawnCount > 1) {
+    // Respawn resupply per classic Bolo game mode. Armour is always full (40) in all modes;
+    // the modes differ only in bullets/mines/trees. Tank carry caps are 40 each.
+    const mode = this.world.gameMode ?? 'open';
+    if (mode === 'strict') {
+      // Strict Tournament: 0 bullets ALWAYS (even the first spawn), no mines/trees.
       this.shells = 0;
       this.mines = 0;
-    } else {
-      this.shells = 40;
+      this.trees = 0;
+    } else if (mode === 'tournament') {
+      // Tournament: bullets = 2 × neutral (unclaimed) bases, capped at 40; no mines/trees.
+      // As bases get claimed the allotment shrinks; once one team owns them all, others
+      // respawn near-empty and can't refuel — the game-over lockout is emergent, not coded.
+      const neutralBases = this.world.map.bases.filter((b: any) => b.team === 255).length;
+      this.shells = Math.min(40, 2 * neutralBases);
       this.mines = 0;
+      this.trees = 0;
+    } else {
+      // Open (training): full bullets + full mines + full trees; play continues forever.
+      this.shells = 40;
+      this.mines = 40;
+      this.trees = 40;
     }
     this.armour = 40;
-    this.trees = 0;
 
     this.reload = 0;
     this.shooting = false;

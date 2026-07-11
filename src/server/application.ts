@@ -53,7 +53,12 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   tanks: any[] = [];
   emptyStartTime: number | null = null;  // Track when game became empty
   teamScoresTick: number = 0;  // Counter for sending team scores
-  tournamentMode: boolean = false;  // Tournament mode: full ammo only on first spawn
+  // Classic Bolo game mode — differs ONLY in respawn resupply (armour always full = 40):
+  //   'open'       training: respawn full bullets (40) + full mines + full trees.
+  //   'tournament' respawn bullets = min(40, 2 × neutral-base count); 0 mines, 0 trees.
+  //   'strict'     respawn 0 bullets ALWAYS (even first spawn); 0 mines, 0 trees.
+  // No victory condition — the "all bases owned" lockout is emergent from the ammo economy.
+  gameMode: 'open' | 'tournament' | 'strict' = 'open';
 
   // Methods from BoloWorldMixin (applied via helpers.extend at the bottom of the file)
   boloInit!: () => void;
@@ -908,7 +913,7 @@ export class Application {
         req.on('data', (chunk: any) => body += chunk);
         req.on('end', () => {
           try {
-            const { mapName, tournamentMode } = JSON.parse(body);
+            const { mapName, gameMode } = JSON.parse(body);
             const mapDescriptor = this.maps.get(mapName);
 
             if (!mapDescriptor) {
@@ -931,7 +936,7 @@ export class Application {
               }
 
               try {
-                const game = this.createGame(data, tournamentMode);
+                const game = this.createGame(data, gameMode);
                 game.map.name = mapName; // Store map name for reference
 
                 res.setHeader('Content-Type', 'application/json');
@@ -1032,7 +1037,7 @@ export class Application {
     return gid;
   }
 
-  createGame(mapData: Buffer, tournamentMode: boolean = false): any {
+  createGame(mapData: Buffer, gameMode: 'open' | 'tournament' | 'strict' = 'open'): any {
     const map = WorldMap.load(mapData);
 
     const gid = this.createGameId();
@@ -1040,8 +1045,8 @@ export class Application {
     this.games[gid] = game;
     game.gid = gid;
     game.url = `${this.options.general.base}/match/${gid}`;
-    game.tournamentMode = tournamentMode;
-    console.log(`Created game '${gid}' (tournament mode: ${tournamentMode})`);
+    game.gameMode = (gameMode === 'tournament' || gameMode === 'strict') ? gameMode : 'open';
+    console.log(`Created game '${gid}' (mode: ${game.gameMode})`);
     this.startLoop();
 
     return game;
