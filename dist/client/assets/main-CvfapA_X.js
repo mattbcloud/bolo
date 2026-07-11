@@ -224,7 +224,7 @@ tZGH8Aeggbewl6GnAfeHkfengPERDygrexAbmE21sfCXgAHHsKeBtwH34feHAPERDygpfRAQmU60
         <div id="create-game-section">
           <h2 style="margin: 20px 0 10px 0; font-size: 14px;">Create New Game</h2>
           <div style="margin-bottom: 10px; font-size: 12px;">
-            <label for="map-select">Select Map:</label>
+            <label for="map-select" style="display: inline-block; width: 72px;">Select Map:</label>
             <select id="map-select" style="
               margin-left: 10px;
               padding: 4px 8px;
@@ -238,7 +238,7 @@ tZGH8Aeggbewl6GnAfeHkfengPERDygrexAbmE21sfCXgAHHsKeBtwH34feHAPERDygpfRAQmU60
             </select>
           </div>
           <div style="margin-bottom: 10px; font-size: 12px;">
-            <label for="mode-select">Game Mode:</label>
+            <label for="mode-select" style="display: inline-block; width: 72px;">Game Mode:</label>
             <select id="mode-select" style="
               margin-left: 10px;
               padding: 4px 8px;
