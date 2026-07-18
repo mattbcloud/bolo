@@ -144,7 +144,15 @@ function _maintainCover(a4: A4State, state: BrainState, pill: PillState): void {
   if (tank.resourceCount >= COVER_WALL_TREES) {
     // Only build on buildable land (not water/base); else skip rather than deadlock
     // the dispatch gate on an order the builder can't fulfil.
-    const buildable = !(cRaw & 0x80) && cTerrain !== 11; // not water, not base
+    // 0x80 is the boat-AVAILABLE flag, NOT a water flag — and it's never set here anyway
+    // (we return above when tank.onBoat), so the old `!(cRaw & 0x80)` water test was a no-op:
+    // a river/deep-sea/boat neighbour passed as buildable and the builder was dispatched to
+    // wall a water tile, which the engine's 'building' order rejects (builder.ts:319 breaks on
+    // ' '/'^'/'b'/base/pill) → nothing built, dispatch gate stuck at newGetPillAttackMode=1.
+    // Exclude the water terrain types explicitly (RIVER 1, BOAT 9, DEEP_SEA 10) + base (11),
+    // mirroring the PlacePill river-bug fix. (WALL 0 / FOREST 5 / SHOT_WALL 8 / PILL 12 already
+    // returned above as "cover present".)
+    const buildable = cTerrain !== 1 && cTerrain !== 9 && cTerrain !== 10 && cTerrain !== 11;
     if (!buildable) return;
     a4.pendingBuilderAction = { action: 'building', trees: COVER_WALL_TREES, tileX: cnx, tileY: cny };
     a4.newGetPillAttackMode = 1;
