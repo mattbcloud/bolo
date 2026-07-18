@@ -1271,6 +1271,17 @@ export class A4State {
    *  false, pend none, indefinitely). Resets the instant the builder is back in the tank. */
   placePillBuilderOutSince = 0;
 
+  /** PlacePill FARM-STALL watchdog. In the tree-gather phase the builder can loop harvesting a
+   *  PHANTOM forest — a tile the client's cellAtTile still shows as forest but the server has as
+   *  grass/road (a missed MAPCHANGE; see resume doc "client cellAtTile terrain DESYNC"). The
+   *  harvest yields 0 trees so the tank farms forever. `placePillFarmStallSince` = tick the tank
+   *  went stationary in the farm phase (0 while moving / after progress); `placePillFarmPrevTrees`
+   *  = last observed tree count; if no tree gain for FARM_STALL_TICKS, placePillGoalCost sets
+   *  `placePillFarmAbandonUntil` (a yield cooldown) so the tank does something else. */
+  placePillFarmStallSince = 0;
+  placePillFarmPrevTrees = 0;
+  placePillFarmAbandonUntil = 0;
+
   /** A4[13884] byte — PlacePill: BaseToBuild tile X */
   placePillBaseTileX = 0;
 

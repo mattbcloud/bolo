@@ -89,6 +89,12 @@ function _findPillPlacementTile(a4: A4State, base: BaseState): { tileX: number; 
     // (0x80 clear, type 1) slipped through and the builder was dispatched to plant a pill
     // on water forever. Swamp/crater/road/rubble/grass remain valid (engine accepts them).
     if (t === 0 || t === 1 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
+    // A pill already on the tile blocks a pillbox order too (engine breaks on this.cell.pill,
+    // ANY armour). worldMap only flags ARMED pills (type 12); a DEAD pill (armour 0, e.g. an
+    // enemy pill someone neutralised) shows the bare terrain, so the type check above misses it
+    // and the builder is dispatched onto it forever (live PlacePill freeze: orange tank looping
+    // to plant on a green dead pill's tile). getPillAtTile catches on-map pills of any armour.
+    if (a4.getPillAtTile(nx, ny)) continue;
     return { tileX: nx, tileY: ny };                            // wall/river/forest/shot-wall/boat/sea/base/pill excluded
   }
   return null;

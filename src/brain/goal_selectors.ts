@@ -384,6 +384,32 @@ export function placePillGoalCost(a4: A4State, state: BrainState): number {
 
   const carried = state.tank.pillsCarried & 0xFF;
 
+  // FARM-STALL watchdog. The tree-gather phase can loop harvesting a PHANTOM forest (a tile the
+  // client's cellAtTile wrongly shows as forest — a missed MAPCHANGE; see resume doc), yielding 0
+  // trees so the tank farms FOREVER (live freeze: greeny stuck on PlacePill, trees never rising).
+  // Detect no tree gain while HELD stationary in the farm phase and yield on a cooldown so the tank
+  // does something else instead of freezing. The clock only runs while stationary, so a long
+  // navigation to a real forest/base doesn't false-trigger; trees rising resets it immediately.
+  const FARM_STALL_TICKS = 1500;      // ~3 failed harvest round-trips (a working harvest gains trees in ~1)
+  const FARM_ABANDON_COOLDOWN = 3000; // yield window before retrying PlacePill (mirrors cover-abandon)
+  if (a4.tickCounter < a4.placePillFarmAbandonUntil) return 0xFFFF;
+  if (carried && state.tank.resourceCount < 1) {
+    const stationary = (state.tank.speed ?? 0) < 4;   // holding to farm, not travelling to a forest/base
+    if (!stationary || state.tank.resourceCount > a4.placePillFarmPrevTrees) {
+      a4.placePillFarmStallSince = 0;                  // moving or trees rose → not stalled
+      a4.placePillFarmPrevTrees = state.tank.resourceCount;
+    } else if (a4.placePillFarmStallSince === 0) {
+      a4.placePillFarmStallSince = a4.tickCounter;     // just went stationary in the farm phase
+    } else if (a4.tickCounter - a4.placePillFarmStallSince > FARM_STALL_TICKS) {
+      a4.placePillFarmAbandonUntil = a4.tickCounter + FARM_ABANDON_COOLDOWN;
+      a4.placePillFarmStallSince = 0;
+      return 0xFFFF;
+    }
+  } else {
+    a4.placePillFarmStallSince = 0;
+    a4.placePillFarmPrevTrees = 0;
+  }
+
   // ORPHANED-BUILDER yield. PlacePill can only farm/plant with the builder IN the tank
   // (builder.performOrder is a no-op while it's deployed). If the builder got stranded — e.g.
   // an emergency Refuel dragged the tank tiles away mid-plant, leaving the builder behind and
@@ -932,6 +958,12 @@ function baseHasBuildableNeighbor(a4: A4State, base: BaseState): boolean {
     // but yields no placement tile there → hold forever. Exclude every tile the engine's
     // pillbox order rejects, incl. RIVER (1) — 0x80 is a boat flag, not a water flag.
     if (t === 0 || t === 1 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
+    // Also skip a tile occupied by an on-map pill of ANY armour — a DEAD pill (armour 0) isn't
+    // flagged in worldMap but still blocks a pillbox order (engine breaks on this.cell.pill).
+    // Must match _findPillPlacementTile, or a base whose only free neighbour holds a dead pill
+    // gets selected here yet yields no placement tile → PlacePill holds forever.
+    const nx = (bx + dx) & 0xFF, ny = (by + dy) & 0xFF;
+    if (a4.getPillAtTile(nx, ny)) continue;
     return true;
   }
   return false;
