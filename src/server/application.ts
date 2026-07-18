@@ -267,6 +267,24 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   mapChanged(cell: any, oldType: string, hadMine: boolean, oldLife: number): void {
     const ascii = cell.type.ascii;
     this.changes.push(['mapChange', cell.x, cell.y, ascii, cell.life, cell.mine]);
+    // Catch-up buffer for not-yet-synchronized clients. A client's ONLY terrain snapshot is
+    // the map.dump taken in onConnect (socket-open); it does not receive mapChange deltas until
+    // ws.synchronized flips true (post onJoinMessage + one tick, line ~654). Every terrain
+    // change during that [connect → sync] window would otherwise be lost forever — leaving stale
+    // cells (classic case: a forest harvested while the joining client sits on the join screen
+    // stays 'forest' on that client → the brain's _findAdjacentForest picks a phantom forest →
+    // the builder harvests nothing → PlacePill farm freeze). Record every change for each pending
+    // client so we can replay them as MAPCHANGE deltas the instant it synchronizes.
+    for (const c of this.clients) {
+      if (c.catchupChanges && !c.synchronized) {
+        if (c.catchupChanges.length < 50000) {
+          c.catchupChanges.push(['mapChange', cell.x, cell.y, ascii, cell.life, cell.mine]);
+        } else if (!c.catchupOverflow) {
+          c.catchupOverflow = true;
+          console.log('[CATCHUP] buffer overflow (>50k) — client on the join screen too long; some terrain may stay stale until it changes again.');
+        }
+      }
+    }
   }
 
   // Connection handling
@@ -285,6 +303,12 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     let packet: any = this.map.dump({ noPills: true, noBases: true });
     packet = Buffer.from(packet).toString('base64');
     ws.send(packet);
+
+    // Baseline captured — start recording terrain changes for this client until it synchronizes,
+    // so the [connect → sync] delta gap can be replayed at sync (see mapChanged). Without this,
+    // any terrain change during the join-screen window is lost and that cell stays stale forever.
+    ws.catchupChanges = [];
+    ws.catchupOverflow = false;
 
     // To synchronize the object list to the client, we use changesPacket with fullCreate=true
     // This sends CREATE messages followed by TINY_UPDATE messages for each object
@@ -633,6 +657,31 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       if (client.needsInitialSync) {
         // Send full snapshot
         client.send(newClientPacket);
+
+        // Replay terrain changes that occurred between this client's connect-time map.dump and
+        // now. The dump was the client's ONLY terrain snapshot and mapChange deltas do not start
+        // flowing until it is synchronized — so without this replay, every forest harvest / wall
+        // build / crater during the join window stays stale on the client (phantom terrain).
+        // Serialize the buffered mapChanges through changesPacket by briefly borrowing this.changes
+        // (same save/restore pattern used for newClientPacket above), then deliver as MAPCHANGE msgs.
+        const catchupCount = client.catchupChanges ? client.catchupChanges.length : -1;
+        if (client.catchupChanges && client.catchupChanges.length) {
+          const savedForCatchup = this.changes;
+          this.changes = client.catchupChanges;
+          const catchupData = this.changesPacket(false);
+          this.changes = savedForCatchup;
+          if (catchupData.length) {
+            client.send(Buffer.from(catchupData).toString('base64'));
+          }
+        }
+        // Log only meaningful outcomes: N>0 = terrain deltas from the [connect→sync] window were
+        // replayed (the gap that used to leave stale/phantom terrain), or -1 = buffer was never
+        // initialized (onConnect didn't run for this client → a regression worth seeing). The
+        // common N=0 (window caught nothing) is silent to avoid per-join noise.
+        if (catchupCount !== 0) {
+          console.log(`[CATCHUP] sync tank idx=${client.tank?.idx}: replayed ${catchupCount} terrain change(s) from the [connect→sync] window (overflow=${!!client.catchupOverflow}).`);
+        }
+        client.catchupChanges = null;
 
         // Send welcome packet
         const welcomePacket = Buffer.from(pack('BH', net.WELCOME_MESSAGE, client.tank.idx)).toString('base64');
