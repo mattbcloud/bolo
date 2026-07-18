@@ -362,6 +362,24 @@ export function getTurnSpeed(a4: A4State, toTileX: number, toTileY: number): num
   if (tankOnWater) {
     const toIdx = ((toTileY & 0xFF) << 8) | (toTileX & 0xFF);
     const toRaw = a4.worldMap[toIdx];
+    // RAM A PARKED BOAT — only when OUT OF AMMO. The engine needs speed >=16 to drive a boat
+    // onto an adjacent boat cell 'b' (type 9); doing so DESTROYS the unmanned boat (tank.ts
+    // leaveBoat). Below 16 the boat just stalls against it, no damage, no progress (live Refuel
+    // freeze: 0-ammo tank pinned by a boat parked in the channel, creeping at 3-5, never ramming).
+    // NUANCE: a boat can ALSO be destroyed by gunfire (shell.ts collides with 'b'), which is
+    // often the better play when armed — shoot it from range instead of charging. So we only
+    // force the ram when myTankShells===0 (can't shoot); an armed tank leaves the boat to the
+    // combat layer. Safe: water-only branch (already afloat, can't disturb boarding); the boat
+    // caps at 16 on water, so 24 → 16 = exactly ram speed. Fires when a boat cell is the steering
+    // target OR sits directly ahead in our heading.
+    if (a4.myTankShells === 0) {
+      const DIR8: readonly [number, number][] = [
+        [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1],
+      ];
+      const [fdx, fdy] = DIR8[Math.round((a4.tankDirection & 0xFF) / 32) & 7];
+      const fwdRaw = a4.worldMap[((((a4.tankTileY + fdy) & 0xFF)) << 8) | ((a4.tankTileX + fdx) & 0xFF)];
+      if ((toRaw & 0x0F) === 9 || (fwdRaw & 0x0F) === 9) return 24;
+    }
     const toIsLand =
       !(toRaw & 0x80) &&
       (toRaw & 0x0F) !== 1 &&
@@ -860,6 +878,27 @@ export function navigateToCoords(
         a4.firingWord |= 0x10;  // fire
         return;
       }
+    }
+  }
+
+  // ARMED TANK vs a PARKED BOAT in the channel. A boat cell 'b' (type 9) sitting directly ahead
+  // pins an afloat tank (the engine needs speed >=16 to drive onto it — see getTurnSpeed's
+  // 0-ammo ram). If we HAVE ammo, shoot it instead: one shell destroys an unmanned boat
+  // (shell.ts collides with 'b'), and we can fire ON THE MOVE — no stop, no re-aim. The hull gun
+  // already points down our heading, and the ram gate holds us at the boundary (speed <16) while
+  // the shell flies, so we can't overrun it; the tile becomes water and we flow through. Detect
+  // the boat by our HEADING (not the path waypoint) — the route often steers AROUND the boat, so
+  // it's not on the path, but it still blocks the diagonal. Only when afloat: a boat cell ahead
+  // of a LAND tank is one to board, not destroy.
+  {
+    const tankRaw = a4.worldMap[((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF)];
+    if ((tankRaw & 0x80) && a4.myTankShells > 0) {
+      const B8: readonly [number, number][] = [
+        [1, 0], [1, -1], [0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1],
+      ];
+      const [bdx, bdy] = B8[Math.round((a4.tankDirection & 0xFF) / 32) & 7];
+      const bFwdRaw = a4.worldMap[((((a4.tankTileY + bdy) & 0xFF)) << 8) | ((a4.tankTileX + bdx) & 0xFF)];
+      if ((bFwdRaw & 0x0F) === 9) a4.firingWord |= 0x10;  // fire forward, keep moving
     }
   }
 

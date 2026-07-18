@@ -927,9 +927,11 @@ function baseHasBuildableNeighbor(a4: A4State, base: BaseState): boolean {
   const dirs: [number, number][] = [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
   for (const [dx, dy] of dirs) {
     const raw = a4.worldMap[((((by + dy) & 0xFF)) << 8) | ((bx + dx) & 0xFF)];
-    if (raw & 0x80) continue;
     const t = raw & 0x0F;
-    if (t === 0 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
+    // Must match _findPillPlacementTile exactly, or a river-only base gets selected here
+    // but yields no placement tile there → hold forever. Exclude every tile the engine's
+    // pillbox order rejects, incl. RIVER (1) — 0x80 is a boat flag, not a water flag.
+    if (t === 0 || t === 1 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
     return true;
   }
   return false;

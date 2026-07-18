@@ -81,10 +81,15 @@ function _findPillPlacementTile(a4: A4State, base: BaseState): { tileX: number; 
   for (const [dx, dy] of dirs) {
     const nx = (bx + dx) & 0xFF, ny = (by + dy) & 0xFF;
     const raw = a4.worldMap[((ny & 0xFF) << 8) | (nx & 0xFF)];
-    if (raw & 0x80) continue;                                  // water-flagged
     const t = raw & 0x0F;
-    if (t === 0 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
-    return { tileX: nx, tileY: ny };                            // wall/forest/shot-wall/boat/sea/base/pill excluded
+    // Exclude every tile the engine's pillbox order rejects (builder.ts performOrder:
+    // breaks on pill/base/boat/deep-sea/forest/wall/shot-wall/RIVER). RIVER (1) was the
+    // live freeze: the old `raw & 0x80` check is NOT a water flag — 0x80 means "boat
+    // available on this water cell" (set only while ON a boat), so on foot a river tile
+    // (0x80 clear, type 1) slipped through and the builder was dispatched to plant a pill
+    // on water forever. Swamp/crater/road/rubble/grass remain valid (engine accepts them).
+    if (t === 0 || t === 1 || t === 5 || t === 8 || t === 9 || t === 10 || t === 11 || t === 12) continue;
+    return { tileX: nx, tileY: ny };                            // wall/river/forest/shot-wall/boat/sea/base/pill excluded
   }
   return null;
 }
@@ -1241,16 +1246,21 @@ export function goalNewGetPill(a4: A4State, state: BrainState): void {
   // full disembark momentum; combat (this fn's attack/stationary-fire phases below AND
   // doCommonStuff) is suppressed while afloat, so it won't fire from the boat. Once landed
   // (onBoat clears) the normal capture/attack phases run.
-  if (state.tank.onBoat) {
-    navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
+  // Phase 4a: If pill armour is 0, drive onto it — INCLUDING from a boat.
+  // Orona auto-captures: world_pillbox.update() picks up the pill when
+  // tank.cell === pill.cell and armour===0 (no ammo, no team check). Dead pills don't block
+  // routing, so a boat can drive straight onto one resting on a water tile — which is exactly
+  // how loose pills end up there: a tank dying at the shore flings its carried pills into the
+  // water. This MUST run before the on-boat guard below (which sends the tank to a shoot-from
+  // attack position meant for ARMED pills); otherwise loose pills in water were never collected
+  // from a boat (user report). Navigate directly to the pill tile to capture it.
+  if (pill.armour === 0) {
+    navigateToCoords(a4, pill.x, pill.y, 0);
     return;
   }
 
-  // Phase 4a: If pill armour is 0, drive onto it.
-  // Orona auto-captures: world_pillbox.update() picks up the pill when
-  // tank.cell === pill.cell and armour===0. Navigate directly to the pill tile.
-  if (pill.armour === 0) {
-    navigateToCoords(a4, pill.x, pill.y, 0);
+  if (state.tank.onBoat) {
+    navigateToCoords(a4, a4.newGetPillAPX, a4.newGetPillAPY, 0);
     return;
   }
 

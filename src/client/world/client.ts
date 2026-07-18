@@ -244,6 +244,10 @@ export class BoloClientWorld extends ClientWorld {
   private _brainIndicator: HTMLElement | null = null;
   private _lastBuilderOrderKey: string = '';
   private _lastBuilderOrderTick: number = -999;
+  // True from the moment the builder dies (order→parachuting) until it has re-entered the tank
+  // (order→inTank). While set, all pending builder actions are dropped so the builder never
+  // resumes a task decided before/around its death.
+  private _builderDeadUntilReentry: boolean = false;
   private _brainWasIdle: boolean = false;
   private _lastOnWaterTick: number = -999;
 
@@ -2372,6 +2376,17 @@ export class BoloClientWorld extends ClientWorld {
     // (reference may be unresolved on the first few ticks).
     const builderObj = this.player?.builder?.$ ?? null;
     if (builderObj) {
+      // ── Clear all pending builder actions on death (until re-entry) ──────────
+      // When the builder dies it parachutes back from a random map start — a long journey
+      // during which the tank's situation drifts, so any task decided before/around the death
+      // is stale by the time it lands and the builder would run straight back out to something
+      // nonsensical. Latch from the death (order→parachuting) and drop every pending action
+      // until it is back in the tank, so it makes a FRESH decision only once home (user directive).
+      if (builderObj.order === builderObj.states.parachuting) this._builderDeadUntilReentry = true;
+      if (this._builderDeadUntilReentry) {
+        a4.pendingBuilderAction = null;
+        controls.builderAction = undefined;
+      }
       const ba = controls.builderAction;
       // Never deploy the builder while the tank is on a boat OR sitting on a water cell
       // (deep sea / river): the engine's performOrder (builder.ts:107) skips its passability
@@ -2415,6 +2430,10 @@ export class BoloClientWorld extends ClientWorld {
       // re-targeted after the builder returns.
       if (builderObj.order !== builderObj.states.inTank) {
         this._lastBuilderOrderKey = '';
+      } else {
+        // Back home. Release the death latch AFTER this tick's dispatch was suppressed, so the
+        // re-entry tick never fires a pre-death action — the next tick decides fresh.
+        this._builderDeadUntilReentry = false;
       }
     }
 
