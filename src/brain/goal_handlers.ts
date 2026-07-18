@@ -759,15 +759,27 @@ function _reclaimPill(a4: A4State, state: BrainState, pill: PillState): void {
     const pillCx = ((pill.tileX & 0xFF) << 8) + 128;
     const pillCy = ((pill.tileY & 0xFF) << 8) + 128;
     const hasLOS = _checkBarriers(a4, state.tank.x, state.tank.y, pillCx, pillCy) === 0;
+    // Point-blank: within ~1.5 tiles there is no room for a real barrier between the tank and the
+    // pill, but checkBarriers' 2-sample DDA false-blocks LOS when the tank sits N/W of the pill (its
+    // lone midpoint sample rounds onto the pill's OWN tile = terrain 12 = barrier). Treat adjacency
+    // as clear and FIRE — otherwise the `!canFire` branch tells the tank to "advance" to navX/navY,
+    // which at this range is essentially where it already is → it never moves and never fires,
+    // freezing the reclaim forever (live: belle/dsfsdf pinned on FixPill next to a friendly pill).
+    const pointBlank = dist <= 0x0180;   // 384 units ≈ 1.5 tiles
+    const canFire = hasLOS || pointBlank;
     let spd: number;
     if      (dist > 0x073C) spd = 16;
     else if (dist > 0x06E2) spd = 8;
     else                    spd = 0;
-    if (spd === 0 && !hasLOS) spd = 8;   // blocked at the standoff → advance to clear the line
+    if (spd === 0 && !canFire) spd = 8;   // blocked at the standoff → advance to clear the line
     setSpeed(a4, spd, state.tank.speed & 0xFF);
-    if (hasLOS) {
+    if (canFire) {
       a4.shootPillDirection = dir;
-      _shootPill(a4, state, pill, dir, 0, spd === 0 ? 1 : 0);   // stationary fire when stopped
+      // skipCheck=1 at point-blank: shootPill re-runs the SAME 2-sample checkBarriers internally
+      // (combat.ts:481), which false-blocks here too and would return without firing — so bypass
+      // it. At ≤1.5 tiles nothing real can sit between the tank and the pill. Off point-blank we
+      // keep the LOS gate (canFire required hasLOS there anyway).
+      _shootPill(a4, state, pill, dir, pointBlank ? 1 : 0, spd === 0 ? 1 : 0);   // stationary fire when stopped
     } else if (spd > 0) {
       navigateToCoords(a4, navX, navY, 0);
     }
