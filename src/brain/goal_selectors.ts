@@ -640,6 +640,10 @@ export function killTankGoalCost(a4: A4State, state: BrainState): number {
   const target = a4.tankToKillTarget;
   if (target === null) return 0xFFFF;
   if (state.tank.ammo === 0) return 0xFFFF;   // no shells → can't kill it; yield to Refuel
+  // noRoute-abandon cooldown: KillTank proved unable to route to the target (see goalKillTank).
+  // Yield so the tank does something reachable instead of freezing on an unkillable/unreachable
+  // enemy (e.g. one parked on a nav-blocked / stacked tile).
+  if (a4.tickCounter < a4.killTankFailedUntilTick) return 0xFFFF;
   return killTankCostForTank(a4, state, target);
 }
 

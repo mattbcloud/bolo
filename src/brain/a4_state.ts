@@ -777,6 +777,12 @@ export class A4State {
   killTankPrevY = 0;
   killTankPrevTick = 0;
   killTankPrevIdx = -1;
+  // noRoute-abandon (mirrors FixPill): if goalKillTank can't route to the target for a sustained
+  // span, arm a cooldown so killTankGoalCost yields — otherwise a tank commits to KillTank (often
+  // the cheapest goal) against an unreachable enemy (parked on a nav-blocked / stacked tile) and
+  // freezes forever, never falling back to a routable goal (live 2v2: nerp idle on KillTank).
+  killTankNoRouteSinceTick = 0;
+  killTankFailedUntilTick = 0;
 
   // ── GetBase state ──────────────────────────────────────────────────────────
 

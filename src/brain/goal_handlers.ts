@@ -1777,6 +1777,24 @@ export function goalKillTank(a4: A4State, state: BrainState): void {
 
   const dist = target.distanceMetric;
 
+  // noRoute-abandon safety (mirrors goalFixPill). Reads the previous tick's nav result
+  // (noLocalRouteFlag persists until the next navigate). If KillTank can't route to the target for
+  // a sustained span, arm a cooldown so killTankGoalCost yields — otherwise the tank commits to
+  // KillTank (usually the cheapest goal) against an unreachable enemy parked on a nav-blocked /
+  // stacked tile and idles forever, never falling back to a routable goal (live 2v2: nerp, shells
+  // 40, pinned on KillTank vs a tank 8tx away it couldn't path to). Gated to the FAR-navigate
+  // regime (dist>1792): a CLOSE enemy is owned by the LOS/flank branches below and must not be
+  // abandoned (its noRoute means "can't flank", not "unreachable"). Clears when routing succeeds.
+  if (a4.noLocalRouteFlag && dist > 1792) {
+    if (a4.killTankNoRouteSinceTick === 0) a4.killTankNoRouteSinceTick = a4.tickCounter;
+    else if (a4.tickCounter - a4.killTankNoRouteSinceTick > 150) {
+      a4.killTankFailedUntilTick = a4.tickCounter + 2000;
+      a4.killTankNoRouteSinceTick = 0;
+    }
+  } else {
+    a4.killTankNoRouteSinceTick = 0;
+  }
+
   // Escape check (binary 0x002924): low ammo, no pills, safe base nearby.
   // Binary gates on: ammo < 4 AND target has no pill guard AND we have no pills.
   // Escape check: binary 0x002924 uses CMPI.B #$04, 46(A0) = raw shells < 4.
