@@ -489,18 +489,31 @@ export class Tank extends BoloObject {
       this.speed = max(0.0, this.speed - 1);
     }
 
-    // Also check if we're on top of another tank.
+    // Tank-tank collision: push apart so two tanks never stack on one tile. The old code nudged
+    // a single unit/tick, which was hopelessly overwhelmed when two tanks drove toward the same
+    // target (live 2v2: allies "beano"+"Jeans" pinned on the exact same base tile). Instead push
+    // each tank away from the other ALONG THE LINE BETWEEN THEIR CENTRES, proportional to the
+    // overlap, so both tanks settle ~COLLISION_DIST apart within a few ticks (winbolo's escalating
+    // nudge, done proportionally instead of with a running counter). Capped per tick so it can't
+    // teleport or shove a tank through a wall. Runs BEFORE move() (see update order), so the
+    // separation holds against the tanks' drive toward each other.
+    const COLLISION_DIST = 272;   // ~1 tile — keep tank centres about a tile apart (no overlap)
+    const MAX_PUSH = 24;          // > any land drive speed, so the push wins the tug-of-war
     for (const other of this.world.tanks) {
-      if (other !== this && other.armour !== 255) {
-        if (distance(this as any, other) <= 255) {
-          // FIXME: winbolo actually does an increasing size of nudges while the tanks are colliding,
-          // keeping a static/global variable. But perhaps this should be combined with tank sliding?
-          if (other.x! < this.x!) this.x!++;
-          else this.x!--;
-          if (other.y! < this.y!) this.y!++;
-          else this.y!--;
-        }
+      if (other === this || other.armour === 255) continue;
+      const d = distance(this as any, other);
+      if (d > COLLISION_DIST) continue;
+      let ox = this.x! - other.x!, oy = this.y! - other.y!;
+      if (ox === 0 && oy === 0) {
+        // Exactly coincident → the centre line is undefined. Split deterministically by identity
+        // so the two tanks push in OPPOSITE directions (idx differs), never the same way.
+        const s = (this.idx < other.idx) ? 1 : -1;
+        ox = s; oy = 0;
       }
+      const len = Math.max(1, Math.hypot(ox, oy));
+      const push = Math.min(MAX_PUSH, (COLLISION_DIST - d) / 2 + 1);
+      this.x! += Math.round((ox / len) * push);
+      this.y! += Math.round((oy / len) * push);
     }
   }
 
