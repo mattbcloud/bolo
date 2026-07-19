@@ -73,3 +73,48 @@ describe('KillTank yields on an unroutable target (no freeze)', () => {
     expect(r.finalGoalKillTank).toBe(false);
   });
 });
+
+// ONBOAT standoff: two adjacent enemy boats each KillTank-targeting the other. A boat can't fire
+// (hasLOS forces false), and each other's tile is addTanks-blocked, so navigate-to-flank route:miss
+// → frozen forever (live 2v2: sky vs mello, both onBoat at distTx 1). The yield must fire even at
+// CLOSE range when onBoat (the far-only gate wouldn't catch this).
+function runOnBoat(seed: number) {
+  const world = bootHeadlessWorld(seed);
+  const ai: any = world.player;
+  const ax = 123, ay = 146;   // mid-river (y=146 river spans x=118..128) → stays afloat when jostled
+  for (const p of (world.map.pills ?? [])) { p.team = 0; p.owner_idx = 0; }
+  for (const b of (world.map.bases ?? [])) { b.team = 0; b.owner_idx = 0; }
+
+  placeTank(world, ax, ay, true);   // AI onBoat
+  ai.armour = 40; ai.shells = 40; ai.team = 0;
+
+  const enemy: any = world.spawn(Tank);
+  enemy.spawn(1);
+  enemy.x = tileToBWorld(ax + 1); enemy.y = tileToBWorld(ay);
+  enemy.cell = world.map.cellAtWorld(enemy.x, enemy.y);
+  enemy.onBoat = true; enemy.armour = 40; enemy.shooting = false; enemy.speed = 0;
+
+  const a4: any = enableBrain(world);
+  const goalCounts: Record<number, number> = {};
+  for (let i = 0; i < 800; i++) {
+    enemy.x = tileToBWorld(ax + 1); enemy.y = tileToBWorld(ay); enemy.onBoat = true;  // pin the enemy
+    world.tick();
+    goalCounts[a4.currentGoal] = (goalCounts[a4.currentGoal] ?? 0) + 1;
+  }
+  return {
+    killTankTicks: goalCounts[GOAL_KILLTANK] ?? 0,
+    finalGoalKillTank: a4.currentGoal === GOAL_KILLTANK,
+    yieldArmed: (a4.killTankFailedUntilTick ?? 0) > 0,
+    stillOnBoat: !!ai.onBoat, total: 800,
+  };
+}
+
+describe('KillTank yields a close ONBOAT standoff (no boat-vs-boat freeze)', () => {
+  it('an onBoat tank abandons KillTank vs an adjacent unreachable enemy boat', () => {
+    const r = runOnBoat(1000);
+    // eslint-disable-next-line no-console
+    console.log(`[killtank-onboat] killTankTicks=${r.killTankTicks}/${r.total} finalGoalKillTank=${r.finalGoalKillTank} yieldArmed=${r.yieldArmed} stillOnBoat=${r.stillOnBoat}`);
+    expect(r.yieldArmed).toBe(true);
+    expect(r.finalGoalKillTank).toBe(false);
+  });
+});

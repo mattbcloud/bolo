@@ -1785,7 +1785,11 @@ export function goalKillTank(a4: A4State, state: BrainState): void {
   // 40, pinned on KillTank vs a tank 8tx away it couldn't path to). Gated to the FAR-navigate
   // regime (dist>1792): a CLOSE enemy is owned by the LOS/flank branches below and must not be
   // abandoned (its noRoute means "can't flank", not "unreachable"). Clears when routing succeeds.
-  if (a4.noLocalRouteFlag && dist > 1792) {
+  // Also yield when ONBOAT at any range: a boat can't fire (hasLOS forces false below), so a close
+  // unroutable enemy is a dead standoff (live 2v2: sky vs mello, both onBoat at distTx 1, each
+  // KillTank-targeting the other, neither able to shoot or path around → frozen). Foot keeps the
+  // dist>1792 gate so a close land enemy stays with the LOS/flank branches (killtank_los WALL).
+  if (a4.noLocalRouteFlag && (dist > 1792 || state.tank.onBoat)) {
     if (a4.killTankNoRouteSinceTick === 0) a4.killTankNoRouteSinceTick = a4.tickCounter;
     else if (a4.tickCounter - a4.killTankNoRouteSinceTick > 150) {
       a4.killTankFailedUntilTick = a4.tickCounter + 2000;
