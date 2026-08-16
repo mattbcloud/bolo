@@ -18,7 +18,7 @@ import * as allObjectsModule from '../objects/all';
 import { Tank } from '../objects/tank';
 import WorldMap from '../world_map';
 import * as net from '../net';
-import { TICK_LENGTH_MS } from '../constants';
+import { MAP_SIZE_TILES, OVERVIEW_SIGHT_TILES, TICK_LENGTH_MS, TILE_SIZE_WORLD } from '../constants';
 import { firebaseService } from './firebase.js';
 import { statsService } from './stats-service.js';
 import { createLoop } from '../villain/loop';
@@ -53,6 +53,16 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   tanks: any[] = [];
   emptyStartTime: number | null = null;  // Track when game became empty
   teamScoresTick: number = 0;  // Counter for sending team scores
+
+  // ── Team discovered map (overview) ───────────────────────────────────────
+  // One byte per tile per team, recording every tile any tank on that team has been near.
+  // The client keeps its own copy for what it witnesses live, but only the server can tell
+  // a joining player what their team explored before they connected — a client cannot
+  // reconstruct history it never saw. Allocated lazily, so a team nobody plays costs
+  // nothing, and scoped to this game instance, so a new game starts unexplored.
+  teamDiscovered: (Uint8Array | null)[] = [];
+  teamDiscoveredPending: number[][] = [];   // tiles discovered since the last delta was sent
+  teamDiscoveredTick: number = 0;
   // Classic Bolo game mode — differs ONLY in respawn resupply (armour always full = 40):
   //   'open'       training: respawn full bullets (40) + full mines + full trees.
   //   'tournament' respawn bullets = min(40, 2 × neutral-base count); 0 mines, 0 trees.
@@ -293,9 +303,17 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // Set-up the websocket parameters.
     this.clients.push(ws);
     ws.heartbeatTimer = 0;
+    ws.pingTimer = 0;
     ws.synchronized = false;  // Mark client as not yet synchronized
     ws.on('message', (data: any) => this.onMessage(ws, data));
     ws.on('close', (code: number, reason: string) => this.onEnd(ws, code, reason));
+
+    // Protocol-level liveness. A browser answers a WebSocket ping from its network stack
+    // without running any page JavaScript, so a pong proves the socket is alive even when
+    // the tab is backgrounded and its timers are throttled to ~1 Hz — which is exactly
+    // what happens to every already-connected player the moment someone opens another tab
+    // to join. The app-level heartbeat alone can't survive that throttling.
+    ws.on('pong', () => { ws.heartbeatTimer = 0; });
 
     // Send the current map state. We don't send pillboxes and bases, because the client
     // receives create messages for those, and then fills the map structure based on those.
@@ -560,19 +578,109 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     }
   }
 
+  // ── Team discovered map (overview) ─────────────────────────────────────────
+
+  /**
+   * Widen each team's discovered map by what its living tanks can see this tick, and note
+   * the newly discovered tiles so they can be sent out as a delta. Vision is shared across
+   * a team, so one tank scouting reveals the ground for every team mate, present or not
+   * yet connected.
+   */
+  updateTeamDiscovered(): void {
+    const r = (OVERVIEW_SIGHT_TILES - 1) / 2;
+
+    for (const tank of this.tanks) {
+      if (!tank || tank.armour === 255 || tank.x == null || tank.y == null) continue;
+      const team = tank.team;
+      if (typeof team !== 'number' || team < 0 || team > 5) continue;
+
+      let discovered = this.teamDiscovered[team];
+      if (!discovered) {
+        discovered = this.teamDiscovered[team] = new Uint8Array(MAP_SIZE_TILES * MAP_SIZE_TILES);
+        this.teamDiscoveredPending[team] = [];
+      }
+      const pending = this.teamDiscoveredPending[team];
+
+      const tx = Math.floor(tank.x / TILE_SIZE_WORLD);
+      const ty = Math.floor(tank.y / TILE_SIZE_WORLD);
+      const sx = Math.max(0, tx - r);
+      const sy = Math.max(0, ty - r);
+      const ex = Math.min(MAP_SIZE_TILES - 1, tx + r);
+      const ey = Math.min(MAP_SIZE_TILES - 1, ty + r);
+
+      for (let y = sy; y <= ey; y++) {
+        const row = y * MAP_SIZE_TILES;
+        for (let x = sx; x <= ex; x++) {
+          const idx = row + x;
+          if (discovered[idx] === 0) {
+            discovered[idx] = 1;
+            pending.push(idx);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * A team's whole discovered map, packed one bit per tile and base64'd — about 11kB, sent
+   * once when a client synchronizes. Null when that team has never had a tank.
+   */
+  teamDiscoveredSnapshot(team: number): string | null {
+    const discovered = this.teamDiscovered[team];
+    if (!discovered) return null;
+
+    const packed = Buffer.alloc(discovered.length / 8);
+    for (let i = 0; i < discovered.length; i++) {
+      if (discovered[i]) packed[i >> 3] |= 1 << (i & 7);
+    }
+    return packed.toString('base64');
+  }
+
   /**
    * We send critical updates every frame, and non-critical updates every other frame. On top of
    * that, non-critical updates may be dropped, if the client's hearbeats are interrupted.
    */
   sendPackets(): void {
+    // ── Team discovered map ────────────────────────────────────────────────
+    // Accumulate every tick (cheap: one 15x15 box per living tank), but only ship deltas
+    // twice a second — a tank crosses far less than a sight box in that time, so nothing
+    // is missed and the message rate stays low.
+    this.updateTeamDiscovered();
+    const DISCOVERED_SEND_TICKS = 25;  // ~0.5s at 20ms/tick
+    const discoveredPackets: (string | null)[] = [];
+    if (++this.teamDiscoveredTick >= DISCOVERED_SEND_TICKS) {
+      this.teamDiscoveredTick = 0;
+      for (let team = 0; team < this.teamDiscoveredPending.length; team++) {
+        const pending = this.teamDiscoveredPending[team];
+        if (!pending || pending.length === 0) continue;
+        discoveredPackets[team] = JSON.stringify({ command: 'discovered', add: pending });
+        this.teamDiscoveredPending[team] = [];
+      }
+    }
+
+    // ── Liveness ping ──────────────────────────────────────────────────────
+    // Ping each client about once a second. The pong handler (onConnect) resets
+    // heartbeatTimer, so liveness no longer depends on the client's throttleable timers.
+    const PING_TICKS = 50;  // ~1s at 20ms/tick
+    for (const client of this.clients) {
+      if (++client.pingTimer >= PING_TICKS) {
+        client.pingTimer = 0;
+        try {
+          client.ping();
+        } catch {
+          // Socket already closing — the reaper and the close handler deal with it.
+        }
+      }
+    }
+
     // ── Stale-client reaper ────────────────────────────────────────────────
-    // heartbeatTimer counts ticks since a client's last message; live clients ping every 10
-    // ticks (client.ts), so a timer past REAP_TICKS means the socket dropped uncleanly (e.g. a
-    // browser refresh that never fired a `close` event). Without this, that client's tank
-    // lingers in this.world.tanks as a GHOST — phantom tanks of stale teams re-claim bases
-    // every tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
+    // heartbeatTimer counts ticks since a client's last sign of life (any message, or a
+    // pong), so a timer past REAP_TICKS means the socket dropped uncleanly (e.g. a browser
+    // refresh that never fired a `close` event). Without this, that client's tank lingers
+    // in this.world.tanks as a GHOST — phantom tanks of stale teams re-claim bases every
+    // tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
     // future unclean drop self-cleans. Iterate a copy because onEnd splices this.clients.
-    const REAP_TICKS = 250;  // ~10s at 40ms/tick = 25 missed heartbeats — unambiguously gone
+    const REAP_TICKS = 250;  // ~5s at 20ms/tick = 5 missed pings — unambiguously gone
     for (const client of [...this.clients]) {
       if (client.tank && client.heartbeatTimer > REAP_TICKS) {
         console.log(`[REAP] Stale client (tank idx=${client.tank.idx}, silent ${client.heartbeatTimer} ticks) — removing ghost tank.`);
@@ -699,6 +807,13 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
           .map((t: any) => ({ command: 'nick', idx: t.idx, nick: t.name }));
         if (nickMessages.length) client.send(JSON.stringify(nickMessages));
 
+        // Hand over the team's discovered map for the overview. This is the whole point of
+        // keeping it server-side: everything the team explored before this client existed.
+        const discoveredSnapshot = this.teamDiscoveredSnapshot(client.tank.team);
+        if (discoveredSnapshot) {
+          client.send(JSON.stringify({ command: 'discovered', mask: discoveredSnapshot }));
+        }
+
         // Mark as synchronized
         client.synchronized = true;
         client.needsInitialSync = false;
@@ -731,6 +846,12 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       // Send team scores if calculated this tick
       if (teamScoresPacket) {
         client.send(teamScoresPacket);
+      }
+
+      // Send this team's newly discovered tiles, if any were batched this tick.
+      const discoveredPacket = client.tank ? discoveredPackets[client.tank.team] : null;
+      if (discoveredPacket) {
+        client.send(discoveredPacket);
       }
     }
 

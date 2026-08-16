@@ -194,7 +194,8 @@ export class BoloClientWorld extends ClientWorld {
   processingServerMessages: boolean = false;
   objectsCreatedInThisPacket: Set<any> = new Set();  // Track objects created in current packet
   vignette!: Vignette | null;
-  heartbeatTimer!: number;
+  lastHeartbeatAt!: number;   // performance.now() of the last heartbeat sent
+  overview!: any;             // OverviewMap, created in commonInitialization (mixin)
   ws!: WebSocket | null;
   map!: any;
   player!: any;
@@ -275,7 +276,7 @@ export class BoloClientWorld extends ClientWorld {
    */
   loaded(vignette: Vignette): void {
     this.vignette = vignette;
-    this.heartbeatTimer = 0;
+    this.lastHeartbeatAt = 0;
 
     // First-visit cookie policy — blocks the site until the user accepts.
     this.showCookieConsent();
@@ -574,6 +575,7 @@ export class BoloClientWorld extends ClientWorld {
       layMine: 'Tab',
       tankView: 'Enter',
       pillboxView: 'KeyP',
+      overview: 'KeyO',
       toggleBrain: 'KeyB',
       autoSlowdown: true,
       autoGunsight: true
@@ -787,10 +789,25 @@ export class BoloClientWorld extends ClientWorld {
                   font-size: 12px;
                 ">
             </div>
-            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+            <div style="display: flex; gap: 8px; margin-bottom: 4px;">
               <label style="width: 120px;">Pillbox view:</label>
               <input type="text" readonly class="key-input" data-binding="pillboxView"
                 value="${getFriendlyKeyName(keys.pillboxView)}"
+                style="
+                  width: 80px;
+                  border: 1px solid black;
+                  background: white;
+                  padding: 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
+                ">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Toggle overview:</label>
+              <input type="text" readonly class="key-input" data-binding="overview"
+                value="${getFriendlyKeyName(keys.overview)}"
                 style="
                   width: 80px;
                   border: 1px solid black;
@@ -2140,8 +2157,13 @@ export class BoloClientWorld extends ClientWorld {
       this.rangeAdjustTimer = 0;
     }
 
-    if (++this.heartbeatTimer === 10) {
-      this.heartbeatTimer = 0;
+    // Heartbeat, paced by the wall clock rather than by a tick count: a backgrounded tab
+    // has its timers throttled to roughly 1 Hz, so "every 10 ticks" would stretch from
+    // 400ms to ~8s and trip the server's stale-client reaper. Elapsed time is honest
+    // whatever the tick rate turns out to be.
+    const now = performance.now();
+    if (now - this.lastHeartbeatAt >= 400) {
+      this.lastHeartbeatAt = now;
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send('');
       }
@@ -2730,6 +2752,22 @@ export class BoloClientWorld extends ClientWorld {
     }
   }
 
+  /**
+   * Release every held control on the server side. Used when input is taken away from
+   * the player mid-keypress (opening the overview map), so nothing stays stuck down.
+   * The tank coasts: we stop accelerating without starting to brake.
+   */
+  releaseAllControls(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(net.STOP_SHOOTING);
+    this.ws.send(net.STOP_LAY_MINE);
+    this.ws.send(net.STOP_TURNING_CCW);
+    this.ws.send(net.STOP_TURNING_CW);
+    this.ws.send(net.STOP_ACCELERATING);
+    this.ws.send(net.STOP_BRAKING);
+    this.autoSlowdownActive = false;
+  }
+
   handleKeyup(e: KeyboardEvent): void {
     if (!this.ws || !this.player || this.ws.readyState !== WebSocket.OPEN) return;
     const code = e.code;
@@ -2982,6 +3020,15 @@ export class BoloClientWorld extends ClientWorld {
         // Ignore if object doesn't exist yet (CREATE message may arrive after this)
         if (this.objects[data.idx]) {
           this.receiveChat(this.objects[data.idx], data.text, { team: true });
+        }
+        break;
+      case 'discovered':
+        // Team's discovered map for the overview (unrelated to the renderer's fog overlay).
+        // `mask` is the full state (one bit per tile, sent at join); `add` is an incremental
+        // list of newly discovered tiles.
+        if (this.overview) {
+          if (data.mask) this.overview.applyDiscoveredMask(decodeBase64(data.mask));
+          if (data.add) this.overview.addDiscoveredTiles(data.add);
         }
         break;
       default:

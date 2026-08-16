@@ -9,6 +9,7 @@ import { Progress } from '../progress';
 import { Vignette } from '../vignette';
 import { SoundKit } from '../soundkit';
 import DefaultRenderer from '../renderer/offscreen_2d';
+import { OverviewMap } from '../overview';
 import { TICK_LENGTH_MS, PIXEL_SIZE_WORLD, TILE_SIZE_PIXELS, FOG_WINDOW_W, FOG_WINDOW_H } from '../../constants';
 import * as helpers from '../../helpers';
 import BoloWorldMixin from '../../world_mixin';
@@ -31,6 +32,7 @@ export interface IBoloClientWorldMixin {
   loadImages(i: (name: string) => void): void;
   loadSounds(s: (name: string) => void): void;
   commonInitialization(): void;
+  toggleOverview(): void;
   failure(message: string): void;
   checkBuildOrder(action: string, cell: any): [string | false, number?, boolean?];
   boloInit(): void;
@@ -182,10 +184,21 @@ export const BoloClientWorldMixin = {
 
     this.boloInit();
 
+    // Overview map (default `O`). Created before the loop starts so it records
+    // discovered ground from the very first frame, even while it's closed.
+    this.overview = new OverviewMap(this);
+
     this.loop = createLoop({
       rate: TICK_LENGTH_MS,
-      tick: () => this.tick(),
-      frame: (alpha: number) => this.renderer.draw(alpha),
+      tick: () => {
+        this.tick();
+        // Vision tracking rides the tick, not the frame — see OverviewMap#trackVision.
+        this.overview.trackVision();
+      },
+      frame: (alpha: number) => {
+        this.renderer.draw(alpha);
+        this.overview.render();
+      },
     });
 
     this.increasingRange = false;
@@ -223,6 +236,7 @@ export const BoloClientWorldMixin = {
       layMine: 'Tab',
       tankView: 'Enter',
       pillboxView: 'KeyP',
+      overview: 'KeyO',
       toggleBrain: 'KeyB',
       autoSlowdown: true,
       autoGunsight: true
@@ -248,6 +262,14 @@ export const BoloClientWorldMixin = {
       e.preventDefault();
       e.stopPropagation();
       const code = e.code;
+
+      // Overview map: toggles from anywhere. While it's open every other key is
+      // ignored, so the map can be read without the tank reacting to stray input.
+      if (code === this.keyBindings.overview) {
+        this.toggleOverview();
+        return;
+      }
+      if (this.overview?.isOpen) return;
 
       // Arrow keys are dedicated to view panning — not remappable.
       if (code === 'ArrowLeft')  { this.panLeftHeld  = true; return; }
@@ -278,6 +300,10 @@ export const BoloClientWorldMixin = {
       e.stopPropagation();
       const code = e.code;
 
+      // Controls are frozen while the overview is open. Any key held when it opened
+      // was already released by `toggleOverview`, so dropping the keyup is safe.
+      if (this.overview?.isOpen) return;
+
       // Arrow keys: release pan direction.
       if (code === 'ArrowLeft')  { this.panLeftHeld  = false; return; }
       if (code === 'ArrowRight') { this.panRightHeld = false; return; }
@@ -307,6 +333,28 @@ export const BoloClientWorldMixin = {
       element.addEventListener('keyup', handleKeyup);
       element.addEventListener('keypress', handleKeypress);
     }
+  },
+
+  /**
+   * Show or hide the full-screen overview map.
+   *
+   * Opening it freezes the controls, so every held key is released first — otherwise a
+   * key held at that moment would never see its keyup (they're swallowed while open) and
+   * the tank would be left accelerating or turning forever.
+   */
+  toggleOverview(this: any): void {
+    if (!this.overview) return;
+
+    if (this.overview.isOpen) {
+      this.overview.close();
+      return;
+    }
+
+    this.releaseAllControls?.();
+    this.panLeftHeld = this.panRightHeld = this.panUpHeld = this.panDownHeld = false;
+    this.increasingRange = false;
+    this.decreasingRange = false;
+    this.overview.open();
   },
 
   /**

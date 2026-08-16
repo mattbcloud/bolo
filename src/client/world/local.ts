@@ -408,6 +408,22 @@ export class BoloLocalWorld extends NetLocalWorld {
     }
   }
 
+  /**
+   * Release every held control. Used when input is taken away from the player
+   * mid-keypress (opening the overview map), so nothing stays stuck down.
+   * The tank coasts: we stop accelerating without starting to brake.
+   */
+  releaseAllControls(): void {
+    if (!this.player) return;
+    this.player.shooting = false;
+    this.player.layingMine = false;
+    this.player.turningClockwise = false;
+    this.player.turningCounterClockwise = false;
+    this.player.accelerating = false;
+    this.player.braking = false;
+    this.autoSlowdownActive = false;
+  }
+
   handleKeyup(e: KeyboardEvent): void {
     const code = e.code;
     const kb = (this as any).keyBindings;

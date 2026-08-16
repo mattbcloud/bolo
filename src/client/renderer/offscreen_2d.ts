@@ -130,6 +130,9 @@ export class Offscreen2dRenderer extends Common2dRenderer {
   onRetile(cell: any, tx: number, ty: number): void {
     cell.tile = [tx, ty];
 
+    // Keep the overview map's cached artwork in step with terrain changes.
+    this.world.overview?.invalidateTile(cell.x, cell.y);
+
     // Guard against retile calls before setup() has been called
     if (!this.cache) return;
 

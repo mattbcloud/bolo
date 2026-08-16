@@ -108,17 +108,25 @@ export class Common2dRenderer extends BaseRenderer {
     return source;
   }
 
-  drawStyledTile(tx: number, ty: number, style: any, dx: number, dy: number, ctx?: CanvasRenderingContext2D): void {
-    // Get the prestyled tilemap, or create it.
+  /**
+   * Get the tilemap to draw a styled tile from: a team-coloured copy, created and cached
+   * on first use, or the plain styled tilemap when the style has no team colour.
+   */
+  getStyledSource(style: any): HTMLCanvasElement | HTMLImageElement {
     let source = this.prestyled[style];
     if (!source) {
       const color = TEAM_COLORS[style];
       if (color) {
         source = this.prestyled[style] = this.createPrestyled(color);
       } else {
-        source = this.images.styled;
+        return this.images.styled;
       }
     }
+    return source;
+  }
+
+  drawStyledTile(tx: number, ty: number, style: any, dx: number, dy: number, ctx?: CanvasRenderingContext2D): void {
+    const source = this.getStyledSource(style);
 
     // Draw from the prestyled tilemap.
     (ctx || this.ctx).drawImage(
