@@ -1930,12 +1930,12 @@ export class BoloClientWorld extends ClientWorld {
   _rememberRejoin(gameId: string, nick: string, team: number): void {
     try {
       sessionStorage.setItem(BoloClientWorld.REJOIN_KEY, JSON.stringify({
-        gameId, nick, team, attempts: 0,
+        gameId, nick, team, attempts: 0, autoJoin: false,
       }));
     } catch { /* private mode / storage disabled — reconnect degrades to the old behaviour */ }
   }
 
-  _rejoinRecord(): { gameId: string; nick: string; team: number; attempts: number } | null {
+  _rejoinRecord(): { gameId: string; nick: string; team: number; attempts: number; autoJoin?: boolean } | null {
     try {
       const raw = sessionStorage.getItem(BoloClientWorld.REJOIN_KEY);
       return raw ? JSON.parse(raw) : null;
@@ -1984,7 +1984,7 @@ export class BoloClientWorld extends ClientWorld {
             games.some(g => g && g.gid === record.gameId);
           try {
             sessionStorage.setItem(BoloClientWorld.REJOIN_KEY, JSON.stringify({
-              ...record, attempts: record.attempts + 1,
+              ...record, attempts: record.attempts + 1, autoJoin: true,
             }));
           } catch { /* ignore */ }
           if (stillThere) {
@@ -2090,8 +2090,17 @@ export class BoloClientWorld extends ClientWorld {
     // Coming back from a dropped connection: rejoin as who we were, without making the player
     // retype anything. Only for THIS game — a rejoin record for a different game must not
     // hijack a deliberate join somewhere else.
+    // `autoJoin` is set only by the reconnect flow, and consumed here. Without that one-shot gate
+    // the record would also hijack a DELIBERATE rejoin — pick this game from the lobby again and
+    // it would skip the nick/team dialog and silently put you back as your old identity.
     const rejoin = this._rejoinRecord();
-    if (rejoin && rejoin.gameId === this._gameId) {
+    if (rejoin && rejoin.autoJoin && rejoin.gameId === this._gameId) {
+      // Consume the intent but KEEP the attempt count — resetting it here would hand back a full
+      // budget on every reload, so a game that drops us instantly could loop forever.
+      try {
+        sessionStorage.setItem(BoloClientWorld.REJOIN_KEY,
+          JSON.stringify({ ...rejoin, autoJoin: false }));
+      } catch { /* ignore */ }
       (globalThis as any).__boloNick = rejoin.nick;
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ command: 'join', nick: rejoin.nick, team: rejoin.team }));
