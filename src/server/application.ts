@@ -694,8 +694,21 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // in this.world.tanks as a GHOST — phantom tanks of stale teams re-claim bases every
     // tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
     // future unclean drop self-cleans. Iterate a copy because onEnd splices this.clients.
-    const REAP_TICKS = 250;  // ~5s at 20ms/tick = 5 missed pings — unambiguously gone
-    const WARN_TICKS = 60;   // ~1.2s — log the ONSET of silence, well before we cull
+    // Sized against how long a real browser goes quiet, not against how fast we could notice.
+    // Chrome freezes a backgrounded window outright: measured here, one spent 10s, 30s and 9s
+    // stretches frozen back to back, with its app-level heartbeat dead for up to 28s at a time —
+    // the page cannot send anything while its main thread is stopped. The old 250 (~5s, and ~6.5s
+    // at the tick rate we actually run) sat well inside that, leaving a backgrounded player alive
+    // only for as long as the protocol pong kept answering on its behalf. Lose a handful of
+    // consecutive pongs — a slow machine, a busy tab, a proxy, real network jitter — and a player
+    // who is merely in a background window gets culled mid-game.
+    //
+    // The cost of going long is a ghost tank lingering after an UNCLEAN drop (a clean close still
+    // reaps instantly via the close handler), so bases can flicker for that window. A rare 30s
+    // flicker is a far better trade than routinely kicking live players.
+    const REAP_TICKS = 1500;  // ~30s+ — longer than any freeze we have measured
+    const WARN_TICKS = 120;   // must exceed one PING_TICKS cycle (50) plus jitter, or this fires
+                              // on entirely healthy clients whose sincePong is mid-sawtooth
     for (const client of [...this.clients]) {
       if (!client.tank) continue;
 
