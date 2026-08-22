@@ -25,6 +25,9 @@ import { A4State } from '../../brain/a4_state';
 // Visual effects
 import { DeathOverlay } from '../death_overlay';
 
+// Crash reporting
+import { reportClientError } from '../diagnostics';
+
 const allObjects = allObjectsModule;
 
 // FIXME: Better error handling all around.
@@ -1875,8 +1878,19 @@ export class BoloClientWorld extends ClientWorld {
       this.connected();
     }, { once: true });
 
-    this.ws.addEventListener('close', () => {
-      this.failure('Connection lost');
+    this.ws.addEventListener('close', (e: CloseEvent) => {
+      // The close code says who hung up, which is the whole diagnosis: 4000 is the server's
+      // stale-client reaper deciding we went quiet, 1006 is an abnormal close with no close frame
+      // (a broken pipe, usually an intermediary), 1000/1001 are a deliberate close. Show it, so a
+      // player who drops can read the cause straight off the screen.
+      const detail = `code ${e.code}${e.reason ? `: ${e.reason}` : ''}`;
+      console.error(`[NET] socket closed — ${detail} (wasClean=${e.wasClean})`);
+      reportClientError({
+        kind: 'socket-close',
+        message: `socket closed — ${detail}`,
+        detail: { code: e.code, reason: e.reason, wasClean: e.wasClean },
+      });
+      this.failure(`Connection lost (${detail})`);
     }, { once: true });
   }
 
@@ -2080,6 +2094,10 @@ export class BoloClientWorld extends ClientWorld {
 
     setCookie('nick', nick);
 
+    // Let crash reports name the player, so a dropped window can be matched to the tank idx the
+    // server logged for it without having to guess from four identical-looking browser windows.
+    (globalThis as any).__boloNick = nick;
+
     // Remove dialog
     const parent = this.joinDialog.parentElement;
     const overlay = parent?.querySelector('div[style*="z-index: 9999"]');
@@ -2107,6 +2125,23 @@ export class BoloClientWorld extends ClientWorld {
    * Send the heartbeat (an empty message) every 10 ticks / 400ms.
    */
   tick(): void {
+    // Heartbeat FIRST. It used to be the last statement in this method, which quietly made
+    // liveness conditional on every other thing in the tick succeeding: one throw in the world
+    // simulation or the brain and the heartbeat stopped being sent, forever, while setInterval
+    // kept re-entering and re-throwing. Sent up front, staying connected no longer depends on the
+    // rest of the frame's work.
+    //
+    // Paced by the wall clock rather than by a tick count: a backgrounded tab has its timers
+    // throttled to roughly 1 Hz, so "every 10 ticks" would stretch from 400ms to ~8s and trip the
+    // server's stale-client reaper. Elapsed time is honest whatever the tick rate turns out to be.
+    const now = performance.now();
+    if (now - this.lastHeartbeatAt >= 400) {
+      this.lastHeartbeatAt = now;
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send('');
+      }
+    }
+
     super.tick();
 
     // ── Death overlay ─────────────────────────────────────────────────────
@@ -2157,17 +2192,6 @@ export class BoloClientWorld extends ClientWorld {
       this.rangeAdjustTimer = 0;
     }
 
-    // Heartbeat, paced by the wall clock rather than by a tick count: a backgrounded tab
-    // has its timers throttled to roughly 1 Hz, so "every 10 ticks" would stretch from
-    // 400ms to ~8s and trip the server's stale-client reaper. Elapsed time is honest
-    // whatever the tick rate turns out to be.
-    const now = performance.now();
-    if (now - this.lastHeartbeatAt >= 400) {
-      this.lastHeartbeatAt = now;
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send('');
-      }
-    }
   }
 
   failure(message: string): void {
@@ -2918,6 +2942,12 @@ export class BoloClientWorld extends ClientWorld {
       }
     }
     if (error) {
+      reportClientError({
+        kind: 'protocol-error',
+        message: error.message,
+        stack: error.stack,
+        detail: { packet: String(e.data).slice(0, 500) },
+      });
       this.failure('Connection lost (protocol error)');
       if (console) {
         console.log('Following exception occurred while processing message:', e.data);

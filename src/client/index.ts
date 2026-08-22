@@ -4,6 +4,11 @@
 
 import BoloLocalWorld from './world/local';
 import BoloNetworkWorld from './world/client';
+import { installDiagnostics } from './diagnostics';
+
+// Installed at import time, before any world exists: the failures worth catching include the ones
+// that happen during start-up.
+installDiagnostics();
 
 // Export the appropriate world type based on URL
 const WorldClass =

@@ -304,6 +304,13 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     this.clients.push(ws);
     ws.heartbeatTimer = 0;
     ws.pingTimer = 0;
+    // Split liveness counters, purely diagnostic. heartbeatTimer is reset by EITHER signal,
+    // so once it trips we can no longer tell which one died. These two are reset only by
+    // their own signal: the app-level heartbeat (an inbound message) and the protocol pong.
+    // Which of them stops first says where the fault is — see the [REAP] log.
+    ws.sinceMessage = 0;
+    ws.sincePong = 0;
+    ws.silenceWarned = false;
     ws.synchronized = false;  // Mark client as not yet synchronized
     ws.on('message', (data: any) => this.onMessage(ws, data));
     ws.on('close', (code: number, reason: string) => this.onEnd(ws, code, reason));
@@ -313,7 +320,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // the tab is backgrounded and its timers are throttled to ~1 Hz — which is exactly
     // what happens to every already-connected player the moment someone opens another tab
     // to join. The app-level heartbeat alone can't survive that throttling.
-    ws.on('pong', () => { ws.heartbeatTimer = 0; });
+    ws.on('pong', () => { ws.heartbeatTimer = 0; ws.sincePong = 0; });
 
     // Send the current map state. We don't send pillboxes and bases, because the client
     // receives create messages for those, and then fills the map structure based on those.
@@ -374,7 +381,13 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     if (idx !== -1) {
       this.clients.splice(idx, 1);
     }
-    ws.close();
+    // Pass the reason through in the close frame. Closing bare made every server-side drop look
+    // identical to the page — a status-less 1005 — so a player culled by the reaper and a player
+    // whose pipe simply broke saw the same "Connection lost" with no way to tell them apart.
+    // Only 1000 and the application range 3000-4999 may legally be sent; 1005/1006 arrive on
+    // INCOMING closes (where this is already a no-op) and would throw if echoed back.
+    const sendable = code === 1000 || (code >= 3000 && code <= 4999);
+    if (sendable) ws.close(code, reason); else ws.close();
   }
 
   onMessage(ws: any, message: any): void {
@@ -384,6 +397,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // Any inbound message proves the client is alive — reset its silence counter so the
     // stale-client reaper (see sendPackets) never culls an active player.
     ws.heartbeatTimer = 0;
+    ws.sinceMessage = 0;
 
     if (messageStr === '') {
       ws.heartbeatTimer = 0;
@@ -681,9 +695,30 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
     // future unclean drop self-cleans. Iterate a copy because onEnd splices this.clients.
     const REAP_TICKS = 250;  // ~5s at 20ms/tick = 5 missed pings — unambiguously gone
+    const WARN_TICKS = 60;   // ~1.2s — log the ONSET of silence, well before we cull
     for (const client of [...this.clients]) {
-      if (client.tank && client.heartbeatTimer > REAP_TICKS) {
+      if (!client.tank) continue;
+
+      // Onset marker. A reap tells us a client went quiet; this tells us WHEN it started and
+      // which signal failed first, which is the difference between "the browser stopped
+      // draining the socket" and "the return path through the proxy broke".
+      if (client.heartbeatTimer > WARN_TICKS && !client.silenceWarned) {
+        client.silenceWarned = true;
+        console.log(`[SILENCE] tank idx=${client.tank.idx} quiet ${client.heartbeatTimer}t ` +
+                    `(msg ${client.sinceMessage}t ago, pong ${client.sincePong}t ago, ` +
+                    `buffered=${client.bufferedAmount}, readyState=${client.readyState})`);
+      } else if (client.heartbeatTimer <= WARN_TICKS && client.silenceWarned) {
+        console.log(`[SILENCE] tank idx=${client.tank.idx} recovered.`);
+        client.silenceWarned = false;
+      }
+
+      if (client.heartbeatTimer > REAP_TICKS) {
+        // bufferedAmount is the giveaway: a large server→client backlog means the far end
+        // stopped READING (renderer stalled / pipe wedged), whereas ~0 with unanswered pings
+        // means the socket drains fine and only the return path is dead.
         console.log(`[REAP] Stale client (tank idx=${client.tank.idx}, silent ${client.heartbeatTimer} ticks) — removing ghost tank.`);
+        console.log(`[REAP]   lastMessage=${client.sinceMessage}t lastPong=${client.sincePong}t ` +
+                    `bufferedAmount=${client.bufferedAmount} readyState=${client.readyState}`);
         this.onEnd(client, 4000, 'heartbeat timeout');
       }
     }
@@ -842,6 +877,8 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
         client.send(largePacket);
         client.heartbeatTimer++;
       }
+      client.sinceMessage++;
+      client.sincePong++;
 
       // Send team scores if calculated this tick
       if (teamScoresPacket) {
@@ -1052,6 +1089,28 @@ export class Application {
       } else {
         res.end('{"ok":true,"hint":"POST a JSON snapshot (appended to ' + FILE + '); GET ?clear=1 to reset"}');
       }
+    });
+
+    // Client-error sink. A player who drops mid-game can't be asked to screenshot their console,
+    // and on a hosted deployment there is no console to read at all — so the page reports its own
+    // uncaught errors, unhandled rejections, main-thread stalls and socket close codes here, and
+    // they land in the SERVER log next to the [REAP]/[SILENCE] lines for the same moment.
+    this.connectServer.use('/api/client-error', (req: any, res: any) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.method !== 'POST') { res.end('{"ok":true,"hint":"POST a JSON client error report"}'); return; }
+      let body = '';
+      req.on('data', (chunk: any) => { body += chunk; if (body.length > 100_000) req.destroy(); });
+      req.on('end', () => {
+        let report: any = null;
+        try { report = JSON.parse(body); } catch { /* logged raw below */ }
+        const r = report ?? { kind: 'unparseable', raw: body.slice(0, 2000) };
+        console.log(`[CLIENT ${String(r.kind ?? 'error').toUpperCase()}] ${r.nick ?? '?'}: ${r.message ?? ''}`);
+        if (r.detail) console.log(`[CLIENT]   ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`);
+        if (r.stack) console.log(`[CLIENT]   ${String(r.stack).split('\n').slice(0, 6).join('\n[CLIENT]   ')}`);
+        fs.appendFile('/tmp/bolo-client-errors.jsonl',
+          JSON.stringify({ ts: Date.now(), ...r }).replace(/\n/g, ' ') + '\n', () => {});
+        res.end('{"ok":true}');
+      });
     });
 
     this.connectServer.use('/api/games', (req: any, res: any) => {
@@ -1293,10 +1352,22 @@ export class Application {
           continue;
         }
 
+        // Emptiness is measured HERE, from the live tank count, rather than trusted from a field
+        // set once when the game was constructed. It used to be the latter: emptyStartTime was
+        // stamped in the constructor and never written again, so the check below was really
+        // "was this game created over an hour ago" — and a busy game full of players got closed
+        // out from under them on its first birthday, dropping everyone at once.
+        if (game.tanks.length > 0) {
+          game.emptyStartTime = null;
+          continue;
+        }
+        if (game.emptyStartTime === null || game.emptyStartTime === undefined) {
+          game.emptyStartTime = now;  // just became empty — start the clock
+          continue;
+        }
+
         // Check if game has been empty for over an hour
-        if (game.emptyStartTime !== null &&
-            game.emptyStartTime !== undefined &&
-            (now - game.emptyStartTime) > ONE_HOUR_MS) {
+        if ((now - game.emptyStartTime) > ONE_HOUR_MS) {
           console.log(`Closing empty game '${gid}' (empty for ${Math.floor((now - game.emptyStartTime) / 1000 / 60)} minutes)`);
           this.closeGame(game);
         }
