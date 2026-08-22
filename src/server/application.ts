@@ -372,7 +372,12 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     if (ws.tank) {
       const playerName = ws.nick || ws.tank.name || 'Unknown';
       const teamName = getTeamName(ws.tank.team);
-      console.log(`[PLAYER DISCONNECT] Player "${playerName}" disconnected (was on team ${teamName}, tank idx=${ws.tank.idx})`);
+      // Log the code BOTH ends saw. The browser reporting 1006 only says no close frame reached
+      // IT; pairing that with what arrived here separates "the transport was severed underneath
+      // both of us" (1006 here too) from "one side closed and the other never heard" (anything
+      // else) — which is the difference between a platform/network fault and one of ours.
+      console.log(`[PLAYER DISCONNECT] Player "${playerName}" disconnected (was on team ${teamName}, ` +
+                  `tank idx=${ws.tank.idx}) — server saw code=${code}${reason ? ` reason=${reason}` : ''}`);
       this.destroy(ws.tank);
       console.log(`[PLAYERS] Total tanks remaining: ${this.tanks.length}`);
     }
@@ -1037,9 +1042,15 @@ export class Application {
 
     this.connectServer = connect();
     if (this.options.web?.log) {
-      // Modern connect doesn't have logger middleware by default
+      // Modern connect doesn't have logger middleware by default.
+      //
+      // High-frequency debug endpoints are excluded. A hosted log is a fixed-size window, not an
+      // archive: brain-state is POSTed several times a SECOND by every brain client, which pushed
+      // the retrievable history down to about six minutes and buried the disconnect diagnostics
+      // we actually needed. Anything logged once per tick is not worth the log it displaces.
+      const NOISY = /^\/api\/(brain-state|client-error)\b/;
       this.connectServer.use('/', (req: any, res: any, next: any) => {
-        console.log(`${req.method} ${req.url}`);
+        if (!NOISY.test(req.url ?? '')) console.log(`${req.method} ${req.url}`);
         next();
       });
     }
