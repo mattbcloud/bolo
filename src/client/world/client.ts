@@ -205,6 +205,7 @@ export class BoloClientWorld extends ClientWorld {
   renderer!: any;
   loop!: any;
   joinDialog!: HTMLElement | null;
+  _gameId: string | null = null;   // which game this socket is for; needed to rejoin after a drop
   chatMessages!: HTMLElement;
   chatContainer!: HTMLElement;
   chatInput!: HTMLInputElement & { team?: boolean };
@@ -1868,6 +1869,8 @@ export class BoloClientWorld extends ClientWorld {
 
     this.vignette?.message('Connecting to game...');
 
+    this._gameId = gameId;
+
     const path = gameId === 'demo' ? '/demo' : `/match/${gameId}`;
 
     // Use wss:// for HTTPS, ws:// for HTTP
@@ -1890,8 +1893,147 @@ export class BoloClientWorld extends ClientWorld {
         message: `socket closed — ${detail}`,
         detail: { code: e.code, reason: e.reason, wasClean: e.wasClean },
       });
-      this.failure(`Connection lost (${detail})`);
+
+      // A dropped socket is not the end of the game. Connections break for reasons that have
+      // nothing to do with this player — an intermediary recycling a connection, a moment of
+      // packet loss — and a 1006 (severed with no close frame) is the ordinary shape of that on
+      // the public internet. Giving up permanently turns a blip into a lost game, which is why
+      // this reads as a "crash" in the wild and never on loopback, where sockets don't drop.
+      // Reconnect instead; only fall back to the terminal failure when we truly can't get back.
+      if (this._rejoinRecord()) {
+        this._beginReconnect(detail);
+      } else {
+        // Never joined (still on the lobby or the nick/team dialog) — there is no game to
+        // return to, so the old behaviour is the correct one.
+        this.failure(`Connection lost (${detail})`);
+      }
     }, { once: true });
+  }
+
+  // ── Reconnection ─────────────────────────────────────────────────────────
+  //
+  // Deliberately a reload-and-rejoin rather than an in-place resync. The client has no session
+  // identity — a player IS their websocket — so the server cannot hand back the same tank, and
+  // re-syncing a live world onto a fresh socket would mean re-running map load and object
+  // creation over state that is already populated. The failure mode of getting that subtly wrong
+  // is a client believing a world the server doesn't, which is a far worse bug than a reload:
+  // it is silent, and it is the class of bug this codebase has already paid for once. Reloading
+  // re-runs the exact start-up path that is known to work. The player rejoins with a fresh tank,
+  // which in Bolo is just a respawn.
+
+  /** sessionStorage key. Per-TAB, which matters: `nick` lives in a cookie, and a cookie is shared
+   *  across every window of a profile — using it here would make four windows rejoin as the same
+   *  player. sessionStorage is scoped to the tab and survives the reload. */
+  static readonly REJOIN_KEY = 'bolo:rejoin';
+
+  /** Remember what it would take to get back into this game, so the reload can do it unattended. */
+  _rememberRejoin(gameId: string, nick: string, team: number): void {
+    try {
+      sessionStorage.setItem(BoloClientWorld.REJOIN_KEY, JSON.stringify({
+        gameId, nick, team, attempts: 0,
+      }));
+    } catch { /* private mode / storage disabled — reconnect degrades to the old behaviour */ }
+  }
+
+  _rejoinRecord(): { gameId: string; nick: string; team: number; attempts: number } | null {
+    try {
+      const raw = sessionStorage.getItem(BoloClientWorld.REJOIN_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _clearRejoin(): void {
+    try { sessionStorage.removeItem(BoloClientWorld.REJOIN_KEY); } catch { /* ignore */ }
+  }
+
+  /**
+   * Wait for the server to be reachable again, then reload straight back into the game.
+   *
+   * We poll a cheap HTTP endpoint rather than immediately reopening a websocket, because it
+   * answers two questions at once — is the server up, and does this game still exist — and it
+   * makes reload loops impossible: the page is only reloaded once there is something to reload
+   * into. `attempts` is persisted across the reload so a game that drops us repeatedly gives up
+   * eventually instead of cycling forever.
+   */
+  _beginReconnect(detail: string): void {
+    const record = this._rejoinRecord();
+    if (!record) { this.failure(`Connection lost (${detail})`); return; }
+
+    if (this.ws) { try { this.ws.close(); } catch { /* already closing */ } this.ws = null; }
+    this.loop?.stop();  // don't run a world that has nobody to talk to
+
+    const MAX_ATTEMPTS = 12;
+    if (record.attempts >= MAX_ATTEMPTS) {
+      this._clearRejoin();
+      this.failure(`Connection lost (${detail}) — reconnecting failed, please reload`);
+      return;
+    }
+
+    const banner = this._showReconnectBanner(detail);
+    let tries = 0;
+
+    const attempt = (): void => {
+      tries++;
+      banner(`Reconnecting… (attempt ${record.attempts + 1}, try ${tries})`);
+      fetch('/api/games', { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+        .then((games: any[]) => {
+          const stillThere = Array.isArray(games) &&
+            games.some(g => g && g.gid === record.gameId);
+          try {
+            sessionStorage.setItem(BoloClientWorld.REJOIN_KEY, JSON.stringify({
+              ...record, attempts: record.attempts + 1,
+            }));
+          } catch { /* ignore */ }
+          if (stillThere) {
+            banner('Reconnecting… rejoining game');
+            location.href = `/?${record.gameId}`;
+          } else {
+            // The game ended while we were away — there is nothing to rejoin.
+            this._clearRejoin();
+            banner('That game has ended — returning to the lobby');
+            setTimeout(() => { location.href = '/'; }, 1500);
+          }
+        })
+        .catch(() => {
+          // Server still unreachable. Back off, but keep the ceiling low enough that a player
+          // watching a frozen screen sees it come back promptly.
+          const delay = Math.min(1000 * Math.pow(1.6, tries - 1), 8000);
+          if (tries < 15) setTimeout(attempt, delay);
+          else {
+            this._clearRejoin();
+            this.failure(`Connection lost (${detail}) — server unreachable`);
+          }
+        });
+    };
+
+    attempt();
+  }
+
+  /** Overlay shown while reconnecting. Returns a setter so the status line can be updated. */
+  _showReconnectBanner(detail: string): (msg: string) => void {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.5); z-index: 9999;
+    `;
+    const box = document.createElement('div');
+    box.style.cssText = `
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: white; padding: 20px; border: 2px solid #333; z-index: 10000;
+      font-family: sans-serif; text-align: center; min-width: 260px;
+    `;
+    const status = document.createElement('div');
+    const sub = document.createElement('div');
+    sub.style.cssText = 'margin-top: 8px; font-size: 11px; color: #666;';
+    sub.textContent = detail;  // keep the close code visible — it is the diagnosis
+    box.appendChild(status);
+    box.appendChild(sub);
+    document.body.appendChild(overlay);
+    document.body.appendChild(box);
+    return (msg: string) => { status.textContent = msg; };
   }
 
   connected(): void {
@@ -1944,6 +2086,30 @@ export class BoloClientWorld extends ClientWorld {
     const teamNames = ['red', 'blue', 'yellow', 'green', 'orange', 'purple'];
     let minCount = Math.min(...teamCounts);
     let disadvantaged = teamNames[teamCounts.indexOf(minCount)];
+
+    // Coming back from a dropped connection: rejoin as who we were, without making the player
+    // retype anything. Only for THIS game — a rejoin record for a different game must not
+    // hijack a deliberate join somewhere else.
+    const rejoin = this._rejoinRecord();
+    if (rejoin && rejoin.gameId === this._gameId) {
+      (globalThis as any).__boloNick = rejoin.nick;
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ command: 'join', nick: rejoin.nick, team: rejoin.team }));
+      }
+      // Defensive: synchronized() runs inside the message handler, where an uncaught throw is
+      // treated as a protocol error and kills the connection we just restored.
+      try { this.input?.focus(); } catch { /* not focusable yet — harmless */ }
+      // Hand back the attempt budget once this connection has proved itself, so a session that
+      // survives for a while doesn't slowly exhaust its retries and give up on a later, unrelated
+      // drop. A reconnect loop, by contrast, never reaches this timer.
+      setTimeout(() => {
+        const cur = this._rejoinRecord();
+        if (cur && cur.gameId === rejoin.gameId) {
+          this._rememberRejoin(cur.gameId, cur.nick, cur.team);  // resets attempts to 0
+        }
+      }, 30000);
+      return;
+    }
 
     const dialogContainer = document.createElement('div');
     dialogContainer.innerHTML = JOIN_DIALOG_TEMPLATE;
@@ -2097,6 +2263,10 @@ export class BoloClientWorld extends ClientWorld {
     // Let crash reports name the player, so a dropped window can be matched to the tank idx the
     // server logged for it without having to guess from four identical-looking browser windows.
     (globalThis as any).__boloNick = nick;
+
+    // From here on we are IN a game, so a dropped socket should be reconnected rather than
+    // mourned. Recorded per-tab so each of several windows returns as itself.
+    if (this._gameId) this._rememberRejoin(this._gameId, nick, team);
 
     // Remove dialog
     const parent = this.joinDialog.parentElement;
