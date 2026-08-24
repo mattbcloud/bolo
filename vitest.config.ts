@@ -5,7 +5,7 @@ export default defineConfig({
     // jsdom provides document/Image so the brain's _showBrainIndicator() and any
     // renderer DOM touches are harmless in the headless brain harness.
     environment: 'jsdom',
-    include: ['src/brain/__sim__/**/*.test.ts'],
+    include: ['src/brain/__sim__/**/*.test.ts', 'src/**/*.test.ts'],
     testTimeout: 30_000,
   },
 });

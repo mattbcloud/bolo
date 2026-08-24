@@ -6,6 +6,7 @@ import { distance, heading } from '../helpers';
 import BoloObject from '../object';
 import * as sounds from '../sounds';
 import Shell from './shell';
+import { actorOf, teamActor } from '../newswire';
 const { min, max, round, ceil, PI, cos, sin } = Math;
 export class WorldPillbox extends BoloObject {
     /**
@@ -14,6 +15,8 @@ export class WorldPillbox extends BoloObject {
     constructor(world_or_map, x, y, owner_idx, armour, speed) {
         super(arguments.length === 1 ? world_or_map : null);
         this.team = 255;
+        /** Ticks before this pillbox may put another line on the newswire. See announcePickup(). */
+        this._newsCooldown = 0;
         this.styled = true;
         this.owner_idx = 255;
         this.armour = 0;
@@ -142,13 +145,44 @@ export class WorldPillbox extends BoloObject {
     anySpawn() {
         this.updateCell();
     }
+    /**
+     * Put a capture or steal line on the newswire. Authority only — update() runs on the network
+     * client too, for prediction, and netRestore() cannot un-print a ticker line.
+     */
+    announcePickup(tank) {
+        if (!this.world?.authority || !this.world.newswire)
+            return;
+        if (this._newsCooldown > 0)
+            return;
+        const previousTeam = this.team;
+        const wasOwned = previousTeam != null && previousTeam !== 255;
+        // WinBolo suppressed ally pill steals (`pillbox.c:898` checks playersIsAllie); in orona the
+        // team is the alliance, so picking up a team mate's dropped pill is not news.
+        if (wasOwned && previousTeam === tank.team)
+            return;
+        this._newsCooldown = 100;
+        if (!wasOwned) {
+            this.world.newswire('pill_capture', actorOf(tank));
+            return;
+        }
+        const previousOwner = this.owner?.$;
+        const other = previousOwner && previousOwner.name && previousOwner.armour !== 255
+            ? actorOf(previousOwner)
+            : teamActor(previousTeam);
+        this.world.newswire('pill_steal', actorOf(tank), other);
+    }
     update() {
+        if (this._newsCooldown > 0)
+            this._newsCooldown--;
         if (this.inTank || this.carried)
             return;
         if (this.armour === 0) {
             this.haveTarget = false;
             for (const tank of this.world.tanks) {
                 if (tank.armour !== 255 && tank.cell === this.cell) {
+                    // Announce BEFORE the owner is overwritten below — this is the last moment the
+                    // previous owner is still readable.
+                    this.announcePickup(tank);
                     this.inTank = true;
                     this.x = this.y = null;
                     this.updateCell();

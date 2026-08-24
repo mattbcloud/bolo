@@ -238,6 +238,7 @@ export const BoloClientWorldMixin = {
       pillboxView: 'KeyP',
       overview: 'KeyO',
       toggleBrain: 'KeyB',
+      toggleNewswire: 'KeyN',
       autoSlowdown: true,
       autoGunsight: true
     };
@@ -270,6 +271,13 @@ export const BoloClientWorldMixin = {
         return;
       }
       if (this.overview?.isOpen) return;
+
+      // Newswire strip: hide/show the crawl. WinBolo's messageSetNewswire(); the choice
+      // persists in localStorage, so a player who turns it off stays turned off.
+      if (code === this.keyBindings.toggleNewswire) {
+        this.newswireTicker?.toggle();
+        return;
+      }
 
       // Arrow keys are dedicated to view panning — not remappable.
       if (code === 'ArrowLeft')  { this.panLeftHeld  = true; return; }

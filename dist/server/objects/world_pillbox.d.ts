@@ -13,6 +13,8 @@ export declare class WorldPillbox extends BoloObject {
     inTank: boolean;
     carried: boolean;
     haveTarget: boolean;
+    /** Ticks before this pillbox may put another line on the newswire. See announcePickup(). */
+    private _newsCooldown;
     cell: any;
     owner?: any;
     map: any;
@@ -45,6 +47,11 @@ export declare class WorldPillbox extends BoloObject {
     spawn(): void;
     reset(): void;
     anySpawn(): void;
+    /**
+     * Put a capture or steal line on the newswire. Authority only — update() runs on the network
+     * client too, for prediction, and netRestore() cannot un-print a ticker line.
+     */
+    announcePickup(tank: any): void;
     update(): void;
     aggravate(): void;
     takeShellHit(shell: any): number;

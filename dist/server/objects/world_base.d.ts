@@ -14,6 +14,8 @@ export declare class WorldBase extends BoloObject {
     refueling?: any;
     refuelCounter: number;
     private _regenCounter;
+    /** Ticks before this base may put another line on the newswire. See announceCapture(). */
+    private _newsCooldown;
     cell: any;
     owner?: any;
     map: any;
@@ -51,6 +53,14 @@ export declare class WorldBase extends BoloObject {
      * reclaiming if two tanks are on the same tile.
      */
     findSubject(): void;
+    /**
+     * Put a capture or steal line on the newswire. Authority only: netRestore() can roll object
+     * state back on a client but cannot un-print a ticker line.
+     *
+     * findSubject() runs every tick, and a contested base changes hands repeatedly (see the
+     * flip-flop guard above), so a cooldown keeps one scrap from filling the whole crawl.
+     */
+    announceCapture(tank: any): void;
     takeShellHit(shell: any): number;
 }
 export default WorldBase;

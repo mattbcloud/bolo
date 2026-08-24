@@ -5,6 +5,7 @@ import { TILE_SIZE_WORLD } from '../constants';
 import { distance } from '../helpers';
 import BoloObject from '../object';
 import * as sounds from '../sounds';
+import { actorOf, teamActor } from '../newswire';
 const { min, max } = Math;
 export class WorldBase extends BoloObject {
     get team() {
@@ -20,6 +21,8 @@ export class WorldBase extends BoloObject {
         super(arguments.length === 1 ? world_or_map : null);
         this.owner_idx = 255;
         this._regenCounter = 0;
+        /** Ticks before this base may put another line on the newswire. See announceCapture(). */
+        this._newsCooldown = 0;
         this._team = 255;
         this.styled = true;
         this.armour = 0;
@@ -137,6 +140,8 @@ export class WorldBase extends BoloObject {
         // already authority-gated; the claim + transfer were not — that was the bug.)
         if (!this.world.authority)
             return;
+        if (this._newsCooldown > 0)
+            this._newsCooldown--;
         // Base resource regeneration. All three resources regenerate independently in
         // parallel so a depleted base is playable again within ~90 seconds (1 unit/sec ×
         // 90 max capacity). REGEN_INTERVAL: 50 ticks × 20 ms/tick = 1 unit per second.
@@ -214,6 +219,9 @@ export class WorldBase extends BoloObject {
                     }
                 }
                 if (canClaim) {
+                    // Announce BEFORE the owner is overwritten below — this is the last moment the
+                    // previous owner is still readable.
+                    this.announceCapture(tank);
                     // Pre-set owner_idx and team BEFORE ref() so the very first
                     // serialisation sent to clients already has the correct colour.
                     // Without this, ref('owner', tank) sends an intermediate packet
@@ -229,6 +237,37 @@ export class WorldBase extends BoloObject {
                 }
             }
         }
+    }
+    /**
+     * Put a capture or steal line on the newswire. Authority only: netRestore() can roll object
+     * state back on a client but cannot un-print a ticker line.
+     *
+     * findSubject() runs every tick, and a contested base changes hands repeatedly (see the
+     * flip-flop guard above), so a cooldown keeps one scrap from filling the whole crawl.
+     */
+    announceCapture(tank) {
+        if (!this.world?.authority || !this.world.newswire)
+            return;
+        if (this._newsCooldown > 0)
+            return;
+        const previousTeam = this._team;
+        const wasOwned = previousTeam != null && previousTeam !== 255;
+        // A team mate taking over one of our own bases is bookkeeping, not news. In orona the team
+        // IS the alliance, so this covers WinBolo's `playersIsAllie` case for bases too.
+        if (wasOwned && previousTeam === tank.team)
+            return;
+        this._newsCooldown = 100;
+        if (!wasOwned) {
+            this.world.newswire('base_capture', actorOf(tank));
+            return;
+        }
+        // The owner ref can be stale — a destroyed tank, or a player who disconnected. When the
+        // name is unrecoverable, name the team instead, so the colour cue survives.
+        const previousOwner = this.owner?.$;
+        const other = previousOwner && previousOwner.name && previousOwner.armour !== 255
+            ? actorOf(previousOwner)
+            : teamActor(previousTeam);
+        this.world.newswire('base_steal', actorOf(tank), other);
     }
     takeShellHit(shell) {
         if (this.owner) {

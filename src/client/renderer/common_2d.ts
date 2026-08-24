@@ -152,8 +152,9 @@ export class Common2dRenderer extends BaseRenderer {
 
   drawBuilderIndicator(b: any): void {
     const player = b.owner.$;
-    // Don't show builder indicator for hidden tanks
-    if (player.hidden && player !== this.world.player) return;
+    // Don't show the builder indicator for a tank forest cover conceals from us — but a team
+    // mate under cover is not concealed, so their builder still shows.
+    if (player.isHiddenFrom(this.world.player)) return;
 
     const dist = distance(player, b);
     if (dist <= 128) return;
@@ -188,8 +189,8 @@ export class Common2dRenderer extends BaseRenderer {
     this.ctx.textAlign = 'left';
     const player = this.world.player;
     for (const tank of this.world.tanks) {
-      // Skip hidden tanks (except for the local player)
-      if (tank.hidden && tank !== player) continue;
+      // Skip tanks forest cover conceals from us; a team mate under cover keeps their label.
+      if (tank.isHiddenFrom(player)) continue;
 
       if (tank.name && tank.armour !== 255 && tank !== player) {
         if (player) {

@@ -12,11 +12,12 @@ import { WebSocketServer } from 'ws';
 import { MapIndex } from './map_index';
 import * as helpers from '../helpers';
 import BoloWorldMixin from '../world_mixin';
+import { newswireMessage, findLeadChange, teamActor } from '../newswire';
 import * as allObjectsModule from '../objects/all';
 import { Tank } from '../objects/tank';
 import WorldMap from '../world_map';
 import * as net from '../net';
-import { TICK_LENGTH_MS } from '../constants';
+import { MAP_SIZE_TILES, OVERVIEW_SIGHT_TILES, TICK_LENGTH_MS, TILE_SIZE_WORLD } from '../constants';
 import { firebaseService } from './firebase.js';
 import { statsService } from './stats-service.js';
 import { createLoop } from '../villain/loop';
@@ -45,6 +46,17 @@ export class BoloServerWorld extends ServerWorld {
         this.tanks = [];
         this.emptyStartTime = null; // Track when game became empty
         this.teamScoresTick = 0; // Counter for sending team scores
+        // The team currently holding the lead, for the newswire. Null until someone scores.
+        this.leadTeam = null;
+        // ── Team discovered map (overview) ───────────────────────────────────────
+        // One byte per tile per team, recording every tile any tank on that team has been near.
+        // The client keeps its own copy for what it witnesses live, but only the server can tell
+        // a joining player what their team explored before they connected — a client cannot
+        // reconstruct history it never saw. Allocated lazily, so a team nobody plays costs
+        // nothing, and scoped to this game instance, so a new game starts unexplored.
+        this.teamDiscovered = [];
+        this.teamDiscoveredPending = []; // tiles discovered since the last delta was sent
+        this.teamDiscoveredTick = 0;
         // Classic Bolo game mode — differs ONLY in respawn resupply (armour always full = 40):
         //   'open'       training: respawn full bullets (40) + full mines + full trees.
         //   'tournament' respawn bullets = min(40, 2 × neutral-base count); 0 mines, 0 trees.
@@ -225,21 +237,59 @@ export class BoloServerWorld extends ServerWorld {
     mapChanged(cell, oldType, hadMine, oldLife) {
         const ascii = cell.type.ascii;
         this.changes.push(['mapChange', cell.x, cell.y, ascii, cell.life, cell.mine]);
+        // Catch-up buffer for not-yet-synchronized clients. A client's ONLY terrain snapshot is
+        // the map.dump taken in onConnect (socket-open); it does not receive mapChange deltas until
+        // ws.synchronized flips true (post onJoinMessage + one tick, line ~654). Every terrain
+        // change during that [connect → sync] window would otherwise be lost forever — leaving stale
+        // cells (classic case: a forest harvested while the joining client sits on the join screen
+        // stays 'forest' on that client → the brain's _findAdjacentForest picks a phantom forest →
+        // the builder harvests nothing → PlacePill farm freeze). Record every change for each pending
+        // client so we can replay them as MAPCHANGE deltas the instant it synchronizes.
+        for (const c of this.clients) {
+            if (c.catchupChanges && !c.synchronized) {
+                if (c.catchupChanges.length < 50000) {
+                    c.catchupChanges.push(['mapChange', cell.x, cell.y, ascii, cell.life, cell.mine]);
+                }
+                else if (!c.catchupOverflow) {
+                    c.catchupOverflow = true;
+                    console.log('[CATCHUP] buffer overflow (>50k) — client on the join screen too long; some terrain may stay stale until it changes again.');
+                }
+            }
+        }
     }
     // Connection handling
     onConnect(ws) {
         // Set-up the websocket parameters.
         this.clients.push(ws);
         ws.heartbeatTimer = 0;
+        ws.pingTimer = 0;
+        // Split liveness counters, purely diagnostic. heartbeatTimer is reset by EITHER signal,
+        // so once it trips we can no longer tell which one died. These two are reset only by
+        // their own signal: the app-level heartbeat (an inbound message) and the protocol pong.
+        // Which of them stops first says where the fault is — see the [REAP] log.
+        ws.sinceMessage = 0;
+        ws.sincePong = 0;
+        ws.silenceWarned = false;
         ws.synchronized = false; // Mark client as not yet synchronized
         ws.on('message', (data) => this.onMessage(ws, data));
         ws.on('close', (code, reason) => this.onEnd(ws, code, reason));
+        // Protocol-level liveness. A browser answers a WebSocket ping from its network stack
+        // without running any page JavaScript, so a pong proves the socket is alive even when
+        // the tab is backgrounded and its timers are throttled to ~1 Hz — which is exactly
+        // what happens to every already-connected player the moment someone opens another tab
+        // to join. The app-level heartbeat alone can't survive that throttling.
+        ws.on('pong', () => { ws.heartbeatTimer = 0; ws.sincePong = 0; });
         // Send the current map state. We don't send pillboxes and bases, because the client
         // receives create messages for those, and then fills the map structure based on those.
         // The client expects this as a separate message.
         let packet = this.map.dump({ noPills: true, noBases: true });
         packet = Buffer.from(packet).toString('base64');
         ws.send(packet);
+        // Baseline captured — start recording terrain changes for this client until it synchronizes,
+        // so the [connect → sync] delta gap can be replayed at sync (see mapChanged). Without this,
+        // any terrain change during the join-screen window is lost and that cell stays stale forever.
+        ws.catchupChanges = [];
+        ws.catchupOverflow = false;
         // To synchronize the object list to the client, we use changesPacket with fullCreate=true
         // This sends CREATE messages followed by TINY_UPDATE messages for each object
         // Build a snapshot of all existing objects at this moment, including nulls to preserve indices
@@ -268,7 +318,14 @@ export class BoloServerWorld extends ServerWorld {
         if (ws.tank) {
             const playerName = ws.nick || ws.tank.name || 'Unknown';
             const teamName = getTeamName(ws.tank.team);
-            console.log(`[PLAYER DISCONNECT] Player "${playerName}" disconnected (was on team ${teamName}, tank idx=${ws.tank.idx})`);
+            // Log the code BOTH ends saw. The browser reporting 1006 only says no close frame reached
+            // IT; pairing that with what arrived here separates "the transport was severed underneath
+            // both of us" (1006 here too) from "one side closed and the other never heard" (anything
+            // else) — which is the difference between a platform/network fault and one of ours.
+            console.log(`[PLAYER DISCONNECT] Player "${playerName}" disconnected (was on team ${teamName}, ` +
+                `tank idx=${ws.tank.idx}) — server saw code=${code}${reason ? ` reason=${reason}` : ''}`);
+            // Announce BEFORE destroy() — afterwards the tank is gone and the name with it.
+            this.newswire('player_quit', { name: playerName, team: ws.tank.team });
             this.destroy(ws.tank);
             console.log(`[PLAYERS] Total tanks remaining: ${this.tanks.length}`);
         }
@@ -277,7 +334,16 @@ export class BoloServerWorld extends ServerWorld {
         if (idx !== -1) {
             this.clients.splice(idx, 1);
         }
-        ws.close();
+        // Pass the reason through in the close frame. Closing bare made every server-side drop look
+        // identical to the page — a status-less 1005 — so a player culled by the reaper and a player
+        // whose pipe simply broke saw the same "Connection lost" with no way to tell them apart.
+        // Only 1000 and the application range 3000-4999 may legally be sent; 1005/1006 arrive on
+        // INCOMING closes (where this is already a no-op) and would throw if echoed back.
+        const sendable = code === 1000 || (code >= 3000 && code <= 4999);
+        if (sendable)
+            ws.close(code, reason);
+        else
+            ws.close();
     }
     onMessage(ws, message) {
         // Convert Buffer to string if needed
@@ -285,6 +351,7 @@ export class BoloServerWorld extends ServerWorld {
         // Any inbound message proves the client is alive — reset its silence counter so the
         // stale-client reaper (see sendPackets) never culls an active player.
         ws.heartbeatTimer = 0;
+        ws.sinceMessage = 0;
         if (messageStr === '') {
             ws.heartbeatTimer = 0;
         }
@@ -469,21 +536,158 @@ export class BoloServerWorld extends ServerWorld {
         }
     }
     /**
+     * Announce a game event on the newswire. Called only from authority code — game objects gate
+     * every emission on `this.world.authority`, because world_pillbox.update() and
+     * world_base.findSubject() also run on the network client for prediction, and netRestore()
+     * can roll object state back but cannot un-print a ticker line.
+     *
+     * The line is formatted here, once, into coloured segments; the team on each segment is the
+     * value at the moment the event fired and is never re-derived on the client.
+     *
+     * Strictly live: nothing is retained for replay. A backlog handed to a syncing client was
+     * tried and removed — a player walking into a game watched five things that had already
+     * happened scroll past as though they were happening now, which is worse than an empty strip.
+     * The wire reports what is happening, not what happened.
+     */
+    newswire(kind, actor, other) {
+        this.broadcast(JSON.stringify(newswireMessage(kind, actor, other)));
+    }
+    // ── Team discovered map (overview) ─────────────────────────────────────────
+    /**
+     * Widen each team's discovered map by what its living tanks can see this tick, and note
+     * the newly discovered tiles so they can be sent out as a delta. Vision is shared across
+     * a team, so one tank scouting reveals the ground for every team mate, present or not
+     * yet connected.
+     */
+    updateTeamDiscovered() {
+        const r = (OVERVIEW_SIGHT_TILES - 1) / 2;
+        for (const tank of this.tanks) {
+            if (!tank || tank.armour === 255 || tank.x == null || tank.y == null)
+                continue;
+            const team = tank.team;
+            if (typeof team !== 'number' || team < 0 || team > 5)
+                continue;
+            let discovered = this.teamDiscovered[team];
+            if (!discovered) {
+                discovered = this.teamDiscovered[team] = new Uint8Array(MAP_SIZE_TILES * MAP_SIZE_TILES);
+                this.teamDiscoveredPending[team] = [];
+            }
+            const pending = this.teamDiscoveredPending[team];
+            const tx = Math.floor(tank.x / TILE_SIZE_WORLD);
+            const ty = Math.floor(tank.y / TILE_SIZE_WORLD);
+            const sx = Math.max(0, tx - r);
+            const sy = Math.max(0, ty - r);
+            const ex = Math.min(MAP_SIZE_TILES - 1, tx + r);
+            const ey = Math.min(MAP_SIZE_TILES - 1, ty + r);
+            for (let y = sy; y <= ey; y++) {
+                const row = y * MAP_SIZE_TILES;
+                for (let x = sx; x <= ex; x++) {
+                    const idx = row + x;
+                    if (discovered[idx] === 0) {
+                        discovered[idx] = 1;
+                        pending.push(idx);
+                    }
+                }
+            }
+        }
+    }
+    /**
+     * A team's whole discovered map, packed one bit per tile and base64'd — about 11kB, sent
+     * once when a client synchronizes. Null when that team has never had a tank.
+     */
+    teamDiscoveredSnapshot(team) {
+        const discovered = this.teamDiscovered[team];
+        if (!discovered)
+            return null;
+        const packed = Buffer.alloc(discovered.length / 8);
+        for (let i = 0; i < discovered.length; i++) {
+            if (discovered[i])
+                packed[i >> 3] |= 1 << (i & 7);
+        }
+        return packed.toString('base64');
+    }
+    /**
      * We send critical updates every frame, and non-critical updates every other frame. On top of
      * that, non-critical updates may be dropped, if the client's hearbeats are interrupted.
      */
     sendPackets() {
+        // ── Team discovered map ────────────────────────────────────────────────
+        // Accumulate every tick (cheap: one 15x15 box per living tank), but only ship deltas
+        // twice a second — a tank crosses far less than a sight box in that time, so nothing
+        // is missed and the message rate stays low.
+        this.updateTeamDiscovered();
+        const DISCOVERED_SEND_TICKS = 25; // ~0.5s at 20ms/tick
+        const discoveredPackets = [];
+        if (++this.teamDiscoveredTick >= DISCOVERED_SEND_TICKS) {
+            this.teamDiscoveredTick = 0;
+            for (let team = 0; team < this.teamDiscoveredPending.length; team++) {
+                const pending = this.teamDiscoveredPending[team];
+                if (!pending || pending.length === 0)
+                    continue;
+                discoveredPackets[team] = JSON.stringify({ command: 'discovered', add: pending });
+                this.teamDiscoveredPending[team] = [];
+            }
+        }
+        // ── Liveness ping ──────────────────────────────────────────────────────
+        // Ping each client about once a second. The pong handler (onConnect) resets
+        // heartbeatTimer, so liveness no longer depends on the client's throttleable timers.
+        const PING_TICKS = 50; // ~1s at 20ms/tick
+        for (const client of this.clients) {
+            if (++client.pingTimer >= PING_TICKS) {
+                client.pingTimer = 0;
+                try {
+                    client.ping();
+                }
+                catch {
+                    // Socket already closing — the reaper and the close handler deal with it.
+                }
+            }
+        }
         // ── Stale-client reaper ────────────────────────────────────────────────
-        // heartbeatTimer counts ticks since a client's last message; live clients ping every 10
-        // ticks (client.ts), so a timer past REAP_TICKS means the socket dropped uncleanly (e.g. a
-        // browser refresh that never fired a `close` event). Without this, that client's tank
-        // lingers in this.world.tanks as a GHOST — phantom tanks of stale teams re-claim bases
-        // every tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
+        // heartbeatTimer counts ticks since a client's last sign of life (any message, or a
+        // pong), so a timer past REAP_TICKS means the socket dropped uncleanly (e.g. a browser
+        // refresh that never fired a `close` event). Without this, that client's tank lingers
+        // in this.world.tanks as a GHOST — phantom tanks of stale teams re-claim bases every
+        // tick and the base team FLICKERS. Reap through the normal onEnd → destroy path so a
         // future unclean drop self-cleans. Iterate a copy because onEnd splices this.clients.
-        const REAP_TICKS = 250; // ~10s at 40ms/tick = 25 missed heartbeats — unambiguously gone
+        // Sized against how long a real browser goes quiet, not against how fast we could notice.
+        // Chrome freezes a backgrounded window outright: measured here, one spent 10s, 30s and 9s
+        // stretches frozen back to back, with its app-level heartbeat dead for up to 28s at a time —
+        // the page cannot send anything while its main thread is stopped. The old 250 (~5s, and ~6.5s
+        // at the tick rate we actually run) sat well inside that, leaving a backgrounded player alive
+        // only for as long as the protocol pong kept answering on its behalf. Lose a handful of
+        // consecutive pongs — a slow machine, a busy tab, a proxy, real network jitter — and a player
+        // who is merely in a background window gets culled mid-game.
+        //
+        // The cost of going long is a ghost tank lingering after an UNCLEAN drop (a clean close still
+        // reaps instantly via the close handler), so bases can flicker for that window. A rare 30s
+        // flicker is a far better trade than routinely kicking live players.
+        const REAP_TICKS = 1500; // ~30s+ — longer than any freeze we have measured
+        const WARN_TICKS = 120; // must exceed one PING_TICKS cycle (50) plus jitter, or this fires
+        // on entirely healthy clients whose sincePong is mid-sawtooth
         for (const client of [...this.clients]) {
-            if (client.tank && client.heartbeatTimer > REAP_TICKS) {
+            if (!client.tank)
+                continue;
+            // Onset marker. A reap tells us a client went quiet; this tells us WHEN it started and
+            // which signal failed first, which is the difference between "the browser stopped
+            // draining the socket" and "the return path through the proxy broke".
+            if (client.heartbeatTimer > WARN_TICKS && !client.silenceWarned) {
+                client.silenceWarned = true;
+                console.log(`[SILENCE] tank idx=${client.tank.idx} quiet ${client.heartbeatTimer}t ` +
+                    `(msg ${client.sinceMessage}t ago, pong ${client.sincePong}t ago, ` +
+                    `buffered=${client.bufferedAmount}, readyState=${client.readyState})`);
+            }
+            else if (client.heartbeatTimer <= WARN_TICKS && client.silenceWarned) {
+                console.log(`[SILENCE] tank idx=${client.tank.idx} recovered.`);
+                client.silenceWarned = false;
+            }
+            if (client.heartbeatTimer > REAP_TICKS) {
+                // bufferedAmount is the giveaway: a large server→client backlog means the far end
+                // stopped READING (renderer stalled / pipe wedged), whereas ~0 with unanswered pings
+                // means the socket drains fine and only the return path is dead.
                 console.log(`[REAP] Stale client (tank idx=${client.tank.idx}, silent ${client.heartbeatTimer} ticks) — removing ghost tank.`);
+                console.log(`[REAP]   lastMessage=${client.sinceMessage}t lastPong=${client.sincePong}t ` +
+                    `bufferedAmount=${client.bufferedAmount} readyState=${client.readyState}`);
                 this.onEnd(client, 4000, 'heartbeat timeout');
             }
         }
@@ -535,6 +739,14 @@ export class BoloServerWorld extends ServerWorld {
         if (this.teamScoresTick >= 25) {
             this.teamScoresTick = 0;
             const scores = this.calculateTeamScores();
+            // Announce a change at the top of the table. findLeadChange() applies the hysteresis, so
+            // this fires on real swings only — see NEWSWIRE_LEAD_MARGIN.
+            const newLeader = findLeadChange(scores, this.leadTeam);
+            if (newLeader !== null) {
+                const previous = this.leadTeam;
+                this.leadTeam = newLeader;
+                this.newswire('lead_change', teamActor(newLeader), previous === null ? null : teamActor(previous));
+            }
             // Record team scores to Firebase for stats
             statsService.recordTeamScores(scores).catch((error) => {
                 // Silent fail - don't crash the game if stats recording fails
@@ -551,6 +763,30 @@ export class BoloServerWorld extends ServerWorld {
             if (client.needsInitialSync) {
                 // Send full snapshot
                 client.send(newClientPacket);
+                // Replay terrain changes that occurred between this client's connect-time map.dump and
+                // now. The dump was the client's ONLY terrain snapshot and mapChange deltas do not start
+                // flowing until it is synchronized — so without this replay, every forest harvest / wall
+                // build / crater during the join window stays stale on the client (phantom terrain).
+                // Serialize the buffered mapChanges through changesPacket by briefly borrowing this.changes
+                // (same save/restore pattern used for newClientPacket above), then deliver as MAPCHANGE msgs.
+                const catchupCount = client.catchupChanges ? client.catchupChanges.length : -1;
+                if (client.catchupChanges && client.catchupChanges.length) {
+                    const savedForCatchup = this.changes;
+                    this.changes = client.catchupChanges;
+                    const catchupData = this.changesPacket(false);
+                    this.changes = savedForCatchup;
+                    if (catchupData.length) {
+                        client.send(Buffer.from(catchupData).toString('base64'));
+                    }
+                }
+                // Log only meaningful outcomes: N>0 = terrain deltas from the [connect→sync] window were
+                // replayed (the gap that used to leave stale/phantom terrain), or -1 = buffer was never
+                // initialized (onConnect didn't run for this client → a regression worth seeing). The
+                // common N=0 (window caught nothing) is silent to avoid per-join noise.
+                if (catchupCount !== 0) {
+                    console.log(`[CATCHUP] sync tank idx=${client.tank?.idx}: replayed ${catchupCount} terrain change(s) from the [connect→sync] window (overflow=${!!client.catchupOverflow}).`);
+                }
+                client.catchupChanges = null;
                 // Send welcome packet
                 const welcomePacket = Buffer.from(pack('BH', net.WELCOME_MESSAGE, client.tank.idx)).toString('base64');
                 client.send(welcomePacket);
@@ -566,6 +802,12 @@ export class BoloServerWorld extends ServerWorld {
                     .map((t) => ({ command: 'nick', idx: t.idx, nick: t.name }));
                 if (nickMessages.length)
                     client.send(JSON.stringify(nickMessages));
+                // Hand over the team's discovered map for the overview. This is the whole point of
+                // keeping it server-side: everything the team explored before this client existed.
+                const discoveredSnapshot = this.teamDiscoveredSnapshot(client.tank.team);
+                if (discoveredSnapshot) {
+                    client.send(JSON.stringify({ command: 'discovered', mask: discoveredSnapshot }));
+                }
                 // Mark as synchronized
                 client.synchronized = true;
                 client.needsInitialSync = false;
@@ -594,9 +836,16 @@ export class BoloServerWorld extends ServerWorld {
                 client.send(largePacket);
                 client.heartbeatTimer++;
             }
+            client.sinceMessage++;
+            client.sincePong++;
             // Send team scores if calculated this tick
             if (teamScoresPacket) {
                 client.send(teamScoresPacket);
+            }
+            // Send this team's newly discovered tiles, if any were batched this tick.
+            const discoveredPacket = client.tank ? discoveredPackets[client.tank.team] : null;
+            if (discoveredPacket) {
+                client.send(discoveredPacket);
             }
         }
         // Now broadcast nicks for new clients AFTER all packets have been sent
@@ -607,6 +856,10 @@ export class BoloServerWorld extends ServerWorld {
                 idx: client.tank.idx,
                 nick: client.nick,
             }));
+            // Announce the join from here, not from onJoinMessage(): that sets `synchronized = false`
+            // and broadcast() skips unsynchronized clients, so announcing there means the joiner is
+            // the one player who never sees their own line.
+            this.newswire('player_join', { name: client.nick || client.tank.name, team: client.tank.team });
         }
         // Clear newlyCreated AFTER packets have been sent
         // Objects created in this tick have been sent via CREATE+TINY_UPDATE and excluded from UPDATE
@@ -697,9 +950,16 @@ export class Application {
         const webroot = path.join(path.dirname(fs.realpathSync(__filename)), '../../');
         this.connectServer = connect();
         if (this.options.web?.log) {
-            // Modern connect doesn't have logger middleware by default
+            // Modern connect doesn't have logger middleware by default.
+            //
+            // High-frequency debug endpoints are excluded. A hosted log is a fixed-size window, not an
+            // archive: brain-state is POSTed several times a SECOND by every brain client, which pushed
+            // the retrievable history down to about six minutes and buried the disconnect diagnostics
+            // we actually needed. Anything logged once per tick is not worth the log it displaces.
+            const NOISY = /^\/api\/(brain-state|client-error)\b/;
             this.connectServer.use('/', (req, res, next) => {
-                console.log(`${req.method} ${req.url}`);
+                if (!NOISY.test(req.url ?? ''))
+                    console.log(`${req.method} ${req.url}`);
                 next();
             });
         }
@@ -764,6 +1024,35 @@ export class Application {
             else {
                 res.end('{"ok":true,"hint":"POST a JSON snapshot (appended to ' + FILE + '); GET ?clear=1 to reset"}');
             }
+        });
+        // Client-error sink. A player who drops mid-game can't be asked to screenshot their console,
+        // and on a hosted deployment there is no console to read at all — so the page reports its own
+        // uncaught errors, unhandled rejections, main-thread stalls and socket close codes here, and
+        // they land in the SERVER log next to the [REAP]/[SILENCE] lines for the same moment.
+        this.connectServer.use('/api/client-error', (req, res) => {
+            res.setHeader('Content-Type', 'application/json');
+            if (req.method !== 'POST') {
+                res.end('{"ok":true,"hint":"POST a JSON client error report"}');
+                return;
+            }
+            let body = '';
+            req.on('data', (chunk) => { body += chunk; if (body.length > 100000)
+                req.destroy(); });
+            req.on('end', () => {
+                let report = null;
+                try {
+                    report = JSON.parse(body);
+                }
+                catch { /* logged raw below */ }
+                const r = report ?? { kind: 'unparseable', raw: body.slice(0, 2000) };
+                console.log(`[CLIENT ${String(r.kind ?? 'error').toUpperCase()}] ${r.nick ?? '?'}: ${r.message ?? ''}`);
+                if (r.detail)
+                    console.log(`[CLIENT]   ${typeof r.detail === 'string' ? r.detail : JSON.stringify(r.detail)}`);
+                if (r.stack)
+                    console.log(`[CLIENT]   ${String(r.stack).split('\n').slice(0, 6).join('\n[CLIENT]   ')}`);
+                fs.appendFile('/tmp/bolo-client-errors.jsonl', JSON.stringify({ ts: Date.now(), ...r }).replace(/\n/g, ' ') + '\n', () => { });
+                res.end('{"ok":true}');
+            });
         });
         this.connectServer.use('/api/games', (req, res) => {
             if (req.method === 'GET') {
@@ -978,10 +1267,21 @@ export class Application {
                 if (game === this.demo) {
                     continue;
                 }
+                // Emptiness is measured HERE, from the live tank count, rather than trusted from a field
+                // set once when the game was constructed. It used to be the latter: emptyStartTime was
+                // stamped in the constructor and never written again, so the check below was really
+                // "was this game created over an hour ago" — and a busy game full of players got closed
+                // out from under them on its first birthday, dropping everyone at once.
+                if (game.tanks.length > 0) {
+                    game.emptyStartTime = null;
+                    continue;
+                }
+                if (game.emptyStartTime === null || game.emptyStartTime === undefined) {
+                    game.emptyStartTime = now; // just became empty — start the clock
+                    continue;
+                }
                 // Check if game has been empty for over an hour
-                if (game.emptyStartTime !== null &&
-                    game.emptyStartTime !== undefined &&
-                    (now - game.emptyStartTime) > ONE_HOUR_MS) {
+                if ((now - game.emptyStartTime) > ONE_HOUR_MS) {
                     console.log(`Closing empty game '${gid}' (empty for ${Math.floor((now - game.emptyStartTime) / 1000 / 60)} minutes)`);
                     this.closeGame(game);
                 }

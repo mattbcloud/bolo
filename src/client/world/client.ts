@@ -24,6 +24,7 @@ import { A4State } from '../../brain/a4_state';
 
 // Visual effects
 import { DeathOverlay } from '../death_overlay';
+import { NewswireTicker } from '../newswire';
 
 // Crash reporting
 import { reportClientError } from '../diagnostics';
@@ -268,6 +269,9 @@ export class BoloClientWorld extends ClientWorld {
   // Death / respawn visual effect
   private _deathOverlay: DeathOverlay | null = null;
   private _deathOverlayPrevArmour: number = 40;
+
+  // The newswire crawl. Fed by 'news' commands from the server; stepped from tick().
+  newswireTicker: NewswireTicker | null = null;
 
   constructor() {
     super();
@@ -581,6 +585,7 @@ export class BoloClientWorld extends ClientWorld {
       pillboxView: 'KeyP',
       overview: 'KeyO',
       toggleBrain: 'KeyB',
+      toggleNewswire: 'KeyN',
       autoSlowdown: true,
       autoGunsight: true
     };
@@ -812,6 +817,23 @@ export class BoloClientWorld extends ClientWorld {
               <label style="width: 120px;">Toggle overview:</label>
               <input type="text" readonly class="key-input" data-binding="overview"
                 value="${getFriendlyKeyName(keys.overview)}"
+                style="
+                  width: 80px;
+                  border: 1px solid black;
+                  background: white;
+                  padding: 4px;
+                  text-align: center;
+                  cursor: pointer;
+                  font-family: 'Chicago', 'Charcoal', monospace;
+                  font-size: 12px;
+                ">
+            </div>
+
+            <div style="font-weight: bold; margin-bottom: 8px;">Newswire</div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <label style="width: 120px;">Show/hide:</label>
+              <input type="text" readonly class="key-input" data-binding="toggleNewswire"
+                value="${getFriendlyKeyName(keys.toggleNewswire)}"
                 style="
                   width: 80px;
                   border: 1px solid black;
@@ -2298,6 +2320,9 @@ export class BoloClientWorld extends ClientWorld {
     this.renderer.initHud();
     this._deathOverlay = new DeathOverlay();
     this.initChat();
+    // initHud() has just created the (empty) #newswire panel and registered it for dragging.
+    const newswireEl = document.getElementById('newswire');
+    if (newswireEl) this.newswireTicker = new NewswireTicker(newswireEl);
   }
 
   /**
@@ -2322,6 +2347,11 @@ export class BoloClientWorld extends ClientWorld {
     }
 
     super.tick();
+
+    // Step the newswire crawl one tick. Driven from the world tick and not rAF: a hidden tab
+    // suspends rAF entirely and freezes timers for tens of seconds, and the right degradation
+    // is a stalled crawl whose queue survives, not a dropped one.
+    this.newswireTicker?.tick();
 
     // ── Death overlay ─────────────────────────────────────────────────────
     if (this._deathOverlay && this.player) {
@@ -2756,8 +2786,16 @@ export class BoloClientWorld extends ClientWorld {
       const allCosts = a4.goals.map(g => `${GN2[g.goalIndex]??g.goalIndex}:${g.cost===0xFFFF?'∞':g.cost}`).join(' ');
       const msg = `🧠 t=${a4.tickCounter} ${GN[goalIdx]??goalIdx}(${best.cost}) arm=${state.tank.armor} ammo=${state.tank.ammo} spd=${spd} ctrl:${ctrl} route:${a4.navCacheValid?'ok':'MISS'} noRoute:${a4.noLocalRouteFlag} ${goalTgtStr}`;
       const detail = `  costs: ${allCosts} refuelSt:${a4.refuelState} noRoute:${a4.noLocalRouteFlag} builderIn:${state.tank.builderInTank}`;
-      const el = document.getElementById('brain-indicator');
-      if (el) el.textContent = msg;
+      // Debug output belongs in the console, not over the game. This line used to be written
+      // into the on-screen brain badge every second, which turned a small status chip into a
+      // wall of goal/route/ctrl state sitting on top of the view — and left it frozen on
+      // whatever the last frame said. The badge keeps its "🧠 Brain Active" label; set
+      // `window.__BRAINHUD__ = true` to put the live line back on screen, the same opt-in
+      // console switch as `__MAPDUMP__` below.
+      if ((globalThis as any).__BRAINHUD__ === true) {
+        const el = document.getElementById('brain-indicator');
+        if (el) el.textContent = msg;
+      }
       console.log(msg);
       if (controlsIdle) console.warn('[brain] IDLE controls!', detail);
 
@@ -3230,6 +3268,12 @@ export class BoloClientWorld extends ClientWorld {
         if (this.objects[data.idx]) {
           this.receiveChat(this.objects[data.idx], data.text, { team: true });
         }
+        break;
+      case 'news':
+        // Already formatted into coloured segments by the server — see src/newswire.ts. The
+        // team on each segment is the value captured when the event fired, so it stays correct
+        // even after the actor has died, respawned, or rejoined on another team.
+        this.newswireTicker?.add(data.segments, data.kind);
         break;
       case 'discovered':
         // Team's discovered map for the overview (unrelated to the renderer's fog overlay).

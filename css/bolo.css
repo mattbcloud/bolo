@@ -78,7 +78,7 @@ canvas {
   pointer-events: auto;
 }
 
-#pillStatus, #baseStatus, #tankStatus, #playersStatus, #statsStatus {
+#pillStatus, #baseStatus, #tankStatus, #playersStatus, #statsStatus, #newswire {
   position: absolute;
   border: 2px solid #c0c0f0;
   background: black;
@@ -298,4 +298,72 @@ canvas {
 
 #statsStatus .stat-value {
   font-weight: bold;
+}
+
+
+/*
+ * Newswire ticker — a two-line character crawl, 67 columns wide.
+ *
+ * The frame is orona's standard HUD panel chrome (added to the shared selector above); the
+ * field inside it is the original's: black, Courier New, white, right-aligned. WinBolo drew it
+ * at 472px across 68 columns (6.94px/col, `gui/positions.h:233-244`) in Courier New
+ * (`gui/font.h:36`).
+ *
+ * 15px, not the 11px of #statsStatus: this strip is read while driving, at a glance, so it is
+ * sized a third larger than the rest of the HUD chrome. That puts the field at 603px — 1.28x
+ * the original's 472px, but orona draws tiles at 32px against WinBolo's 16px, so relative to
+ * the game world the crawl is still the smaller of the two.
+ *
+ * 15px is also the size that keeps the crawl crisp. `ch` in Courier New is 0.6em, so 15px
+ * makes a column exactly 9px and every one-column scroll step a whole-pixel shift; the exact
+ * one-third figure (14.667px) would put every column boundary on a subpixel.
+ *
+ * Width is in `ch` — the advance of "0" in the active monospace face — so the field fits its
+ * 67 columns exactly whatever font actually resolves. Name colours are set inline from
+ * teamTextColor(); they are per-column data, not styling, so they do not belong here.
+ */
+#newswire {
+  top: 8px;
+  left: 8px;
+  padding: 4px;
+  font-family: "Courier New", monospace;
+  font-size: 15px;
+  line-height: 21px;
+  color: #ffffff;
+  white-space: pre;
+  text-align: right;
+}
+
+#newswire .newswire-line {
+  width: 67ch;
+  height: 21px;
+}
+
+/*
+ * The header is a channel bug, not part of the crawl: it sweeps in from the right with the
+ * first message of a run, parks against the left edge for as long as news keeps moving, holds
+ * two seconds past the last message and then fades. The fade duration here must stay in step
+ * with NEWSWIRE_HEADER_FADE_MS in src/client/newswire.ts, which counts the same interval in
+ * world ticks so it freezes and resumes with the crawl.
+ */
+#newswire .newswire-header {
+  transition: opacity 600ms linear;
+}
+
+/*
+ * Player names carry far less light than the white prose beside them: pure red emits 21% of
+ * white's luminance, blue and purple 18%. At the same size and weight that reads as a thinner,
+ * smaller typeface — the name looks like a different font, which it is not (the only property
+ * the ticker sets on a name span is `color`).
+ *
+ * A same-colour glow puts the weight back. text-shadow is chosen over `font-weight: bold`
+ * deliberately: it cannot affect glyph metrics. The strip is a fixed 67-column grid at exactly
+ * 9px per column, and a synthesised bold face on a system without a real Courier New Bold would
+ * widen the advance and pull the crawl out of alignment with the header above it. A shadow
+ * never participates in layout, so the grid is safe on every machine.
+ *
+ * `currentColor` means each name glows in its own team colour, so this needs no per-team rules.
+ */
+#newswire .newswire-name {
+  text-shadow: 0 0 1px currentColor;
 }

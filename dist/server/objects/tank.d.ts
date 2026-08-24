@@ -77,6 +77,21 @@ export declare class Tank extends BoloObject {
      */
     isAlly(other: Tank): boolean;
     /**
+     * Whether forest cover conceals this tank from `viewer`.
+     *
+     * Cover hides a tank from the ENEMY, never from its own side: a team keeps track of its own
+     * members under the trees, which is what makes cover a tactic rather than a way to lose your
+     * team mates. `isAlly` already folds in "is the viewer themselves", so a player always sees
+     * their own tank.
+     *
+     * A viewer with no tank of their own — before joining, or between death and respawn — is on
+     * nobody's side and sees no hidden tanks, which is the same default the call sites had before.
+     *
+     * The overview map has always worked this way ("Team mates are always known to their own
+     * team, forest cover included", overview.ts:522); this is the main view catching up.
+     */
+    isHiddenFrom(viewer: Tank | null | undefined): boolean;
+    /**
      * Adjust the firing range.
      */
     increaseRange(): void;

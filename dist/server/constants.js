@@ -17,4 +17,10 @@ export const TICK_LENGTH_MS = 20;
 /** Fog-of-war visible window size in CSS pixels. */
 export const FOG_WINDOW_W = 200;
 export const FOG_WINDOW_H = 200;
+/**
+ * Size, in tiles, of the box a tank sees for overview-map purposes — the fog window above
+ * plus a margin. Odd, so it centres on the tank's tile. Shared: the client uses it to draw
+ * the bright area, the server to accumulate each team's discovered map.
+ */
+export const OVERVIEW_SIGHT_TILES = 15;
 //# sourceMappingURL=constants.js.map

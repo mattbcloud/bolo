@@ -14,6 +14,7 @@ import { WebSocketServer } from 'ws';
 import { MapIndex } from './map_index';
 import * as helpers from '../helpers';
 import BoloWorldMixin, { BoloWorldMixin as BoloWorldMixinInterface } from '../world_mixin';
+import { newswireMessage, findLeadChange, teamActor, NewswireActor, NewswireKind } from '../newswire';
 import * as allObjectsModule from '../objects/all';
 import { Tank } from '../objects/tank';
 import WorldMap from '../world_map';
@@ -53,6 +54,8 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   tanks: any[] = [];
   emptyStartTime: number | null = null;  // Track when game became empty
   teamScoresTick: number = 0;  // Counter for sending team scores
+  // The team currently holding the lead, for the newswire. Null until someone scores.
+  leadTeam: number | null = null;
 
   // ── Team discovered map (overview) ───────────────────────────────────────
   // One byte per tile per team, recording every tile any tank on that team has been near.
@@ -378,6 +381,8 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       // else) — which is the difference between a platform/network fault and one of ours.
       console.log(`[PLAYER DISCONNECT] Player "${playerName}" disconnected (was on team ${teamName}, ` +
                   `tank idx=${ws.tank.idx}) — server saw code=${code}${reason ? ` reason=${reason}` : ''}`);
+      // Announce BEFORE destroy() — afterwards the tank is gone and the name with it.
+      this.newswire('player_quit', { name: playerName, team: ws.tank.team });
       this.destroy(ws.tank);
       console.log(`[PLAYERS] Total tanks remaining: ${this.tanks.length}`);
     }
@@ -597,6 +602,24 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     }
   }
 
+  /**
+   * Announce a game event on the newswire. Called only from authority code — game objects gate
+   * every emission on `this.world.authority`, because world_pillbox.update() and
+   * world_base.findSubject() also run on the network client for prediction, and netRestore()
+   * can roll object state back but cannot un-print a ticker line.
+   *
+   * The line is formatted here, once, into coloured segments; the team on each segment is the
+   * value at the moment the event fired and is never re-derived on the client.
+   *
+   * Strictly live: nothing is retained for replay. A backlog handed to a syncing client was
+   * tried and removed — a player walking into a game watched five things that had already
+   * happened scroll past as though they were happening now, which is worse than an empty strip.
+   * The wire reports what is happening, not what happened.
+   */
+  newswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null): void {
+    this.broadcast(JSON.stringify(newswireMessage(kind, actor, other)));
+  }
+
   // ── Team discovered map (overview) ─────────────────────────────────────────
 
   /**
@@ -793,6 +816,19 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       this.teamScoresTick = 0;
       const scores = this.calculateTeamScores();
 
+      // Announce a change at the top of the table. findLeadChange() applies the hysteresis, so
+      // this fires on real swings only — see NEWSWIRE_LEAD_MARGIN.
+      const newLeader = findLeadChange(scores, this.leadTeam);
+      if (newLeader !== null) {
+        const previous = this.leadTeam;
+        this.leadTeam = newLeader;
+        this.newswire(
+          'lead_change',
+          teamActor(newLeader),
+          previous === null ? null : teamActor(previous)
+        );
+      }
+
       // Record team scores to Firebase for stats
       statsService.recordTeamScores(scores).catch((error) => {
         // Silent fail - don't crash the game if stats recording fails
@@ -920,6 +956,10 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
           nick: client.nick,
         })
       );
+      // Announce the join from here, not from onJoinMessage(): that sets `synchronized = false`
+      // and broadcast() skips unsynchronized clients, so announcing there means the joiner is
+      // the one player who never sees their own line.
+      this.newswire('player_join', { name: client.nick || client.tank.name, team: client.tank.team });
     }
 
     // Clear newlyCreated AFTER packets have been sent

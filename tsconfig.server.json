@@ -7,12 +7,14 @@
     "outDir": "./dist/server",
     "rootDir": "./src"
   },
+  "exclude": ["**/*.test.ts"],
   "include": [
     "src/server/**/*",
     "src/constants.ts",
     "src/helpers.ts",
     "src/map.ts",
     "src/net.ts",
+    "src/newswire.ts",
     "src/object.ts",
     "src/objects/**/*",
     "src/sounds.ts",

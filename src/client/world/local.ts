@@ -22,6 +22,8 @@ import { A4State } from '../../brain/a4_state';
 
 // Visual effects
 import { DeathOverlay } from '../death_overlay';
+import { NewswireTicker } from '../newswire';
+import { formatNewswire, NewswireActor, NewswireKind } from '../../newswire';
 
 const allObjects = allObjectsModule;
 
@@ -66,6 +68,10 @@ export class BoloLocalWorld extends NetLocalWorld {
   private _deathOverlay: DeathOverlay | null = null;
   private _deathOverlayPrevArmour: number = 40;
 
+  // The newswire crawl. In local play this world IS the authority, so game objects call
+  // newswire() below and it goes straight into the ticker with no network in between.
+  newswireTicker: NewswireTicker | null = null;
+
   /**
    * Callback after resources have been loaded.
    */
@@ -76,13 +82,29 @@ export class BoloLocalWorld extends NetLocalWorld {
     this.player = this.spawn(Tank);
     this.player.spawn(0); // Initialize the tank with team 0
     this.renderer.initHud();
+    const newswireEl = document.getElementById('newswire');
+    if (newswireEl) this.newswireTicker = new NewswireTicker(newswireEl);
     this._deathOverlay = new DeathOverlay();
     vignette.destroy();
     this.loop.start();
   }
 
+  /**
+   * Announce a game event on the newswire. This world is the authority in local play, so the
+   * line is formatted and handed straight to the ticker — the same seam the server implements
+   * by broadcasting it.
+   */
+  newswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null): void {
+    this.newswireTicker?.add(formatNewswire(kind, actor, other), kind);
+  }
+
   tick(): void {
     super.tick();
+
+    // Step the newswire crawl one tick. Driven from the world tick and not rAF: a hidden tab
+    // suspends rAF entirely and freezes timers for tens of seconds, and the right degradation
+    // is a stalled crawl whose queue survives, not a dropped one.
+    this.newswireTicker?.tick();
 
     // ── Death overlay ─────────────────────────────────────────────────────
     if (this._deathOverlay && this.player) {

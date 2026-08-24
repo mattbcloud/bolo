@@ -395,8 +395,9 @@ export class BaseRenderer {
         // Skip null objects (destroyed objects remain as null in the array)
         if (!obj) continue;
 
-        // Skip hidden tanks (except for the local player's own tank)
-        if (obj.hidden && obj !== this.world.player) continue;
+        // Skip tanks that forest cover conceals from us. Team mates are never concealed —
+        // cover hides you from the enemy, not from your own side.
+        if (obj.hidden && obj.isHiddenFrom?.(this.world.player)) continue;
 
         if (obj.styled != null && obj.x != null && obj.y != null) {
           const [tx, ty] = obj.getTile();
@@ -642,11 +643,13 @@ export class BaseRenderer {
     this.initHudPlayers();
     this.initHudStats();
     this.initHudToolSelect();
+    this.initHudNewswire();
     this.initHudNotices();
     this.updateHud();
 
     // Make every panel draggable; saved positions are restored from localStorage.
-    const panels = ['tankStatus', 'pillStatus', 'baseStatus', 'playersStatus', 'statsStatus', 'tool-select'];
+    const panels = ['tankStatus', 'pillStatus', 'baseStatus', 'playersStatus', 'statsStatus',
+                    'tool-select', 'newswire'];
     for (const id of panels) {
       const el = document.getElementById(id);
       if (el) this.makeDraggable(el, id);
@@ -847,6 +850,17 @@ export class BaseRenderer {
     container.appendChild(deco);
 
     this.playerIndicators = [];
+  }
+
+  /**
+   * The newswire strip: an empty, framed panel that the NewswireTicker fills. The panel is
+   * created here — rather than by the ticker — so it exists in time to be registered with
+   * makeDraggable() above, alongside every other HUD panel.
+   */
+  initHudNewswire(): void {
+    const container = document.createElement('div');
+    container.id = 'newswire';
+    this.hud!.appendChild(container);
   }
 
   /**

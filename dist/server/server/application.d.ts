@@ -8,6 +8,7 @@
 import * as http from 'http';
 import { MapIndex } from './map_index';
 import { BoloWorldMixin as BoloWorldMixinInterface } from '../world_mixin';
+import { NewswireActor, NewswireKind } from '../newswire';
 import { ServerWorld } from '../villain/world/net/server';
 export declare class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterface {
     authority: boolean;
@@ -21,6 +22,10 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     tanks: any[];
     emptyStartTime: number | null;
     teamScoresTick: number;
+    leadTeam: number | null;
+    teamDiscovered: (Uint8Array | null)[];
+    teamDiscoveredPending: number[][];
+    teamDiscoveredTick: number;
     gameMode: 'open' | 'tournament' | 'strict';
     boloInit: () => void;
     addTank: (tank: any) => void;
@@ -76,6 +81,33 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
      * Simple helper to send a message to everyone (only synchronized clients).
      */
     broadcast(message: string): void;
+    /**
+     * Announce a game event on the newswire. Called only from authority code — game objects gate
+     * every emission on `this.world.authority`, because world_pillbox.update() and
+     * world_base.findSubject() also run on the network client for prediction, and netRestore()
+     * can roll object state back but cannot un-print a ticker line.
+     *
+     * The line is formatted here, once, into coloured segments; the team on each segment is the
+     * value at the moment the event fired and is never re-derived on the client.
+     *
+     * Strictly live: nothing is retained for replay. A backlog handed to a syncing client was
+     * tried and removed — a player walking into a game watched five things that had already
+     * happened scroll past as though they were happening now, which is worse than an empty strip.
+     * The wire reports what is happening, not what happened.
+     */
+    newswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null): void;
+    /**
+     * Widen each team's discovered map by what its living tanks can see this tick, and note
+     * the newly discovered tiles so they can be sent out as a delta. Vision is shared across
+     * a team, so one tank scouting reveals the ground for every team mate, present or not
+     * yet connected.
+     */
+    updateTeamDiscovered(): void;
+    /**
+     * A team's whole discovered map, packed one bit per tile and base64'd — about 11kB, sent
+     * once when a client synchronizes. Null when that team has never had a tank.
+     */
+    teamDiscoveredSnapshot(team: number): string | null;
     /**
      * We send critical updates every frame, and non-critical updates every other frame. On top of
      * that, non-critical updates may be dropped, if the client's hearbeats are interrupted.

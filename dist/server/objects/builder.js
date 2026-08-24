@@ -4,6 +4,7 @@
 import { distance, heading } from '../helpers';
 import BoloObject from '../object';
 import * as sounds from '../sounds';
+import { actorOf } from '../newswire';
 import MineExplosion from './mine_explosion';
 const { round, floor, ceil, min, cos, sin } = Math;
 export class Builder extends BoloObject {
@@ -126,6 +127,7 @@ export class Builder extends BoloObject {
     kill() {
         if (!this.world.authority)
             return;
+        this.world.newswire?.('builder_lost', actorOf(this.owner.$));
         this.soundEffect(sounds.MAN_DYING);
         this.order = this.states.parachuting;
         this.trees = 0;

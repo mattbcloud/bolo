@@ -6,6 +6,7 @@ import { TILE_SIZE_WORLD } from '../constants';
 import { distance } from '../helpers';
 import BoloObject from '../object';
 import * as sounds from '../sounds';
+import { actorOf, pillboxActor } from '../newswire';
 import Explosion from './explosion';
 import MineExplosion from './mine_explosion';
 import Shell from './shell';
@@ -226,6 +227,25 @@ export class Tank extends BoloObject {
         return other === this || (this.team !== 255 && other.team === this.team);
     }
     /**
+     * Whether forest cover conceals this tank from `viewer`.
+     *
+     * Cover hides a tank from the ENEMY, never from its own side: a team keeps track of its own
+     * members under the trees, which is what makes cover a tactic rather than a way to lose your
+     * team mates. `isAlly` already folds in "is the viewer themselves", so a player always sees
+     * their own tank.
+     *
+     * A viewer with no tank of their own — before joining, or between death and respawn — is on
+     * nobody's side and sees no hidden tanks, which is the same default the call sites had before.
+     *
+     * The overview map has always worked this way ("Team mates are always known to their own
+     * team, forest cover included", overview.ts:522); this is the main view catching up.
+     */
+    isHiddenFrom(viewer) {
+        if (!this.hidden)
+            return false;
+        return !viewer || !viewer.isAlly(this);
+    }
+    /**
      * Adjust the firing range.
      */
     increaseRange() {
@@ -247,9 +267,34 @@ export class Tank extends BoloObject {
             }
             // Track death and kill statistics
             this.deaths++;
-            // Credit the kill to the attacker (via attribution)
-            if (shell.attribution && shell.attribution.$ && shell.attribution.$ !== this) {
-                shell.attribution.$.kills++;
+            // Credit the kill to the attacker (via attribution). `shell.attribution` is the ONLY
+            // attribution path in the game, which is why the mine and sinking deaths below are
+            // separate, killer-less newswire kinds rather than invented kills.
+            const killer = shell.attribution && shell.attribution.$ && shell.attribution.$ !== this
+                ? shell.attribution.$
+                : null;
+            if (killer)
+                killer.kills++;
+            if (this.world.authority) {
+                // A shell whose owner is not its own attribution was fired by a map object rather than
+                // by a tank — the same discriminator shell.ts:163 uses — and since bases do not fire,
+                // that means a pillbox. It is announced as the work of a SIDE, not of the owner tank
+                // the engine credits: a pill chooses targets purely from `this.team`
+                // (world_pillbox.ts:245-247) and never consults its owner. Kill credit below is left
+                // alone, so the scoreboard is unaffected.
+                const source = shell.owner?.$;
+                if (source && source !== shell.attribution?.$) {
+                    // Victim first, pill's side second — pillboxActor() gives null for a neutral pill,
+                    // which the formatter reads as "no side to name".
+                    this.world.newswire?.('pill_kill', actorOf(this), pillboxActor(source.team));
+                }
+                else if (killer) {
+                    this.world.newswire?.('tank_kill', actorOf(killer), actorOf(this));
+                }
+                else {
+                    // Splash damage or a shot of one's own: "X was destroyed", never "X destroyed X".
+                    this.world.newswire?.('tank_kill', actorOf(this));
+                }
             }
             this.kill();
         }
@@ -279,6 +324,8 @@ export class Tank extends BoloObject {
             // Track death from mine
             this.deaths++;
             // TODO: Track who placed the mine for kill attribution
+            if (this.world.authority)
+                this.world.newswire?.('tank_mined', actorOf(this));
             this.kill();
         }
         else if (this.onBoat) {
@@ -450,22 +497,34 @@ export class Tank extends BoloObject {
                 this.y--;
             this.speed = max(0.0, this.speed - 1);
         }
-        // Also check if we're on top of another tank.
+        // Tank-tank collision: push apart so two tanks never stack on one tile. The old code nudged
+        // a single unit/tick, which was hopelessly overwhelmed when two tanks drove toward the same
+        // target (live 2v2: allies "beano"+"Jeans" pinned on the exact same base tile). Instead push
+        // each tank away from the other ALONG THE LINE BETWEEN THEIR CENTRES, proportional to the
+        // overlap, so both tanks settle ~COLLISION_DIST apart within a few ticks (winbolo's escalating
+        // nudge, done proportionally instead of with a running counter). Capped per tick so it can't
+        // teleport or shove a tank through a wall. Runs BEFORE move() (see update order), so the
+        // separation holds against the tanks' drive toward each other.
+        const COLLISION_DIST = 272; // ~1 tile — keep tank centres about a tile apart (no overlap)
+        const MAX_PUSH = 24; // > any land drive speed, so the push wins the tug-of-war
         for (const other of this.world.tanks) {
-            if (other !== this && other.armour !== 255) {
-                if (distance(this, other) <= 255) {
-                    // FIXME: winbolo actually does an increasing size of nudges while the tanks are colliding,
-                    // keeping a static/global variable. But perhaps this should be combined with tank sliding?
-                    if (other.x < this.x)
-                        this.x++;
-                    else
-                        this.x--;
-                    if (other.y < this.y)
-                        this.y++;
-                    else
-                        this.y--;
-                }
+            if (other === this || other.armour === 255)
+                continue;
+            const d = distance(this, other);
+            if (d > COLLISION_DIST)
+                continue;
+            let ox = this.x - other.x, oy = this.y - other.y;
+            if (ox === 0 && oy === 0) {
+                // Exactly coincident → the centre line is undefined. Split deterministically by identity
+                // so the two tanks push in OPPOSITE directions (idx differs), never the same way.
+                const s = (this.idx < other.idx) ? 1 : -1;
+                ox = s;
+                oy = 0;
             }
+            const len = Math.max(1, Math.hypot(ox, oy));
+            const push = Math.min(MAX_PUSH, (COLLISION_DIST - d) / 2 + 1);
+            this.x += Math.round((ox / len) * push);
+            this.y += Math.round((oy / len) * push);
         }
     }
     move() {
@@ -589,10 +648,13 @@ export class Tank extends BoloObject {
         // Track death from sinking
         this.deaths++;
         // FIXME: Somehow blame a killer, if instigated by a shot?
+        if (this.world.authority)
+            this.world.newswire?.('tank_sunk', actorOf(this));
         this.kill();
     }
     kill() {
-        // FIXME: Message the other players. Probably want a scoreboard too.
+        // The newswire announces the death; each caller knows how it happened (shell, mine, deep
+        // sea) and puts the line on the wire before calling here. FIXME: a scoreboard, still.
         this.dropPillboxes();
         this.x = this.y = null;
         this.armour = 255;

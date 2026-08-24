@@ -7,6 +7,7 @@ import { TILE_SIZE_WORLD } from '../constants';
 import { distance } from '../helpers';
 import BoloObject from '../object';
 import * as sounds from '../sounds';
+import { actorOf, pillboxActor } from '../newswire';
 import Explosion from './explosion';
 import MineExplosion from './mine_explosion';
 import Shell from './shell';
@@ -261,6 +262,25 @@ export class Tank extends BoloObject {
   }
 
   /**
+   * Whether forest cover conceals this tank from `viewer`.
+   *
+   * Cover hides a tank from the ENEMY, never from its own side: a team keeps track of its own
+   * members under the trees, which is what makes cover a tactic rather than a way to lose your
+   * team mates. `isAlly` already folds in "is the viewer themselves", so a player always sees
+   * their own tank.
+   *
+   * A viewer with no tank of their own — before joining, or between death and respawn — is on
+   * nobody's side and sees no hidden tanks, which is the same default the call sites had before.
+   *
+   * The overview map has always worked this way ("Team mates are always known to their own
+   * team, forest cover included", overview.ts:522); this is the main view catching up.
+   */
+  isHiddenFrom(viewer: Tank | null | undefined): boolean {
+    if (!this.hidden) return false;
+    return !viewer || !viewer.isAlly(this);
+  }
+
+  /**
    * Adjust the firing range.
    */
   increaseRange(): void {
@@ -284,9 +304,31 @@ export class Tank extends BoloObject {
       }
       // Track death and kill statistics
       this.deaths++;
-      // Credit the kill to the attacker (via attribution)
-      if (shell.attribution && shell.attribution.$ && shell.attribution.$ !== this) {
-        shell.attribution.$.kills++;
+      // Credit the kill to the attacker (via attribution). `shell.attribution` is the ONLY
+      // attribution path in the game, which is why the mine and sinking deaths below are
+      // separate, killer-less newswire kinds rather than invented kills.
+      const killer = shell.attribution && shell.attribution.$ && shell.attribution.$ !== this
+        ? shell.attribution.$
+        : null;
+      if (killer) killer.kills++;
+      if (this.world.authority) {
+        // A shell whose owner is not its own attribution was fired by a map object rather than
+        // by a tank — the same discriminator shell.ts:163 uses — and since bases do not fire,
+        // that means a pillbox. It is announced as the work of a SIDE, not of the owner tank
+        // the engine credits: a pill chooses targets purely from `this.team`
+        // (world_pillbox.ts:245-247) and never consults its owner. Kill credit below is left
+        // alone, so the scoreboard is unaffected.
+        const source = shell.owner?.$;
+        if (source && source !== shell.attribution?.$) {
+          // Victim first, pill's side second — pillboxActor() gives null for a neutral pill,
+          // which the formatter reads as "no side to name".
+          this.world.newswire?.('pill_kill', actorOf(this), pillboxActor(source.team));
+        } else if (killer) {
+          this.world.newswire?.('tank_kill', actorOf(killer), actorOf(this));
+        } else {
+          // Splash damage or a shot of one's own: "X was destroyed", never "X destroyed X".
+          this.world.newswire?.('tank_kill', actorOf(this));
+        }
       }
       this.kill();
     } else {
@@ -315,6 +357,7 @@ export class Tank extends BoloObject {
       // Track death from mine
       this.deaths++;
       // TODO: Track who placed the mine for kill attribution
+      if (this.world.authority) this.world.newswire?.('tank_mined', actorOf(this));
       this.kill();
     } else if (this.onBoat) {
       this.onBoat = false;
@@ -647,11 +690,13 @@ export class Tank extends BoloObject {
     // Track death from sinking
     this.deaths++;
     // FIXME: Somehow blame a killer, if instigated by a shot?
+    if (this.world.authority) this.world.newswire?.('tank_sunk', actorOf(this));
     this.kill();
   }
 
   kill(): void {
-    // FIXME: Message the other players. Probably want a scoreboard too.
+    // The newswire announces the death; each caller knows how it happened (shell, mine, deep
+    // sea) and puts the line on the wire before calling here. FIXME: a scoreboard, still.
     this.dropPillboxes();
     this.x = this.y = null;
     this.armour = 255;
