@@ -17,6 +17,7 @@ import {
 } from '../../constants';
 import * as sounds from '../../sounds';
 import TEAM_COLORS from '../../team_colors';
+import { PillTooltip, carriedPillActor } from '../pill_tooltip';
 
 const { min: mathMin, max: mathMax, round: mathRound, cos: mathCos, sin: mathSin, PI: mathPI, sqrt: mathSqrt } = Math;
 
@@ -57,6 +58,9 @@ export class BaseRenderer {
   hud?: HTMLDivElement;
   tankIndicators?: Record<string, HTMLDivElement>;
   pillIndicators?: Array<[HTMLDivElement, any]>;
+  pillTooltip?: PillTooltip;
+  hoveredPillIndex: number | null = null;
+  hoveredPillCursor: [number, number] = [0, 0];
   baseIndicators?: Array<[HTMLDivElement, any]>;
   playerIndicators?: Array<HTMLDivElement>;
   currentTool: string = 'forest';
@@ -654,6 +658,13 @@ export class BaseRenderer {
       const el = document.getElementById(id);
       if (el) this.makeDraggable(el, id);
     }
+
+    // The pillbox tooltip is deliberately not in that list: it is a transient popup positioned
+    // against whichever indicator is hovered, not a panel with a place of its own to remember.
+    const tooltip = document.createElement('div');
+    tooltip.id = 'pillTooltip';
+    this.hud!.appendChild(tooltip);
+    this.pillTooltip = new PillTooltip(tooltip);
   }
 
   /**
@@ -806,12 +817,56 @@ export class BaseRenderer {
     deco.className = 'deco';
     container.appendChild(deco);
 
-    this.pillIndicators = this.world.map.pills.map((pill: any) => {
+    this.pillIndicators = this.world.map.pills.map((pill: any, index: number) => {
       const node = document.createElement('div');
       node.className = 'pill';
+
+      // Only the index is captured. The pill itself is resolved at hover time, because this
+      // array is rebuilt on every object create/destroy and the reference here goes stale —
+      // the same reason updateHud() re-reads world.map.pills by index rather than trusting the
+      // cached tuple below.
+      //
+      // Both enter and move are needed: move keeps the tooltip under the pointer, and enter
+      // covers the case where the cursor never moves again after arriving — dragging the panel
+      // out from under a still mouse, say.
+      const track = (e: MouseEvent) => {
+        this.hoveredPillIndex = index;
+        this.hoveredPillCursor = [e.clientX, e.clientY];
+        this.updatePillTooltip();
+      };
+      node.addEventListener('mouseenter', track);
+      node.addEventListener('mousemove', track);
+      node.addEventListener('mouseleave', () => {
+        this.hoveredPillIndex = null;
+        this.pillTooltip?.hide();
+      });
+
       container.appendChild(node);
       return [node, pill];
     });
+  }
+
+  /**
+   * Show the carrier's name beside the pointer, or hide the tooltip.
+   *
+   * Called on pointer movement and again from updateHud() every frame, so the name stays honest
+   * if the pill is stolen, dropped or picked up while the cursor rests on its indicator.
+   */
+  updatePillTooltip(): void {
+    const tooltip = this.pillTooltip;
+    const index = this.hoveredPillIndex;
+    if (!tooltip) return;
+    if (index === null) {
+      tooltip.hide();
+      return;
+    }
+
+    const actor = carriedPillActor(this.world.map.pills[index]);
+    if (!actor) {
+      tooltip.hide();
+      return;
+    }
+    tooltip.show(this.hoveredPillCursor[0], this.hoveredPillCursor[1], actor);
   }
 
   /**
@@ -1058,6 +1113,7 @@ export class BaseRenderer {
         const color = TEAM_COLORS[pill.team] || { r: 112, g: 112, b: 112 };
         node.style.backgroundColor = `rgb(${color.r},${color.g},${color.b})`;
       }
+      this.updatePillTooltip();
     }
 
     // Bases.

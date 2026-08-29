@@ -146,6 +146,37 @@ canvas {
 #pillStatus .pill[status='healthy'] { background-position: -80px 0px; }
 #pillStatus .pill[status='carried'] { background-position: -96px 0px; }
 
+/*
+ * The name of the player carrying a pillbox, shown beside the pointer while its indicator is
+ * hovered. It follows the cursor, so its position comes from JS (src/client/pill_tooltip.ts) and
+ * everything here is chrome.
+ *
+ * NOTE: this file is not the one the page loads — index.html links css/bolo-bundle.css, a
+ * comment-stripped concatenation of this file and jquery.ui.theme.css that is maintained by hand.
+ * A rule added here has no effect until it is added there too.
+ *
+ * `pointer-events` must stay off. `#hud > *` turns them on, and the tooltip sits a few pixels from
+ * the cursor, so with them on it would take the hover away from the pill underneath and flicker
+ * between the two.
+ *
+ * The name's colour is set inline, per team, by `teamTextColor()`. The glow is the newswire's, for
+ * the newswire's reason: a saturated team colour carries far less light than white and reads as a
+ * thinner face at the same size, and a shadow puts the weight back without touching glyph metrics.
+ */
+#pillTooltip {
+  position: absolute;
+  z-index: 1;
+  padding: 2px 4px;
+  border: 2px solid #c0c0f0;
+  background: black;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 13px;
+  white-space: pre;
+  pointer-events: none;
+  text-shadow: 0 0 1px currentColor;
+}
+
 #baseStatus {
   bottom: 8px; left: 149px;
 }
