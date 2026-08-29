@@ -206,6 +206,7 @@ export class BoloClientWorld extends ClientWorld {
   renderer!: any;
   loop!: any;
   joinDialog!: HTMLElement | null;
+  _joinPending: boolean = false;   // a join is sent and the server has not answered yet
   _gameId: string | null = null;   // which game this socket is for; needed to rejoin after a drop
   chatMessages!: HTMLElement;
   chatContainer!: HTMLElement;
@@ -1200,6 +1201,40 @@ export class BoloClientWorld extends ClientWorld {
         margin-left: 20px;
       }
 
+      /*
+       * The plain alert box — an .standard-dialog holding .dialog-text lines, the shape of the
+       * Finder's About box. Used by showTransientAlert().
+       *
+       * .standard-dialog is copied from system.css v0.1.11 verbatim. The other three are NOT in
+       * the library: .dialog-text, .center and .scale-down are utility classes from the system.css
+       * documentation pages, so they have to be written here or the markup renders as bare text on
+       * a white rectangle. .dialog-text takes the font this app already uses for dialog chrome,
+       * since the real Chicago webfont is not vendored.
+       */
+      .standard-dialog {
+        background-color: var(--primary);
+        border: 2px solid;
+        box-shadow: 2px 2px;
+        padding: 10px;
+      }
+
+      .dialog-text {
+        font-family: 'Chicago', 'Charcoal', sans-serif;
+        font-size: 16px;
+        font-weight: normal;
+        line-height: 1.4;
+        margin: 0;
+      }
+
+      .center {
+        text-align: center;
+      }
+
+      .scale-down {
+        transform: scale(0.8);
+        transform-origin: center;
+      }
+
       .field-row + .field-row {
         margin-top: 6px;
       }
@@ -1290,6 +1325,64 @@ export class BoloClientWorld extends ClientWorld {
     w.gtag = function gtag() { w.dataLayer.push(arguments); };
     w.gtag('js', new Date());
     w.gtag('config', GA_ID);
+  }
+
+  /**
+   * A system.css alert that says its piece and leaves: two seconds on screen, then a fade.
+   *
+   * Deliberately not modal and not dismissable. It carries no choice, only a reason, and it is
+   * centred over the dialog it is talking about — so pointer-events stays off, and the player can
+   * go straight back to the name field underneath without waiting for the box to clear.
+   *
+   * One line, no heading: the sentence is the whole message, and the box shrinks to fit it.
+   */
+  showTransientAlert(text: string, holdMs: number = 2000): void {
+    this.addSystemCSSStyles();
+
+    // One at a time — a second refusal replaces the first instead of stacking on it.
+    document.getElementById('transient-alert')?.remove();
+
+    // The wrapper carries the placement, so the box inside stays the plain system.css element
+    // and .scale-down keeps its own transform instead of fighting a centring one.
+    const wrapper = document.createElement('div');
+    wrapper.id = 'transient-alert';
+    wrapper.setAttribute('role', 'alert');
+    wrapper.style.cssText = `
+      position: fixed;
+      z-index: 10001;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      opacity: 1;
+      transition: opacity 400ms linear;
+    `;
+    // No width, and nowrap: a fixed-position box with neither shrinks to fit its content, so the
+    // frame is exactly as wide as the one line of text it holds — whatever length of name lands
+    // in it — instead of the text being fitted to a box chosen in advance.
+    wrapper.innerHTML = `
+      <div class="standard-dialog center scale-down" style="white-space:nowrap;">
+        <p class="dialog-text"></p>
+      </div>
+    `;
+    // textContent, not innerHTML: the text carries a name typed by another player, and a name is
+    // never markup.
+    (wrapper.querySelector('p') as HTMLElement).textContent = text;
+
+    document.body.appendChild(wrapper);
+
+    // Centred over the join dialog. That dialog is draggable, so its live rect is the only thing
+    // that knows where it is; with no dialog to cover, the viewport centre is the same place it
+    // would have been.
+    const rect = this.joinDialog?.getBoundingClientRect();
+    const cx = rect && rect.width ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const cy = rect && rect.height ? rect.top + rect.height / 2 : window.innerHeight / 2;
+    wrapper.style.left = `${Math.round(cx)}px`;
+    wrapper.style.top = `${Math.round(cy)}px`;
+
+    setTimeout(() => {
+      wrapper.style.opacity = '0';
+      // Removed only after the fade has run, so the element cannot flicker back on a re-show.
+      setTimeout(() => wrapper.remove(), 400);
+    }, holdMs);
   }
 
   /**
@@ -2096,19 +2189,6 @@ export class BoloClientWorld extends ClientWorld {
     }
     this.loop.start();
 
-    // Count players in each team
-    const teamCounts = [0, 0, 0, 0, 0, 0]; // red, blue, yellow, green, orange, purple
-    for (const tank of this.tanks) {
-      if (tank.team >= 0 && tank.team < 6) {
-        teamCounts[tank.team]++;
-      }
-    }
-
-    // Find team with fewest players for default selection
-    const teamNames = ['red', 'blue', 'yellow', 'green', 'orange', 'purple'];
-    let minCount = Math.min(...teamCounts);
-    let disadvantaged = teamNames[teamCounts.indexOf(minCount)];
-
     // Coming back from a dropped connection: rejoin as who we were, without making the player
     // retype anything. Only for THIS game — a rejoin record for a different game must not
     // hijack a deliberate join somewhere else.
@@ -2141,6 +2221,31 @@ export class BoloClientWorld extends ClientWorld {
       }, 30000);
       return;
     }
+
+    this.showJoinDialog();
+  }
+
+  /**
+   * Build and show the nick/team dialog.
+   *
+   * Split out of synchronized() because it is shown twice: once when the game state arrives, and
+   * again if the server refuses the name we asked for — see onJoinRejected().
+   */
+  showJoinDialog(): void {
+    if (this.joinDialog) return;
+
+    // Count players in each team
+    const teamCounts = [0, 0, 0, 0, 0, 0]; // red, blue, yellow, green, orange, purple
+    for (const tank of this.tanks) {
+      if (tank.team >= 0 && tank.team < 6) {
+        teamCounts[tank.team]++;
+      }
+    }
+
+    // Find team with fewest players for default selection
+    const teamNames = ['red', 'blue', 'yellow', 'green', 'orange', 'purple'];
+    let minCount = Math.min(...teamCounts);
+    let disadvantaged = teamNames[teamCounts.indexOf(minCount)];
 
     const dialogContainer = document.createElement('div');
     dialogContainer.innerHTML = JOIN_DIALOG_TEMPLATE;
@@ -2256,6 +2361,9 @@ export class BoloClientWorld extends ClientWorld {
 
   join(): void {
     if (!this.joinDialog) return;
+    // The dialog now stays up while the server decides, so Join Game (or Return) can be hit
+    // again before the answer arrives. One join per answer.
+    if (this._joinPending) return;
 
     const nickField = this.joinDialog.querySelector('#join-nick-field') as HTMLInputElement;
     const nick = nickField?.value;
@@ -2299,12 +2407,10 @@ export class BoloClientWorld extends ClientWorld {
     // mourned. Recorded per-tab so each of several windows returns as itself.
     if (this._gameId) this._rememberRejoin(this._gameId, nick, team);
 
-    // Remove dialog
-    const parent = this.joinDialog.parentElement;
-    const overlay = parent?.querySelector('div[style*="z-index: 9999"]');
-    if (overlay) overlay.remove();
-    this.joinDialog.remove();
-    this.joinDialog = null;
+    // The dialog stays up until the server accepts us — receiveWelcome() takes it down. The
+    // server can refuse this name (someone already has it), and leaving the dialog in place
+    // means the refusal lands on a form that is still open, with nothing to rebuild.
+    this._joinPending = true;
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ command: 'join', nick, team }));
@@ -2312,10 +2418,39 @@ export class BoloClientWorld extends ClientWorld {
     this.input.focus();
   }
 
+  /** Take down the join dialog and its backdrop, once we are actually in the game. */
+  _dismissJoinDialog(): void {
+    this._joinPending = false;
+    if (!this.joinDialog) return;
+    const parent = this.joinDialog.parentElement;
+    const overlay = parent?.querySelector('div[style*="z-index: 9999"]');
+    if (overlay) overlay.remove();
+    this.joinDialog.remove();
+    this.joinDialog = null;
+  }
+
+  /**
+   * The server refused the name we asked for.
+   *
+   * Both join paths land here. If the dialog is still up (the player just clicked Join Game) it
+   * stays up and the alert appears over it. If it is not — the reconnect flow rejoins on its own
+   * with a remembered name, and there is no dialog for that — one is opened, so the refusal is
+   * something the player can act on rather than a silent failure to enter the game.
+   */
+  onJoinRejected(data: any): void {
+    this._joinPending = false;
+    this.showJoinDialog();
+    const name = typeof data?.nick === 'string' ? data.nick : '';
+    this.showTransientAlert(`${name} is already in this game. Choose another name.`);
+  }
+
   /**
    * Callback after the welcome message was received.
    */
   receiveWelcome(tank: any): void {
+    // We are in. Only now does the join dialog come down — the server may have refused the name
+    // instead, and that answer arrives on this same socket.
+    this._dismissJoinDialog();
     this.player = tank;
     this.renderer.initHud();
     this._deathOverlay = new DeathOverlay();
@@ -3274,6 +3409,9 @@ export class BoloClientWorld extends ClientWorld {
         // team on each segment is the value captured when the event fired, so it stays correct
         // even after the actor has died, respawned, or rejoined on another team.
         this.newswireTicker?.add(data.segments, data.kind);
+        break;
+      case 'joinRejected':
+        this.onJoinRejected(data);
         break;
       case 'discovered':
         // Team's discovered map for the overview (unrelated to the renderer's fog overlay).

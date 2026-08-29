@@ -15,6 +15,7 @@ import { MapIndex } from './map_index';
 import * as helpers from '../helpers';
 import BoloWorldMixin, { BoloWorldMixin as BoloWorldMixinInterface } from '../world_mixin';
 import { newswireMessage, findLeadChange, teamActor, NewswireActor, NewswireKind } from '../newswire';
+import { isNickTaken, normalizeNick } from '../nick';
 import * as allObjectsModule from '../objects/all';
 import { Tank } from '../objects/tank';
 import WorldMap from '../world_map';
@@ -529,20 +530,37 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
    * that this new tank is his.
    */
   onJoinMessage(ws: any, message: any): void {
+    // These return now. Without it an invalid nick was only logged, and the join went ahead
+    // anyway — spawning a tank named `undefined`.
     if (typeof message.nick !== 'string' || message.nick.length > 20) {
-      this.onError(ws, new Error('Client specified invalid nickname.'));
+      return this.onError(ws, new Error('Client specified invalid nickname.'));
     }
     if (typeof message.team !== 'number' || message.team < 0 || message.team > 5) {
-      this.onError(ws, new Error('Client specified invalid team.'));
+      return this.onError(ws, new Error('Client specified invalid team.'));
+    }
+
+    // The name is stored trimmed, so the comparison and the name everyone sees are the same
+    // string. The client already refuses an empty field; this covers a hand-made message.
+    const nick = normalizeNick(message.nick);
+    if (!nick) {
+      return this.onError(ws, new Error('Client specified an empty nickname.'));
+    }
+
+    // One name to a game — see src/nick.ts for what counts as the same name, and why a player
+    // reconnecting inside the reaper's window is refused their own name rather than handed it.
+    if (isNickTaken(this.tanks, nick)) {
+      console.log(`[JOIN REJECTED] "${nick}" is already in use — asking the client for another name.`);
+      ws.send(JSON.stringify({ command: 'joinRejected', reason: 'nickTaken', nick }));
+      return;
     }
 
     ws.tank = this.spawn(Tank, message.team);
-    ws.tank.name = message.nick;
-    ws.nick = message.nick;
+    ws.tank.name = nick;
+    ws.nick = nick;
 
     // Log player join with details
     const teamName = getTeamName(message.team);
-    console.log(`[PLAYER JOIN] Player "${message.nick}" joined team ${teamName} (tank idx=${ws.tank.idx}, tank_idx=${ws.tank.tank_idx})`);
+    console.log(`[PLAYER JOIN] Player "${nick}" joined team ${teamName} (tank idx=${ws.tank.idx}, tank_idx=${ws.tank.tank_idx})`);
     console.log(`[PLAYERS] Total tanks in game: ${this.tanks.length}`);
     console.log(`[PLAYERS] Connected players: ${this.tanks.map((t: any) => `${t.name || 'Unknown'} (team=${getTeamName(t.team)})`).join(', ')}`);
 
