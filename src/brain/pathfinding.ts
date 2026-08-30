@@ -600,12 +600,35 @@ export function turnTowardsDir(
   targetDir: number,
   tolerance = 5,
 ): number {
-  const facing = currentDir & 0xFF;
-  const target = targetDir & 0xFF;
+  // Facing is used at FULL precision. buildBrainState hands us the engine's float direction
+  // (aindy_interface.ts:750) and every consumer used to truncate it with `& 0xFF`, throwing away up
+  // to a whole direction unit — 44 world units of lateral error at 7 tiles, on its own wider than
+  // the gap an edge-graze past cover has to thread.
+  const facing = ((currentDir % 256) + 256) % 256;
+  const target = ((targetDir % 256) + 256) % 256;
   // Signed byte subtraction (simulate 68k MOVE.B + SUB.W behaviour)
   let delta = facing - target;
   if (delta > 127)  delta -= 256;
   if (delta < -128) delta += 256;
+
+  // DEADBAND — do not command a turn the tank would overshoot.
+  //
+  // Tank.turn (objects/tank.ts) turns `getTankTurn × 2.6555` per tick, HALVED until turnSpeedup
+  // reaches 10, and a reversal resets that ramp. So the smallest step a tank can take is
+  // rate×2.6555/2 — 1.33 units on road. Asked to close an error smaller than that, bang-bang
+  // control swings past it, reverses, resets the ramp and swings back: a limit cycle that never
+  // settles and never satisfies a tolerance of 0. Measured, the commanded direction reversed on 19%
+  // of turning ticks, and the aim was never still enough to place a shot at a pill's edge.
+  //
+  // Below half a step, turning makes the error WORSE than standing still, so standing still is the
+  // accurate move. Rates mirror TERRAIN_TYPE_ATTRIBUTES in world_map.ts, indexed by the brain's
+  // terrain code; anything unknown assumes the fastest (road/grass) rate, which errs toward a wider
+  // deadband rather than a hunting one.
+  const TURN_RATE = [0, 0.25, 0.25, 0.25, 1, 0.5, 0.25, 1, 0, 1, 0.5];
+  const terrain = a4.worldMap[((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF)] & 0x0F;
+  const stepPerTick = (TURN_RATE[terrain] ?? 1) * 2.6555 / 2;
+  const deadband = Math.max(tolerance, stepPerTick / 2);
+  if (Math.abs(delta) <= deadband) return 1;
 
   // Direction convention: 0=East, 64=North, 128=West, 192=South.
   // CW on screen  = direction DECREASES (East→South→West→North) → turningClockwise   = 0x08
