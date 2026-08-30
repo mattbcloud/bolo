@@ -350,14 +350,6 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
     const canCover = buildable && (canPlantPill || canBuildWall || harvestTile !== null);
     if (!canCover) return false;                            // no cover possible → engage without it
 
-    // Don't sit and build cover on a tile ANOTHER threat can already hit. Setting up cover means
-    // idling for the builder's long round-trip; if the standoff is exposed (another pill/tank in
-    // range — the target pill is out of range here by construction), the tank just bleeds armour
-    // and refuel-loops without ever engaging (live GetPill<->Refuel stall). Charge-and-capture
-    // instead. Cover is reserved for genuinely safe/isolated pills, where dangerMap is clear.
-    const tIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
-    if (a4.dangerMap[tIdx] !== 0) return false;             // exposed standoff → engage without cover
-
     if (pillDistPh > ENGAGE_MAX) return false;              // too far to start a build → APPROACH first
                                                             // (builder stays aboard; the normal nav
                                                             // closes the distance, then we build here)
@@ -368,6 +360,22 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
       retreat(RETREAT_TO);
       return true;
     }
+
+    // Don't sit and build cover on a tile ANOTHER threat can already hit. Setting up cover means
+    // idling for the builder's long round-trip; if the standoff is exposed (another pill/tank in
+    // range), the tank bleeds armour and refuel-loops without ever engaging (live GetPill<->Refuel
+    // stall). Charge-and-capture instead — cover is for genuinely safe/isolated pills.
+    //
+    // This test sits BELOW the retreat deliberately. Above it, its own premise — "the target pill
+    // is out of range here by construction" — is false: an engagement STARTS with the tank inside
+    // the target's range, so the target itself set dangerMap and this returned false, switching the
+    // cover method off at exactly the moment the tank stood in the kill zone. What followed was a
+    // toe-to-toe trade the tank cannot win (a pill kills it in 8 hits and takes ~15 to die), and the
+    // retreat just above — the thing that would have taken it out of range — was never reached.
+    // Below the retreat the premise holds and the question is the one worth asking: is anything
+    // ELSE covering this standoff?
+    const tIdx = ((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF);
+    if (a4.dangerMap[tIdx] !== 0) return false;             // exposed standoff → engage without cover
     // Safely out of range: send the builder to place the cover NEXT TO THE PILL. Prefer planting
     // the captured pillbox; fall back to a brick; harvest a tree first if we're short.
     if (tank.builderInTank && !a4.pendingBuilderAction) {

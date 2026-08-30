@@ -580,15 +580,23 @@ export function getManGoalCost(a4: A4State, state: BrainState): number {
     return 10;
   }
 
-  // Rough distance-based cost (path cost would come from ManTicksFromPath)
+  // Rough distance-based cost (path cost would come from ManTicksFromPath).
+  //
+  // Measured from the TANK to the man. It used to measure `man - tank.altX/altY`, but altX/altY IS
+  // the man's own position — buildBrainState sets `tank.altX = bx` and `manPtr.x = bx` from the same
+  // builder (aindy_interface.ts:786-793) — so the distance was man-to-man, always exactly 0. That
+  // took the `altDist === 0` exit every time, pinning GetMan at cost 1 for as long as the builder
+  // was out of the tank, and leaving the two branches below unreachable. A flat 1 outranks or ties
+  // everything: after a death (which puts the builder out), the tank would lock onto GetMan and
+  // hold it through the goal hysteresis — walking past a neutralised pill that was free to collect,
+  // because at cost 1 nothing could ever be STRICTLY cheaper.
+  const dManX = man.x - state.tank.x;
+  const dManY = man.y - state.tank.y;
   const altDist = man.active
-    ? u16(Math.round(Math.sqrt(
-        Math.pow(man.x - state.tank.altX, 2) +
-        Math.pow(man.y - state.tank.altY, 2)
-      )))
+    ? u16(Math.round(Math.sqrt(dManX * dManX + dManY * dManY)))
     : 0xFFFF;
 
-  if (altDist === 0) return 1;     // unreachable: mark urgent
+  if (altDist === 0) return 1;     // man is on top of us — grab him
   if (altDist > 5000) return 0xFFFF;
 
   return u16(altDist >> 8);        // tile-scale cost
