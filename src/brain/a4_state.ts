@@ -1205,6 +1205,25 @@ export class A4State {
    *  exposure. An armour drop is the ground-truth signal to bail into a cool pass. -1 = unseen. */
   coverPrevArmour = -1;
 
+  /** Cached cover firing slot (cover_solver.solveCoverSlot) — the WORLD point to fire the target
+   *  pill from. Sub-tile: which phase of the tile the tank stands on decides whether its shot
+   *  threads past the cover, so a tile is not a fine enough answer. The search is far too
+   *  expensive to redo every tick, and its inputs only change when the pill or its cover does,
+   *  so it is keyed by coverSlotKey = (pill tile, cover tile, cover terrain) and otherwise held.
+   *  coverSlotX < 0 = unsolved. */
+  coverSlotX = -1;
+  coverSlotY = -1;
+  /** Aim direction and window width at the cached slot (diagnostics; the live band is recomputed
+   *  at the tank's ACTUAL position each tick, which is what the aim and fire gate use). */
+  coverSlotAim = 0;
+  coverSlotBand = 0;
+  coverSlotKey = -1;
+  /** Tick the tank first started trying to reach a usable firing position for this slot. If it
+   *  can never get there (blocked, shoved off, no holdable window anywhere it can stand) the
+   *  cover method would hold it in place forever — the freeze class this brain keeps rediscovering
+   *  — so past a timeout it abandons cover and charges instead. 0 = not trying. */
+  coverSlotSinceTick = 0;
+
   /** A4[13895] byte — NewRefuel: sub-state machine variable */
   newRefuelState = 0;
 

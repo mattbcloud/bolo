@@ -21,6 +21,7 @@
 
 import { A4State } from './a4_state.js';
 import type { BrainState } from './aindy_interface.js';
+import { Goal } from './aindy_interface.js';
 import {
   directionTo, computeDistanceBetween, turnTowardsXY,
   computeDirectionDelta, locationFromDir,
@@ -32,6 +33,15 @@ import { setRouteCosts } from './brain_init.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CLOSE_RANGE = 256;  // 1 tile in BWorld units — fine-steering threshold
+
+// Enemy-pill fire, as priced by computePath. dangerMap holds tiers 1-3 (outer ring to
+// point-blank); terrain runs road 3 / grass 4 / swamp 16 / water 19 and the wall-proximity
+// penalty is 30 per adjacent obstacle, so 25 a tier sits alongside those rather than dwarfing
+// them. The exempt radius only has to be big enough that a destination inside a pill's reach
+// stays reachable — make it generous and it swallows the whole approach, which is the entire
+// effect being bought here.
+const DANGER_WEIGHT = 25;
+const DANGER_EXEMPT_RADIUS = 2;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // A* PATHFINDER — Full 256×256 map, single-shot
@@ -108,6 +118,20 @@ function computePath(
   // f = g + h where h = Chebyshev distance (admissible for 8-dir movement)
   const heap = a4.navHeap;
   let heapSize = 0;
+
+  // Enemy pill fire is a routing cost — except for the goals whose whole job is to walk into it.
+  //
+  // Nothing here has ever costed danger. (`examine()` in routing.ts carries a danger term, but
+  // that A* is vestigial — worldRouteFind/localRouteFind have no callers — and setGlobals zeroes
+  // its enable flag regardless.) Measured over 12 seeds, 22 of 24 deaths happen inside a live
+  // pill's reach, and two thirds of them are on GetBase and Refuel: goals with no cover logic at
+  // all, which simply drive through a pill's range because nothing ever told the router it costs
+  // anything. Worse, a pill we have been grinding has had `aggravate()` halve its reload.
+  //
+  // GetPill and FixPill are exempt outright: closing on a pillbox IS their job, and the cover
+  // method already chooses the standoff and the firing slot. Charging them for it would only
+  // teach the brain to refuse the pills it is trying to take.
+  const engagingPill = a4.currentGoal === Goal.GET_PILL || a4.currentGoal === Goal.FIX_PILL;
 
   const h0 = Math.max(Math.abs(startTileX - destReTileX), Math.abs(startTileY - destReTileY));
   heap[heapSize++] = (h0 << 16) | startIdx;
@@ -198,7 +222,19 @@ function computePath(
         if (isObstacle) wallPenalty += 30;
       }
 
-      const newG = currentG + tileCost + wallPenalty;
+      // Danger is a cost on getting somewhere, never a veto on being there — the tiles right by
+      // the destination are exempt so a route that must END in a pill's reach still plans.
+      let dangerPenalty = 0;
+      if (!engagingPill) {
+        const dg = a4.dangerMap[nIdx];
+        if (dg > 0 &&
+            (Math.abs(nx - destReTileX) > DANGER_EXEMPT_RADIUS ||
+             Math.abs(ny - destReTileY) > DANGER_EXEMPT_RADIUS)) {
+          dangerPenalty = dg * DANGER_WEIGHT;
+        }
+      }
+
+      const newG = currentG + tileCost + wallPenalty + dangerPenalty;
       if (newG >= gCost[nIdx]) continue;
 
       gCost[nIdx] = newG;

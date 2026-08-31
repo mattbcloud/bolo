@@ -22,8 +22,12 @@
 
 import { A4State } from './a4_state.js';
 import type { BrainState, PillState, BaseState, EnemyTankState } from './aindy_interface.js';
-import { macRandom, tickCount, byte } from './aindy_interface.js';
+import { macRandom, tickCount, byte, Terrain } from './aindy_interface.js';
 import { directionTo, computeDistanceBetween, locationFromDir, turnTowardsDir } from './pathfinding.js';
+import {
+  solveCoverSlot, coverAimBand, coverShotHits, pillShotReaches, holdableBand,
+  type CoverSlot,
+} from './cover_solver.js';
 import { navigateToCoords as _navigateToCoords, setSpeed as _setSpeed } from './navigation.js';
 // _navigateToCoords now has signature (a4, targetX, targetY, mode) — no state needed
 import {
@@ -112,6 +116,8 @@ const PLACE_PILL_TREES = 1;       // builder 'pillbox' cost: plant a carried pil
 const COVER_WALL_TREES = 2;       // builder 'building' cost for one wall tile
 const COVER_FINISH_ARMOUR = 8;    // finish a pill from cover once its armour drops to this
 const COVER_TREE_TARGET = 6;      // stock this many trees before engaging (≈3 walls for rebuilds)
+const COVER_SLOT_TOL = 48;        // close enough to a firing slot: the window is re-tested where we stand
+const COVER_SLOT_TIMEOUT = 600;   // ticks to reach a usable firing position before abandoning cover
 
 /**
  * Cover method (validated in __sim__: maintained wall + edge-aim → kill pill taking
@@ -168,72 +174,68 @@ function _maintainCover(a4: A4State, state: BrainState, pill: PillState): void {
 }
 
 /**
- * Find the firing slot BEHIND the cover to attack `pill` from.
+ * Where should the tank stand to shoot `pill` from behind the cover at (covX,covY)?
  *
- * Geometry (why the tank must sit offset, not directly behind): a cover pillbox is a single tile.
- * Directly behind it on the pill→cover line, the cover blocks the pill's centre-aimed return fire
- * (good) — but it ALSO blocks the tank's own edge shots (both symmetric pill edges fall inside the
- * cover tile), so the tank is safe yet can't fire (measured: target stuck at armour 9-14). Shift the
- * tank ~1 tile laterally and one pill edge opens up (the graze line clears the cover's corner) while
- * the pill's shot, still aimed at the tank's CENTRE, keeps crossing the cover tile → blocked. So the
- * winning slot satisfies BOTH: cover blocks slot→pill-centre, AND some pill edge is grazeable from
- * the slot. We verify both against real barriers (not tile heuristics) so quantization can't fool it.
+ * Delegates the geometry to `cover_solver`, which resolves shells exactly as the engine does
+ * rather than approximating the line with `checkBarriers`. That distinction is the whole fix:
+ * checkBarriers samples about once per tile, cannot see a one-tile brick, and so reported the
+ * centre line "clear" — the brain then aimed dead centre and fired its own cover down (9 of 21
+ * tracked shells died on our own wall). It also cannot represent the two facts that make the
+ * technique work at all:
  *
- * Returns the slot's world centre, or null if none exists (caller falls back to plain fire).
+ *   - a pillbox blocks only its 127-unit collision DISC, not its whole cell, so the target is
+ *     hittable near dead centre from behind cover — and a captured-pillbox cover is leakier
+ *     than a brick, not merely more durable;
+ *   - a shell flies in constant INTEGER 32-unit steps from wherever it was fired, so where the
+ *     tank sits WITHIN its tile decides which cells its shot passes through. The pill always
+ *     fires from its own cell centre and has no such choice. That asymmetry is the mechanism:
+ *     measured at (116,111)+(32,128), the tank's shot threads through (113,109) and reaches the
+ *     pill while the pill's reply along the same line clips the cover at (113,108) and stops.
+ *
+ * The result is cached by the caller (a4.coverSlot*), since the answer only moves when the pill
+ * or its cover does.
+ *
+ * Returns the slot's world point, or null if no holdable window exists (caller falls back).
  */
 function _coverFiringSlot(
   a4: A4State, state: BrainState, pill: PillState, covX: number, covY: number,
-): { x: number; y: number } | null {
-  const pillCx = ((pill.tileX & 0xFF) << 8) + 128, pillCy = ((pill.tileY & 0xFF) << 8) + 128;
-  // Direction pill→cover as a tile step (wrap-safe; cover is a pill neighbour so |diff| is 1).
-  const wrap = (d: number) => (((d + 128) & 0xFF) - 128);
-  const dx = Math.sign(wrap(covX - (pill.tileX & 0xFF)));
-  const dy = Math.sign(wrap(covY - (pill.tileY & 0xFF)));
-  if (dx === 0 && dy === 0) return null;
-  const perps = [[-dy, dx], [dy, -dx]] as const;      // the two lateral offset axes
-  const REACH = 1728;   // a tank shell (firingRange 7) reaches ~6.75 tiles before it expires
-  const HIT_OFF = 96;   // a graze aimed ≤96 off-centre lands inside the 127-unit hit radius
-  let best: { x: number; y: number } | null = null, bestScore = Infinity;
-  // Fire from RANGE at a lateral angle (~15-30° off the cover axis), NOT point-blank behind
-  // the cover. Reverse-engineered from live human play: up close a single cover tile subtends
-  // a huge angle, so the only graze that clears it is ~112+ off-centre — right at the 127 hit
-  // radius — and it misses (measured: target stuck at armour 11-15 while the tank fired). From
-  // ~6 tiles offset to one side, the wall subtends a SMALL angle: a small graze clears its edge
-  // and lands comfortably inside 127, while the pill's centre-aimed return fire still runs into
-  // the wall. So the winning slot is far + offset, not near + in-line.
-  for (const r of [6, 5]) {                           // tiles out along the cover axis
-    for (const lat of [2, 3]) {                       // lateral offset (→ ~18-31° from the axis)
-      for (const [ox, oy] of perps) {
-        const fx = (pill.tileX + dx * r + ox * lat) & 0xFF;
-        const fy = (pill.tileY + dy * r + oy * lat) & 0xFF;
-        const raw = a4.worldMap[((fy & 0xFF) << 8) | (fx & 0xFF)];
-        const terr = raw & 0x0F;
-        if (terr === 0 || (raw & 0x80) || (a4.examineTerrainCostTable[terr] ?? 1000) >= 1000) continue; // impassable
-        const fcx = (fx << 8) + 128, fcy = (fy << 8) + 128;
-        const dist = computeDistanceBetween(fcx, fcy, pillCx, pillCy);
-        if (dist > REACH) continue;                                              // out of shell reach → can't hit
-        // (a) cover must block the pill's centre-aimed return fire from this slot.
-        if (_checkBarriers(a4, fcx, fcy, pillCx, pillCy) === 0) continue;        // exposed → skip
-        // (b) a HITTING graze (≤HIT_OFF off-centre) must clear the cover on some side.
-        const dSlotToPill = directionTo(fcx, fcy, pillCx, pillCy) & 0xFF;
-        const e1 = locationFromDir((dSlotToPill + 64) & 0xFF, HIT_OFF, pillCx, pillCy);
-        const e2 = locationFromDir((dSlotToPill + 192) & 0xFF, HIT_OFF, pillCx, pillCy);
-        const grazeable = _checkBarriers(a4, fcx, fcy, e1.x & 0xFFFF, e1.y & 0xFFFF) === 0
-                       || _checkBarriers(a4, fcx, fcy, e2.x & 0xFFFF, e2.y & 0xFFFF) === 0;
-        if (!grazeable) continue;
-        const danger = a4.dangerMap[((fy & 0xFF) << 8) | (fx & 0xFF)] ?? 0;
-        const travel = computeDistanceBetween(state.tank.x, state.tank.y, fcx, fcy) >> 8;
-        // Prefer SAFE, then the best cover-BLOCK margin (a smaller lat/r keeps the return
-        // fire's centre line deeper inside the wall tile — lat/r→0.5 sits on the wall's edge
-        // and is ragged), then a range near the ~6.3-tile sweet spot the sweep validated
-        // (dealt 15/15, taken 0 at range 6 / lat 2). Least travel breaks ties.
-        const marginPenalty = Math.round((lat / r) * 1000);   // lower = deeper behind the wall
-        const score = danger * 100000 + marginPenalty + Math.abs(dist - 1620) + travel;
-        if (score < bestScore) { bestScore = score; best = { x: fcx, y: fcy }; }
-      }
-    }
+): CoverSlot | null {
+  const covTerr = a4.worldMap[((covY & 0xFF) << 8) | (covX & 0xFF)] & 0x0F;
+  // A brick degrading to a shot-wall (`|`→`}`) happens repeatedly mid-fight and changes nothing
+  // geometrically — both stop a shell across the whole cell — so the two share a key and the
+  // solve is not redone every time the wall takes a hit. A PILLBOX cover is a different shape
+  // (a 127-unit disc, not a cell) and does get its own solve.
+  const covClass = covTerr === Terrain.SHOT_WALL ? Terrain.WALL : covTerr;
+  const key = (((pill.tileY & 0xFF) << 24) | ((pill.tileX & 0xFF) << 16) |
+               ((covY & 0xFF) << 8) | (covX & 0xFF)) ^ (covClass << 28);
+  if (a4.coverSlotKey === key && a4.coverSlotX >= 0) {
+    return { x: a4.coverSlotX, y: a4.coverSlotY, aimDir: a4.coverSlotAim, band: a4.coverSlotBand, r: 0, lat: 0 };
   }
-  return best;
+  const range = Math.max(1, (state.tank.shellCount & 0xFF) >> 1);
+  const slot = solveCoverSlot(a4, pill, covX, covY, state.tank.x, state.tank.y, range);
+  a4.coverSlotKey = key;
+  a4.coverSlotX = slot ? slot.x : -1;
+  a4.coverSlotY = slot ? slot.y : -1;
+  a4.coverSlotAim = slot ? slot.aimDir : 0;
+  a4.coverSlotBand = slot ? slot.band : 0;
+  return slot;
+}
+
+/**
+ * Final sub-tile approach to a firing slot.
+ *
+ * navigateToCoords deliberately dead-stops the moment the tank is anywhere in the destination
+ * TILE (navigation.ts) — chasing the centre made it oscillate across the boundary and never
+ * land, so arrival is tile-based everywhere else in the brain. Here that is exactly one
+ * resolution too coarse, so the last fraction of a tile is walked by hand, at creep speed and
+ * with a tolerance, so it settles instead of hunting.
+ */
+function _creepToPoint(a4: A4State, state: BrainState, toX: number, toY: number): void {
+  const tank = state.tank;
+  const dist = computeDistanceBetween(tank.x, tank.y, toX, toY);
+  if (dist <= COVER_SLOT_TOL) { setSpeed(a4, 0, tank.speed & 0xFF); return; }
+  turnTowardsDir(a4, tank.facingDir, directionTo(tank.x, tank.y, toX, toY) & 0xFF, 0);
+  setSpeed(a4, dist < 96 ? 2 : 4, tank.speed & 0xFF);
 }
 
 /**
@@ -443,27 +445,65 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
     return true;
   }
 
-  // Move to the OFFSET firing slot behind the cover (cover blocks the pill's return fire; the
-  // lateral offset keeps one pill edge grazeable — see _coverFiringSlot). Sitting directly behind
-  // the cover is safe but silent (both edges blocked → target barely damaged); firing from a random
-  // stop point is exposed (target grinds the tank to 0). The computed slot is the sweet spot.
+  // Take the firing slot behind the cover and graze the pill past it.
+  //
+  // The position test is NOT "am I on the slot tile". Which sub-tile phase the tank occupies
+  // decides whether its shot threads past the cover, so the tile is a coarser answer than the
+  // question needs — and demanding an exact world point instead would be brittle, since the tank
+  // cannot park on a coordinate. So ask the question that actually matters: from exactly where I
+  // am standing, is there a window I can hold, and does the cover still shield me? Almost
+  // everywhere in the solved tile the answer is yes (48 of 49 sampled phases at the measured
+  // sweet spot), so the tank normally just drives there and fires; the creep is for the tiles
+  // where only some phases work.
   const slot = _coverFiringSlot(a4, state, pill, covX, covY);
   if (slot) {
-    const sTileX = (slot.x >> 8) & 0xFF, sTileY = (slot.y >> 8) & 0xFF;
-    if (a4.tankTileX !== sTileX || a4.tankTileY !== sTileY) {
-      navigateToCoords(a4, slot.x & 0xFFFF, slot.y & 0xFFFF, 0);   // drive onto the slot
-     
+    const pTx = pill.tileX & 0xFF, pTy = pill.tileY & 0xFF;
+    const range = Math.max(1, (tank.shellCount & 0xFF) >> 1);
+    const here = coverAimBand(a4, tank.x, tank.y, pTx, pTy, range);
+    const shielded = !pillShotReaches(a4, pTx, pTy, tank.x, tank.y);
+    const usable = here !== null && shielded &&
+                   here.width >= holdableBand(a4, a4.tankTileX, a4.tankTileY);
+
+    if (!usable) {
+      // Not somewhere we can shoot from yet — close on the solved point. A slot we can never
+      // reach (shoved off, blocked, no holdable window we can stand in) would otherwise hold the
+      // tank here forever, so give up on cover after a while and charge instead.
+      if (a4.coverSlotSinceTick === 0) a4.coverSlotSinceTick = a4.tickCounter;
+      if (a4.tickCounter - a4.coverSlotSinceTick > COVER_SLOT_TIMEOUT) {
+        a4.coverAbandonUntilTick = a4.tickCounter + COVER_ABANDON_COOLDOWN;
+        a4.coverSlotSinceTick = 0;
+        a4.coverTilePill = -1;
+        return false;
+      }
+      const sTileX = (slot.x >> 8) & 0xFF, sTileY = (slot.y >> 8) & 0xFF;
+      if (a4.tankTileX !== sTileX || a4.tankTileY !== sTileY) {
+        navigateToCoords(a4, slot.x & 0xFFFF, slot.y & 0xFFFF, 0);   // drive to the slot tile
+      } else {
+        _creepToPoint(a4, state, slot.x, slot.y);                    // then the last sub-tile step
+      }
       return true;
     }
-    // On the slot, behind the cover → graze the pill's edge; its return fire hits the cover.
-    a4.shootPillDirection = directionTo(tank.x, tank.y, pill.x, pill.y) & 0xFF;
-    const fired = _shootPillFromCover(a4, state, pill);
+    a4.coverSlotSinceTick = 0;
+
+    // In position. Aim at the centre of the window we measured HERE — not at a fixed edge offset
+    // and not at the pill's centre — and fire only when a shell leaving right now would actually
+    // connect. That gate is the engine's own shell resolution, so unlike an angular tolerance it
+    // cannot approve a shot into our own cover.
+    a4.shootPillDirection = Math.round(here!.mid) & 0xFF;
+    turnTowardsDir(a4, tank.facingDir, here!.mid, 0);
+    let fired = 0;
+    if ((tank.shellCount & 0xFF) >= 14 &&
+        coverShotHits(a4, tank.x, tank.y, tank.facingDir, pTx, pTy, range)) {
+      a4.firingWord |= 0x10;              // stationary fire: no forward bit to fight the brake
+      fired = 1;
+    }
     setSpeed(a4, 0, tank.speed & 0xFF);
-    a4.coverFireHold = 1;                 // dead-stop on the exact firing cell (see aindy_think)
+    a4.coverFireHold = 1;                 // dead-stop on the exact firing point (see aindy_think)
     if (fired) a4.coverFinishHold = 1;    // covered + holding still → don't break off to refuel
-   
+
     return true;
   }
+  a4.coverSlotSinceTick = 0;
 
   // No clean offset slot (e.g. a diagonal cover axis where no lateral tile both stays behind the
   // cover AND opens a grazing edge). Fall back to holding BEHIND the cover on the pill→cover line,

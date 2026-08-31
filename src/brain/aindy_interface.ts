@@ -657,10 +657,25 @@ export function buildBrainState(
   }
 
   // ── Danger map: mark tiles in enemy pill firing arcs ─────────────────────
-  // For each active armed enemy pill: trace rays outward up to 6 tiles.
-  // Stop each ray at the first wall/forest barrier (pill can't fire through).
-  // Mark danger: tiles ≤2 tiles → 3, ≤4 tiles → 2, ≤6 tiles → 1.
-  // Tiles get the highest danger value from any overlapping pill.
+  // For each active armed enemy pill, trace rays outward and mark what it can shoot:
+  // ≤2 tiles → 3, ≤4 → 2, ≤DANGER_TILES → 1; a tile keeps the worst value any pill gives it.
+  //
+  // Three things here were wrong, all measurable against the engine (shell.ts collide(),
+  // world_pillbox.ts:254):
+  //
+  //   RANGE. A pillbox reaches 1919 world units — 1792 of shell plus the 127 collision
+  //   radius — which is 7.5 tiles, not the 6 this used to trace. Deaths clustered at 7-8
+  //   tiles, i.e. precisely in the band the map called safe.
+  //
+  //   BARRIERS. It stopped rays at WATER and let them through WALLS, on a note that "shots
+  //   pass through walls in Bolo". They do not: a shell dies on isType('|','}','#','b'), and
+  //   combat.ts:213 already says so ("Earlier wall-penetration model was wrong"). A river
+  //   stops nothing. So this both invented danger behind walls and missed it across rivers.
+  //
+  //   RESOLUTION. 16 rays is every 22.5°, which at 7 tiles leaves 2.7-tile gaps between
+  //   adjacent rays — most of the outer ring was never marked at all. 64 rays close it.
+  const DANGER_TILES = 7;    // 1919 units of pill reach = 7.5 tiles
+  const DANGER_RAYS = 64;    // every 5.6°: ~0.7-tile spacing at the outer ring
   dangerMap.fill(0);
   const myTeamId = myTank.team ?? 0;
   for (const pill of oronaMap.pills) {
@@ -672,25 +687,21 @@ export function buildBrainState(
     const py = pill.y != null ? (pill.y >> 8) & 0xFF : -1;
     if (px < 0) continue;
 
-    // Trace 16 rays (every 22.5°) from pill outward up to 6 tiles each
-    for (let ray = 0; ray < 16; ray++) {
-      const angle = ray * 16;   // 16 steps × 16 = 256 (full circle)
+    for (let ray = 0; ray < DANGER_RAYS; ray++) {
+      const angle = (ray * 256) / DANGER_RAYS;
       const cosA  = Math.cos(angle * Math.PI / 128);
       const sinA  = Math.sin(angle * Math.PI / 128);
 
-      for (let r = 1; r <= 6; r++) {
+      for (let r = 1; r <= DANGER_TILES; r++) {
         const tx = Math.round(px + cosA * r) & 0xFF;
         const ty = Math.round(py + sinA * r) & 0xFF;
         const idx = (ty << 8) | tx;
-        const cell = worldMap[idx];
-        const terrain = cell & 0x0F;
+        const terrain = worldMap[idx] & 0x0F;
 
-        // Stop ray at forest or water — NOT walls (shots pass through walls in Bolo).
-        // Walls (terrain 0) and shot-walls (terrain 8) are penetrated by pillbox fire,
-        // so tiles behind walls are still in the danger zone.
-        if (terrain === 5 || (cell & 0x80)) break;
+        // What actually stops a shell: wall, shot-wall, forest, boat (shell.ts collide()).
+        // Water is not on that list; walls are.
+        if (terrain === 0 || terrain === 8 || terrain === 5 || terrain === 9) break;
 
-        // Mark danger by distance tier
         const danger: number = r <= 2 ? 3 : r <= 4 ? 2 : 1;
         if (danger > dangerMap[idx]) {
           dangerMap[idx] = danger;
