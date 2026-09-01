@@ -86,7 +86,7 @@ export function aimAt(
  * Uses projectile travel time to lead the shot.
  * Full original uses SANE FP with lfd_x/y_slopes; this port uses Math equivalents.
  *
- * Lead time approximation: sqrt(distance × 2.6 + 1.5) ticks (from Speed function).
+ * Lead time: distance / 32 ticks — a shell moves a constant 32 world units per tick.
  * Lead position: target + velocity_vector × lead_ticks.
  *
  * @returns { x, y } predicted aim position (BWorld)
@@ -101,8 +101,19 @@ export function linearAim(
   const tank = state.tank;
   const dist = computeDistanceBetween(srcX, srcY, tgtX, tgtY);
 
-  // Lead time: Speed(dist) ≈ sqrt(dist × 2.6 + 1.5)
-  const leadTicks = Math.max(1, Math.round(Math.sqrt(dist * 2.6 + 1.5)));
+  // Lead time = flight time, and a shell's flight time is exactly linear in distance: shell.ts
+  // move() steps a CONSTANT round(cos*32), round(sin*32) every tick, i.e. 32 world units per
+  // tick regardless of range, so reaching `dist` takes dist/32 ticks.
+  //
+  // This used to be `sqrt(dist * 2.6 + 1.5)`, which is not that curve and is not even the same
+  // dimension — it agrees with dist/32 only at dist 2662 (10.4 tiles), past our own 7-tile reach.
+  // Everywhere a shot is actually taken it OVER-leads: 21 ticks too many at 2 tiles, 20 at 4, 15
+  // at 6. Measured across 477 shots at a strafing tank, mean excess lead was +19 ticks, and a
+  // tank moving ~8 units/tick turns that into ~150 world units of aim-off — wider than the 127
+  // unit shell collision radius, so the shell sails past IN FRONT of the target. Hit rate against
+  // a moving tank was 67.3% (31.9% flew wide to end-of-range) versus 98.7% against a stationary
+  // one: the aim itself was fine all along, the lead was wrong.
+  const leadTicks = Math.max(1, Math.round(dist / 32));
 
   if (tgtSpeed <= 0 || leadTicks <= 0) {
     return { x: tgtX, y: tgtY };
@@ -340,7 +351,7 @@ export function shoot(
   // Step 1: Turn toward target with tolerance=0 (verified from assembly 0x0178ca)
   // Shoot requires exact aim — keeps turning until angErr===0.
   const targetDir = directionTo(tank.x, tank.y, targetX, targetY);
-  turnTowardsDir(a4, tank.facingDir, targetDir, 0);
+  const aimSettled = turnTowardsDir(a4, tank.facingDir, targetDir, 0);
 
   // Step 2: Range-aware thrust/retreat logic (verified from 0x0178f0-0x017932)
   if (!rangeFlag) {
@@ -383,6 +394,22 @@ export function shoot(
 
   // Step 4: Aim accuracy check
   if (!onTarget(state, targetX, targetY, rangeFlag)) return;
+
+  // ...and don't pull the trigger while the hull is still slewing. onTarget's tolerance is a
+  // flat 128 world units, which at 7 tiles is about 4 direction units of facing error, and a
+  // 4-unit error puts the shell ~117 units off the bearing - right at the 127-unit collision
+  // radius. So onTarget green-lights a shot taken mid-swing that lands on the very edge of the
+  // target or just past it. turnTowardsDir has already decided whether the hull is inside its
+  // deadband (returns 1) or is still being commanded to turn (0); requiring the former costs at
+  // most a tick of delay and spends the shell on a settled bearing instead.
+  //
+  // Measured over 8 seeds of full-brain play: shells released while the hull was turning landed
+  // 51.6% of the time, against 79.9% for shells released settled. That gap is the whole of the
+  // reported 'jerks left to right while firing, less than half the shells land' - and it is far
+  // worse live than here, because in multiplayer the brain's turn commands round-trip to the
+  // server (client.ts _runBrainTick sends START/STOP deltas; authority is false), so the hull
+  // overshoots and hunts and a much larger share of shots get taken mid-swing.
+  if (!aimSettled) return;
 
   // Step 5: Fire
   if (!rateGate) {
@@ -439,7 +466,7 @@ export function shootPill(
   // turning while still 3-5 units off the true bearing, and at 7 tiles a 3-unit error is a
   // ~130-unit miss (just past the pill's 127 collision radius), so it fired and missed.
   // A tight tolerance keeps the hull fine-tuning until it's near-exactly on the bearing.
-  turnTowardsDir(a4, tank.facingDir, dir, 1);
+  const aimSettled = turnTowardsDir(a4, tank.facingDir, dir, 1);
 
   // STATIONARY mode fires via the firingWord (sets shooting, NOT accelerating) so the tank
   // can hold a dead stop while firing; the forward-fire path (steeringWord 0x40/0x10 →
@@ -480,6 +507,21 @@ export function shootPill(
   // On target → require a clear LINE OF SIGHT (engine stops shells at walls/forest/etc).
   if (skipCheck === 0 && checkBarriers(a4, tank.x, tank.y, pillX, pillY) !== 0) {
     if (!stationary) a4.steeringWord |= 0x10;   // blocked: advance to clear the shot
+    return 0;
+  }
+
+  // SETTLED-HULL GATE. The cone above asks only where the hull points, never whether it is still
+  // moving. tolUnits is ~2 units at 7 tiles while turnTowardsDir's deadband is ~0.66, so there is
+  // a band where the cone passes and the hull is still being commanded to turn - and the shot
+  // goes out mid-swing. Measured over 8 seeds: shells released while turning landed 51.6%,
+  // against 79.9% released settled, and shootPill in stationary mode was the largest single
+  // source of them. Waiting for the hull to settle costs at most a tick.
+  //
+  // skipCheck bypasses this, as it does the barrier test: that is the point-blank reclaim path,
+  // where an adjacent pill must be shot even under an awkward aim and where refusing to fire
+  // re-creates the freeze that gate exists to fix.
+  if (!aimSettled && skipCheck === 0) {
+    if (!stationary) a4.steeringWord |= 0x10;   // keep closing while the hull settles
     return 0;
   }
 

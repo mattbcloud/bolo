@@ -247,6 +247,119 @@ export class BoloClientWorld extends ClientWorld {
     shooting: false, layingMine: false,
   };
 
+  /**
+   * AIM TELEMETRY (live only).
+   *
+   * The headless harness is BoloLocalWorld with authority=true: applyControls writes the tank's
+   * flags in-process, same tick, zero latency. THIS class is authority=false — _runBrainTick sends
+   * START/STOP deltas over the WebSocket and the brain reads back a replicated direction, so a turn
+   * command costs a round trip in each direction. turnTowardsDir's deadband is sized for ONE tick of
+   * overshoot, so under a multi-tick delay the hull overshoots, reverses, and hunts — and Tank.turn
+   * halves its rate until turnSpeedup hits 10 with a reversal RESETTING that ramp, so a hunting hull
+   * also turns slowly and never settles.
+   *
+   * None of that is reproducible offline (measured 4.0% aim reversals in the harness against a
+   * user-reported "jerks left to right, less than half the shells land"), so measure it where it
+   * actually happens. Counters accumulate every brain tick and ship with the ~1s state dump.
+   * `cmdLatency` is the one number the harness fundamentally cannot supply: ticks from issuing a
+   * turn command to the hull first actually moving.
+   */
+  private _aim = {
+    ticks: 0,
+    turnCmdTicks: 0, turnCmdReversals: 0,
+    hullTurnTicks: 0, hullReversals: 0,
+    fireCmds: 0, fireWhileTurning: 0,
+    aimErrSum: 0, aimErrN: 0,
+    latSum: 0, latN: 0,
+    _prevCmdDir: 0,        // -1 CW, +1 CCW, 0 none
+    _prevHullDir: 0,
+    _prevFacing: null as number | null,
+    _turnCmdAtTick: -1,    // tick a turn was commanded while the hull was static
+  };
+
+  /** Fold one brain tick into the aim counters. Diagnostics only — never throws into the tick. */
+  private _aimSample(a4: any, next: { turningClockwise: boolean; turningCounterClockwise: boolean; shooting: boolean }): void {
+    const A = this._aim;
+    A.ticks++;
+    const facing = (this.player as any)?.direction;
+    if (typeof facing !== 'number') return;
+
+    // What the hull actually did this tick (the visible jerk).
+    let hullDir = 0;
+    if (A._prevFacing !== null) {
+      let d = facing - A._prevFacing;
+      if (d > 128) d -= 256; if (d < -128) d += 256;
+      if (Math.abs(d) > 1e-9) {
+        hullDir = Math.sign(d);
+        A.hullTurnTicks++;
+        if (A._prevHullDir !== 0 && hullDir !== A._prevHullDir) A.hullReversals++;
+        A._prevHullDir = hullDir;
+      }
+    }
+
+    // What we ASKED for this tick.
+    const cmdDir = next.turningCounterClockwise ? 1 : next.turningClockwise ? -1 : 0;
+    if (cmdDir !== 0) {
+      A.turnCmdTicks++;
+      if (A._prevCmdDir !== 0 && cmdDir !== A._prevCmdDir) A.turnCmdReversals++;
+      // Command issued while the hull is still: start the stopwatch.
+      if (A._turnCmdAtTick < 0 && hullDir === 0) A._turnCmdAtTick = a4.tickCounter;
+    }
+    A._prevCmdDir = cmdDir;
+
+    // Command -> motion latency: the round trip we cannot see offline.
+    if (A._turnCmdAtTick >= 0 && hullDir !== 0) {
+      A.latSum += a4.tickCounter - A._turnCmdAtTick;
+      A.latN++;
+      A._turnCmdAtTick = -1;
+    }
+
+    // Fire commands, and whether the hull was still swinging when we pulled the trigger.
+    if (next.shooting && !this._brainPrev.shooting) {
+      A.fireCmds++;
+      if (hullDir !== 0) A.fireWhileTurning++;
+      // Facing error against whatever we are actually shooting at.
+      const tgt = a4.pillToGetTarget
+        ? [((a4.pillToGetTarget.tileX & 0xFF) << 8) + 128, ((a4.pillToGetTarget.tileY & 0xFF) << 8) + 128]
+        : a4.tankToKillTarget ? [a4.tankToKillTarget.x, a4.tankToKillTarget.y] : null;
+      if (tgt && this.player) {
+        const bearing = ((Math.atan2(-(tgt[1] - (this.player as any).y), tgt[0] - (this.player as any).x) * 256) / (Math.PI * 2) + 256) % 256;
+        let e = facing - bearing;
+        if (e > 128) e -= 256; if (e < -128) e += 256;
+        A.aimErrSum += Math.abs(e); A.aimErrN++;
+      }
+    }
+
+    A._prevFacing = facing;
+  }
+
+  /** Snapshot the aim counters for the dump and start a fresh window. */
+  private _aimFlush() {
+    const A = this._aim;
+    const r1 = (n: number, d: number) => (d ? Math.round((1000 * n) / d) / 10 : null);
+    const out = {
+      ticks: A.ticks,
+      // % of ticks we commanded a turn, and how often that command REVERSED — the jerk, as issued.
+      turnCmd: r1(A.turnCmdTicks, A.ticks),
+      cmdReversals: r1(A.turnCmdReversals, A.turnCmdTicks),
+      // ...and as the hull actually behaved.
+      hullReversals: r1(A.hullReversals, A.hullTurnTicks),
+      // Trigger pulls, and the share taken mid-swing (harness: those land 51.6% vs 79.9% settled).
+      fires: A.fireCmds,
+      fireWhileTurning: r1(A.fireWhileTurning, A.fireCmds),
+      aimErrAvg: A.aimErrN ? Math.round((10 * A.aimErrSum) / A.aimErrN) / 10 : null,
+      // Ticks from turn command to the hull moving. ~0-1 locally; a round trip live.
+      cmdLatency: A.latN ? Math.round((10 * A.latSum) / A.latN) / 10 : null,
+      latN: A.latN,
+    };
+    A.ticks = A.turnCmdTicks = A.turnCmdReversals = 0;
+    A.hullTurnTicks = A.hullReversals = 0;
+    A.fireCmds = A.fireWhileTurning = 0;
+    A.aimErrSum = A.aimErrN = 0;
+    A.latSum = A.latN = 0;
+    return out;
+  }
+
   // Brain HUD overlay element
   private _brainIndicator: HTMLElement | null = null;
   private _lastBuilderOrderKey: string = '';
@@ -2756,6 +2869,10 @@ export class BoloClientWorld extends ClientWorld {
     if (next.shooting              !== prev.shooting)              ws.send(next.shooting              ? net.START_SHOOTING       : net.STOP_SHOOTING);
     if (next.layingMine            !== prev.layingMine)            ws.send(next.layingMine            ? net.START_LAY_MINE       : net.STOP_LAY_MINE);
 
+    // Aim telemetry BEFORE the prev snapshot — _aimSample needs last tick's shooting flag to see
+    // the false->true edge that marks an actual trigger pull.
+    try { this._aimSample(a4, next); } catch { /* diagnostics must never break the tick */ }
+
     // Save for next tick
     Object.assign(prev, next);
 
@@ -2921,6 +3038,9 @@ export class BoloClientWorld extends ClientWorld {
       const allCosts = a4.goals.map(g => `${GN2[g.goalIndex]??g.goalIndex}:${g.cost===0xFFFF?'∞':g.cost}`).join(' ');
       const msg = `🧠 t=${a4.tickCounter} ${GN[goalIdx]??goalIdx}(${best.cost}) arm=${state.tank.armor} ammo=${state.tank.ammo} spd=${spd} ctrl:${ctrl} route:${a4.navCacheValid?'ok':'MISS'} noRoute:${a4.noLocalRouteFlag} ${goalTgtStr}`;
       const detail = `  costs: ${allCosts} refuelSt:${a4.refuelState} noRoute:${a4.noLocalRouteFlag} builderIn:${state.tank.builderInTank}`;
+      // Flush ONCE per second and share the snapshot: _aimFlush resets its window, so calling it
+      // from both the console line and the POST would hand the second caller an empty window.
+      const aimStats = this._aimFlush();
       // Debug output belongs in the console, not over the game. This line used to be written
       // into the on-screen brain badge every second, which turned a small status chip into a
       // wall of goal/route/ctrl state sitting on top of the view — and left it frozen on
@@ -2933,6 +3053,23 @@ export class BoloClientWorld extends ClientWorld {
       }
       console.log(msg);
       if (controlsIdle) console.warn('[brain] IDLE controls!', detail);
+
+      // ── Aim / actuation health ────────────────────────────────────────────────────────────
+      // Printed live because this is the half of the accuracy problem that only exists HERE:
+      // offline the brain runs authority=true and its commands apply in-process the same tick,
+      // while this client sends START/STOP over the socket and reads a replicated facing back.
+      //   cmdLatency  ticks from asking for a turn to the hull actually moving. ~0-1 offline;
+      //               anything above that is round-trip, and it is what makes the aim hunt.
+      //   cmdRev/hullRev  how often the turn REVERSES — the visible left-right jerk. 4% offline.
+      //   fireTurning %   of trigger pulls taken mid-swing. Those land ~51.6% against ~79.9%
+      //               for shots taken with the hull settled, so this number is the accuracy.
+      // Silence with `window.__AIMSTATS__ = false`.
+      if ((globalThis as any).__AIMSTATS__ !== false) {
+        const A = aimStats;
+        console.log(`[AIM] cmdLatency=${A.cmdLatency ?? '-'}t (n=${A.latN}) ` +
+          `turnCmd=${A.turnCmd ?? '-'}% cmdRev=${A.cmdReversals ?? '-'}% hullRev=${A.hullReversals ?? '-'}% ` +
+          `fires=${A.fires} fireWhileTurning=${A.fireWhileTurning ?? '-'}% aimErr=${A.aimErrAvg ?? '-'}u`);
+      }
 
       // ── Live-map dump ─────────────────────────────────────────────────────
       // Reusable real-time terrain read: an ASCII grid centred on the tank from the brain's
@@ -2999,6 +3136,9 @@ export class BoloClientWorld extends ClientWorld {
               active: !!m.active, tile: [(m.x >> 8) & 0xFF, (m.y >> 8) & 0xFF],
               distTx: Math.round((m.distanceMetric ?? 0) / 256),
             })),
+            // Aim/actuation health over the last ~1s. This is the half of the accuracy problem the
+            // offline harness cannot see: it runs authority=true with zero-latency actuation.
+            aim: aimStats,
             rawTanks: (this.tanks ?? []).length,
             pills: (state.pills ?? []).length,
             bases: (state.bases ?? []).length,

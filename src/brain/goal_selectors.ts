@@ -704,7 +704,15 @@ export function refuelGoalCost(a4: A4State, state: BrainState): number {
     const baseArmour = ob?.armour ?? (rbase as any).armor ?? 0;
     const baseShells = ob?.shells ?? 0;
     const baseCanHelp = (baseArmour > 0 && tank.armor < 40) || (baseShells > 0 && tank.shells < 40);
-    if (atBase && baseCanHelp) return 0;   // stay and top up to FULL before leaving
+    // ...but NOT while a hostile pillbox is shooting at the base. The hold only lifts at armour 40
+    // AND shells 40, and under fire armour never gets there: the base feeds +5 per 46 ticks and the
+    // pill strips it back faster, so cost 0 never clears and the tank CAMPS on the cell being ground
+    // down. Measured on a base 3 tiles from a live pill: pinned at armour 0 for 2400+ ticks while
+    // the base drained 87 -> 27 stock, Refuel winning 60% of all ticks and the tank never fighting
+    // again. A covered base falls through to the normal cost path, where the armour<16 emergency
+    // can still send a desperate tank there: refuelling under guns is worth it to survive, but not
+    // worth CAMPING for a full top-off. chooseRefuelBase still keeps it as last-resort fallback.
+    if (atBase && baseCanHelp && !baseUnderHostilePill(a4, rbase)) return 0;
   }
 
   // Collect a KILLED pill before emergency-refuelling. If our target pill is already dead

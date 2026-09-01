@@ -267,6 +267,21 @@ export interface EvalResult {
   captures: number[]; deaths: number[];
   meanCaptures: number; meanDeaths: number;
   capturedAny: number; // # of trials that captured >=1 pill
+  // BASE captures, tracked separately and for the same reason the pill counter exists: a base is
+  // the tank's only source of armour and shells, so "how many bases did it take" is the economy,
+  // and `captures` above counts PILLS ONLY — it is structurally blind to it. Any change that
+  // trades early pill-grinding for base-taking makes `meanCaptures` fall while the brain gets
+  // strictly better, which reads as a regression unless these are on the scoreboard too.
+  baseCaptures: number[];
+  meanBaseCaptures: number;
+  baseCapturedAny: number; // # of trials that captured >=1 base
+  // Time-integrated map control: mean number owned per tick over the run. Holding ground for the
+  // whole game and touching it once on the final tick are the same to the counters above; these
+  // tell them apart. meanControl = pills + bases, and it is the one to read (see the note in the
+  // loop on why bases alone is circular in an opponent-free harness).
+  meanPillsHeld: number;
+  meanBasesHeld: number;
+  meanControl: number;
 }
 
 /** Evaluate the FULL brain over N seeded trials from a fixed land start and report
@@ -274,11 +289,18 @@ export interface EvalResult {
  *  brain's residual stochasticity. `startTile` should be passable land. */
 export function evaluateFullLoop(
   startTile: [number, number],
-  { trials = 12, ticks = 6000, baseSeed = 1000 } = {},
+  // gameMode drives RESPAWN RESUPPLY (Tank.reset, src/objects/tank.ts:124) and therefore what a
+  // death costs. The default 'open' hands back armour 40 / shells 40 / mines 40 / trees 40, which
+  // makes dying the cheapest resupply on the map — so an unqualified run of this harness rewards
+  // grind-until-you-die and is blind to any economy. 'tournament' (shells = 2 x neutral bases,
+  // no mines/trees) and 'strict' (0/0/0) price death properly.
+  { trials = 12, ticks = 6000, baseSeed = 1000, gameMode = 'open' as 'open' | 'tournament' | 'strict' } = {},
 ): EvalResult {
-  const captures: number[] = [], deaths: number[] = [];
+  const captures: number[] = [], deaths: number[] = [], baseCaptures: number[] = [];
+  const pillsHeld: number[] = [], basesHeld: number[] = [];
   for (let k = 0; k < trials; k++) {
     const world = bootHeadlessWorld(baseSeed + k * 7919);
+    world.gameMode = gameMode;
     const a4 = enableBrain(world);
     placeTank(world, startTile[0], startTile[1], false);
     const t = world.player, myTeam = t.team;
@@ -294,17 +316,45 @@ export function evaluateFullLoop(
     const pillIsMine = (p: any) => p && (p.team === myTeam || p.owner?.$ === t || p.owner === t);
     const pills0 = world.map.pills ?? [];
     for (let pi = 0; pi < pills0.length; pi++) if (pillIsMine(pills0[pi])) owned.add(pi);
-    let caps = 0, dy = 0, prevArmour = t.armour;
+    // Bases, counted the same way and keyed by the same stable array index. Ownership is
+    // `base.team === myTeam` — the exact test buildBrainState uses (aindy_interface.ts:632).
+    // Seeded with anything already ours at spawn so only NEW captures count, and Set membership
+    // means a base retaken after being lost is not double-counted (matching the pill counter).
+    const ownedBases = new Set<number>();
+    const baseIsMine = (b: any) => b && b.team === myTeam;
+    const bases0 = world.map.bases ?? [];
+    for (let bi = 0; bi < bases0.length; bi++) if (baseIsMine(bases0[bi])) ownedBases.add(bi);
+    // MAP CONTROL, integrated over time. The capture counters above are one-shot: they say the tank
+    // touched an objective once, never that it still holds it, and they weight a capture on the last
+    // tick the same as one on the first. Bolo is won by holding ground, so also accumulate how much
+    // was owned on every tick and divide by the run length -> "mean objectives held".
+    //
+    // READ BASES AND PILLS TOGETHER, never bases alone. This harness has no opponent, so nothing
+    // ever takes a base back: bases-held is monotonic and any brain that simply walks at bases early
+    // scores well on it by construction. Pills are the contested half — they shoot back and have to
+    // be ground down — so bases+pills is the only combination here that prices the actual trade-off
+    // between grabbing free ground and fighting for defended ground.
+    let caps = 0, bcaps = 0, dy = 0, prevArmour = t.armour;
+    let pillHeldTicks = 0, baseHeldTicks = 0;
     for (let i = 0; i < ticks; i++) {
       world.tick();
       if (t.armour === 255 && prevArmour !== 255) dy++;
       prevArmour = t.armour;
       const pills = world.map.pills ?? [];
+      let pillsNow = 0;
       for (let pi = 0; pi < pills.length; pi++) {
-        if (pillIsMine(pills[pi]) && !owned.has(pi)) { owned.add(pi); caps++; }
+        if (pillIsMine(pills[pi])) { pillsNow++; if (!owned.has(pi)) { owned.add(pi); caps++; } }
       }
+      pillHeldTicks += pillsNow;
+      const bases = world.map.bases ?? [];
+      let basesNow = 0;
+      for (let bi = 0; bi < bases.length; bi++) {
+        if (baseIsMine(bases[bi])) { basesNow++; if (!ownedBases.has(bi)) { ownedBases.add(bi); bcaps++; } }
+      }
+      baseHeldTicks += basesNow;
     }
-    captures.push(caps); deaths.push(dy);
+    captures.push(caps); deaths.push(dy); baseCaptures.push(bcaps);
+    pillsHeld.push(pillHeldTicks / ticks); basesHeld.push(baseHeldTicks / ticks);
   }
   const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
   return {
@@ -312,6 +362,12 @@ export function evaluateFullLoop(
     meanCaptures: sum(captures) / trials,
     meanDeaths: sum(deaths) / trials,
     capturedAny: captures.filter((c) => c >= 1).length,
+    baseCaptures,
+    meanBaseCaptures: sum(baseCaptures) / trials,
+    baseCapturedAny: baseCaptures.filter((c) => c >= 1).length,
+    meanPillsHeld: sum(pillsHeld) / trials,
+    meanBasesHeld: sum(basesHeld) / trials,
+    meanControl: (sum(pillsHeld) + sum(basesHeld)) / trials,
   };
 }
 
