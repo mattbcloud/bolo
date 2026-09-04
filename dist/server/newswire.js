@@ -25,7 +25,10 @@ export const NEWSWIRE_CHANNEL_LABELS = {
  * nothing else changes — the channel travels with the kind, which is already on the wire, so
  * there is no protocol change and no client update to make.
  */
-const SCORE_KINDS = new Set(['lead_change']);
+const SCORE_KINDS = new Set([
+    'lead_change',
+    'position_change',
+]);
 /** Which channel an event belongs to. Anything not explicitly a score event is news. */
 export function channelOf(kind) {
     return SCORE_KINDS.has(kind) ? 'score' : 'news';
@@ -97,6 +100,15 @@ function name(actor) {
     return { t: actor.name, team: actor.team };
 }
 /**
+ * The words for a standing, 1-based. The table can only be six deep — one place per team — so
+ * the list covers every position that can exist; the numeric fallback is for a corrupt index,
+ * and is deliberately visible rather than laundered into a word (same reasoning as `teamActor`).
+ */
+const PLACE_NAMES = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth'];
+export function placeName(place) {
+    return PLACE_NAMES[place - 1] ?? `${place}th`;
+}
+/**
  * Render one event as coloured segments.
  *
  * `other` is the second party, where the event has one: the robbed player for a steal, the
@@ -104,8 +116,10 @@ function name(actor) {
  * attributable killer (splash damage, or the tank killed itself) and `actor` is the victim —
  * mirroring the `shell.attribution.$ !== this` guard at the call site, so a self-kill reads
  * "X was destroyed" rather than "X destroyed X".
+ *
+ * `places` is read by `position_change` alone and ignored by every other kind.
  */
-export function formatNewswire(kind, actor, other) {
+export function formatNewswire(kind, actor, other, places) {
     switch (kind) {
         case 'base_capture':
             return [name(actor), seg(' captured a Neutral Base')];
@@ -154,6 +168,26 @@ export function formatNewswire(kind, actor, other) {
             return other
                 ? [name(actor), seg(' takes the lead from '), name(other)]
                 : [name(actor), seg(' takes the lead')];
+        case 'position_change': {
+            // The rest of the table. First place keeps its own line — `lead_change` above — because
+            // taking the lead is the event of the game and reads better than "moves into first place";
+            // this kind covers every rank below it.
+            //
+            // Both parties are sides, and a swap always has two of them: one team can only rise past
+            // another. The one-party branch is the same kind of reword the steals do — degrade the
+            // sentence rather than invent a side that was not passed.
+            if (!places) {
+                return other
+                    ? [name(actor), seg(' overtakes '), name(other)]
+                    : [name(actor), seg(' moves up the table')];
+            }
+            return other
+                ? [
+                    name(actor), seg(` moves into ${placeName(places[0])} place, `),
+                    name(other), seg(` falls to ${placeName(places[1])} place`),
+                ]
+                : [name(actor), seg(` moves into ${placeName(places[0])} place`)];
+        }
         default: {
             const exhaustive = kind;
             throw new Error(`Unknown newswire kind '${exhaustive}'`);
@@ -161,50 +195,108 @@ export function formatNewswire(kind, actor, other) {
     }
 }
 /**
- * How far a challenger must be clear of the field before the lead is called changed.
+ * How far a challenger must be clear of the team above before a position is called changed.
  *
  * Team scores are continuous — a weighted blend of base share, pillbox share and K/D
  * (`calculateTeamScores`, server/application.ts) — and are recomputed every 25 ticks. Two teams
- * within a whisker of each other would otherwise trade the title twice a second and bury every
- * other event on the wire. A margin makes it hysteresis: having taken the lead, a team keeps it
+ * within a whisker of each other would otherwise trade places twice a second and bury every
+ * other event on the wire. A margin makes it hysteresis: having taken a place, a team keeps it
  * until someone is clearly past them, not merely until someone is nominally ahead.
  *
  * One point is well under the value of a single base (~3 weighted points on a typical map), so
- * this damps float jitter without ever suppressing a real swing.
+ * this damps float jitter without ever suppressing a real swing. It applies at every boundary
+ * in the table, not just at the top: third place is as prone to jitter as first.
  */
-export const NEWSWIRE_LEAD_MARGIN = 1;
+export const NEWSWIRE_POSITION_MARGIN = 1;
 /**
- * Decide whether the lead has changed hands.
+ * Recount the table and report which teams changed places.
  *
- * Returns the new leader's team, or `null` if the title has not moved — which covers the
- * incumbent still being ahead, nobody having scored yet, and the top two being too close to
- * call. `current` is the team that presently holds the title, or `null` if nobody does.
+ * `eligible` is the set of teams to rank — the sides actually fielding tanks. Ranking the other
+ * three would mean announcing that an empty team "falls to fifth place" every time the scores
+ * drift, which is noise about nobody.
+ *
+ * `previous` is the order this function returned last time, or `null` on the first recount. It
+ * is not merely a diff baseline: it is the seed the new order is sorted *from*, which is what
+ * makes the margin hysteresis rather than a threshold. Teams within a margin of each other keep
+ * the order they already had, so a pair trading hundredths of a point sits still, and a team
+ * that has genuinely pulled clear moves exactly once.
+ *
+ * When the eligible set itself changes — someone joins, someone quits — the table is rebuilt and
+ * `rebaselined` is set with no swaps reported. A team that quits pushes everyone below it up a
+ * place, and that is an artefact of the roster, not of anything that happened in the game; the
+ * caller re-seeds silently and announces again from the next recount.
  */
-export function findLeadChange(scores, current, margin = NEWSWIRE_LEAD_MARGIN) {
-    let leader = -1;
-    let best = 0;
-    let runnerUp = 0;
-    for (let team = 0; team < scores.length; team++) {
-        const score = scores[team];
-        if (score > best) {
-            runnerUp = best;
-            best = score;
-            leader = team;
+export function updateStandings(scores, eligible, previous, margin = NEWSWIRE_POSITION_MARGIN) {
+    const ranked = new Set();
+    for (const team of eligible) {
+        if (team >= 0 && team < scores.length)
+            ranked.add(team);
+    }
+    const rosterChanged = previous === null ||
+        previous.length !== ranked.size ||
+        previous.some((team) => !ranked.has(team));
+    // Seed from the standing order where there is one, so the margin below can only move a team
+    // that has genuinely pulled clear. Otherwise start from the scores, breaking exact ties by
+    // team index so a rebuild is at least deterministic.
+    const order = rosterChanged
+        ? [...ranked].sort((a, b) => scores[b] - scores[a] || a - b)
+        : [...previous];
+    // Bubble each team up past anyone it now beats by more than the margin. A pass that changes
+    // nothing means the order is settled; at six teams this is a handful of comparisons.
+    for (let pass = 0; pass < order.length; pass++) {
+        let moved = false;
+        for (let i = 0; i + 1 < order.length; i++) {
+            if (scores[order[i + 1]] - scores[order[i]] > margin) {
+                [order[i], order[i + 1]] = [order[i + 1], order[i]];
+                moved = true;
+            }
         }
-        else if (score > runnerUp) {
-            runnerUp = score;
+        if (!moved)
+            break;
+    }
+    const leader = order.length > 0 && scores[order[0]] > 0 ? order[0] : null;
+    const swaps = [];
+    if (previous !== null && !rosterChanged) {
+        const placeNow = new Map(order.map((team, i) => [team, i + 1]));
+        const placeBefore = new Map(previous.map((team, i) => [team, i + 1]));
+        // Each riser is paired with the team it went past: one that was above it and is now below,
+        // taking the highest-placed such team — the one it just squeezed in front of, which is what
+        // the sentence is about. A faller is claimed only once, so when two teams leap the same pair
+        // in one recount they name a side each rather than both blaming the same victim.
+        const claimed = new Set();
+        for (let i = 0; i < order.length; i++) {
+            const riser = order[i];
+            const place = i + 1;
+            if (placeBefore.get(riser) <= place)
+                continue; // did not move up
+            let faller = null;
+            for (let j = i + 1; j < order.length; j++) {
+                const candidate = order[j];
+                if (claimed.has(candidate))
+                    continue;
+                if (placeBefore.get(candidate) >= placeBefore.get(riser))
+                    continue; // was not ahead
+                if (placeNow.get(candidate) <= placeBefore.get(candidate))
+                    continue; // did not fall
+                faller = candidate;
+                break;
+            }
+            // No unclaimed victim left: a pile-up where several teams jumped the same few. The line
+            // degrades to the riser's own new standing rather than naming a side twice.
+            if (faller !== null)
+                claimed.add(faller);
+            swaps.push({
+                riser,
+                riserPlace: place,
+                faller,
+                fallerPlace: faller === null ? null : placeNow.get(faller),
+            });
         }
     }
-    if (leader < 0 || best <= 0)
-        return null; // nobody has scored yet
-    if (leader === current)
-        return null; // incumbent holds the title
-    if (best - runnerUp <= margin)
-        return null; // too close to call
-    return leader;
+    return { order, swaps, leader, rebaselined: previous !== null && rosterChanged };
 }
 /** Build the JSON command for one event. */
-export function newswireMessage(kind, actor, other) {
-    return { command: 'news', kind, segments: formatNewswire(kind, actor, other) };
+export function newswireMessage(kind, actor, other, places) {
+    return { command: 'news', kind, segments: formatNewswire(kind, actor, other, places) };
 }
 //# sourceMappingURL=newswire.js.map

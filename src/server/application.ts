@@ -14,7 +14,10 @@ import { WebSocketServer } from 'ws';
 import { MapIndex } from './map_index';
 import * as helpers from '../helpers';
 import BoloWorldMixin, { BoloWorldMixin as BoloWorldMixinInterface } from '../world_mixin';
-import { newswireMessage, findLeadChange, teamActor, NewswireActor, NewswireKind } from '../newswire';
+import {
+  newswireMessage, updateStandings, teamActor,
+  NewswireActor, NewswireKind, NewswirePlaces,
+} from '../newswire';
 import { isNickTaken, normalizeNick } from '../nick';
 import * as allObjectsModule from '../objects/all';
 import { Tank } from '../objects/tank';
@@ -57,6 +60,9 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   teamScoresTick: number = 0;  // Counter for sending team scores
   // The team currently holding the lead, for the newswire. Null until someone scores.
   leadTeam: number | null = null;
+  // The scoreline's standing order — the teams fielding tanks, best first. Null until the first
+  // recount; fed back into updateStandings() so its margin acts as hysteresis. See newswire.ts.
+  standings: number[] | null = null;
 
   // ── Team discovered map (overview) ───────────────────────────────────────
   // One byte per tile per team, recording every tile any tank on that team has been near.
@@ -634,8 +640,13 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
    * happened scroll past as though they were happening now, which is worse than an empty strip.
    * The wire reports what is happening, not what happened.
    */
-  newswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null): void {
-    this.broadcast(JSON.stringify(newswireMessage(kind, actor, other)));
+  newswire(
+    kind: NewswireKind,
+    actor: NewswireActor,
+    other?: NewswireActor | null,
+    places?: NewswirePlaces | null
+  ): void {
+    this.broadcast(JSON.stringify(newswireMessage(kind, actor, other, places)));
   }
 
   // ── Team discovered map (overview) ─────────────────────────────────────────
@@ -834,16 +845,39 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       this.teamScoresTick = 0;
       const scores = this.calculateTeamScores();
 
-      // Announce a change at the top of the table. findLeadChange() applies the hysteresis, so
-      // this fires on real swings only — see NEWSWIRE_LEAD_MARGIN.
-      const newLeader = findLeadChange(scores, this.leadTeam);
-      if (newLeader !== null) {
+      // Announce every change of position, not just at the top. Only the sides fielding tanks
+      // are ranked — an empty team sliding down the table is news about nobody — and
+      // updateStandings() applies the hysteresis, so this fires on real swings only. See
+      // NEWSWIRE_POSITION_MARGIN.
+      const fielded = new Set<number>();
+      for (const tank of this.tanks) {
+        if (tank.team >= 0 && tank.team <= 5) fielded.add(tank.team);
+      }
+      const standings = updateStandings(scores, fielded, this.standings);
+      this.standings = standings.order;
+
+      if (standings.leader !== null && standings.leader !== this.leadTeam) {
         const previous = this.leadTeam;
-        this.leadTeam = newLeader;
+        this.leadTeam = standings.leader;
+        // A rebaseline moved the title by roster change, not by play — take the new leader as
+        // read so the next real overtake is announced against the truth, but say nothing now.
+        if (!standings.rebaselined) {
+          this.newswire(
+            'lead_change',
+            teamActor(standings.leader),
+            previous === null ? null : teamActor(previous)
+          );
+        }
+      }
+
+      for (const swap of standings.swaps) {
+        // First place is the lead_change line above, which already names both parties.
+        if (swap.riserPlace === 1) continue;
         this.newswire(
-          'lead_change',
-          teamActor(newLeader),
-          previous === null ? null : teamActor(previous)
+          'position_change',
+          teamActor(swap.riser),
+          swap.faller === null ? null : teamActor(swap.faller),
+          [swap.riserPlace, swap.fallerPlace ?? 0]
         );
       }
 

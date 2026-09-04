@@ -12,7 +12,7 @@
  * stamped at emit time (by the time a line reaches the visible window, the actor's tank may be
  * destroyed, respawned, or back on a different team).
  */
-export type NewswireKind = 'base_capture' | 'base_steal' | 'pill_capture' | 'pill_steal' | 'builder_lost' | 'tank_kill' | 'tank_mined' | 'tank_sunk' | 'player_join' | 'player_quit' | 'lead_change' | 'pill_kill';
+export type NewswireKind = 'base_capture' | 'base_steal' | 'pill_capture' | 'pill_steal' | 'builder_lost' | 'tank_kill' | 'tank_mined' | 'tank_sunk' | 'player_join' | 'player_quit' | 'lead_change' | 'position_change' | 'pill_kill';
 /** One run of same-coloured text. `team: null` means default prose colour. */
 export interface NewswireSegment {
     t: string;
@@ -82,6 +82,16 @@ export declare function actorOf(obj: {
     name?: string;
     team?: number | null;
 }): NewswireActor;
+export declare function placeName(place: number): string;
+/**
+ * The two new standings a `position_change` line reports: `[riser's place, faller's place]`.
+ *
+ * Both are needed because the sentence says where each side landed, not merely that they
+ * swapped — "moves into second place, falls to third place". They are the only kind-specific
+ * data on the wire beyond the two parties, which is why they ride in their own parameter rather
+ * than being smuggled into an actor's name.
+ */
+export type NewswirePlaces = readonly [number, number];
 /**
  * Render one event as coloured segments.
  *
@@ -90,29 +100,69 @@ export declare function actorOf(obj: {
  * attributable killer (splash damage, or the tank killed itself) and `actor` is the victim —
  * mirroring the `shell.attribution.$ !== this` guard at the call site, so a self-kill reads
  * "X was destroyed" rather than "X destroyed X".
+ *
+ * `places` is read by `position_change` alone and ignored by every other kind.
  */
-export declare function formatNewswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null): NewswireSegment[];
+export declare function formatNewswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null, places?: NewswirePlaces | null): NewswireSegment[];
 /**
- * How far a challenger must be clear of the field before the lead is called changed.
+ * How far a challenger must be clear of the team above before a position is called changed.
  *
  * Team scores are continuous — a weighted blend of base share, pillbox share and K/D
  * (`calculateTeamScores`, server/application.ts) — and are recomputed every 25 ticks. Two teams
- * within a whisker of each other would otherwise trade the title twice a second and bury every
- * other event on the wire. A margin makes it hysteresis: having taken the lead, a team keeps it
+ * within a whisker of each other would otherwise trade places twice a second and bury every
+ * other event on the wire. A margin makes it hysteresis: having taken a place, a team keeps it
  * until someone is clearly past them, not merely until someone is nominally ahead.
  *
  * One point is well under the value of a single base (~3 weighted points on a typical map), so
- * this damps float jitter without ever suppressing a real swing.
+ * this damps float jitter without ever suppressing a real swing. It applies at every boundary
+ * in the table, not just at the top: third place is as prone to jitter as first.
  */
-export declare const NEWSWIRE_LEAD_MARGIN = 1;
+export declare const NEWSWIRE_POSITION_MARGIN = 1;
 /**
- * Decide whether the lead has changed hands.
+ * One team overtaking another, with where each of them ended up (1-based).
  *
- * Returns the new leader's team, or `null` if the title has not moved — which covers the
- * incumbent still being ahead, nobody having scored yet, and the top two being too close to
- * call. `current` is the team that presently holds the title, or `null` if nobody does.
+ * `faller` is null only in a pile-up, where more teams moved up than there are sides to say they
+ * went past — see `updateStandings`. The riser's own new place is always known.
  */
-export declare function findLeadChange(scores: number[], current: number | null, margin?: number): number | null;
+export interface NewswirePositionSwap {
+    riser: number;
+    riserPlace: number;
+    faller: number | null;
+    fallerPlace: number | null;
+}
+/** The state of the table after one recount. */
+export interface NewswireStandings {
+    /** The ranked teams, best first. Feed this back in as `previous` on the next recount. */
+    order: number[];
+    /** The overtakes to announce. Empty on the first recount and whenever the roster changed. */
+    swaps: NewswirePositionSwap[];
+    /** The team on top with a positive score, or `null` while the board is empty. */
+    leader: number | null;
+    /**
+     * True when the table was rebuilt from scratch because the set of ranked teams changed. The
+     * order is still current — only the swaps are not worth saying out loud. See `updateStandings`.
+     */
+    rebaselined: boolean;
+}
+/**
+ * Recount the table and report which teams changed places.
+ *
+ * `eligible` is the set of teams to rank — the sides actually fielding tanks. Ranking the other
+ * three would mean announcing that an empty team "falls to fifth place" every time the scores
+ * drift, which is noise about nobody.
+ *
+ * `previous` is the order this function returned last time, or `null` on the first recount. It
+ * is not merely a diff baseline: it is the seed the new order is sorted *from*, which is what
+ * makes the margin hysteresis rather than a threshold. Teams within a margin of each other keep
+ * the order they already had, so a pair trading hundredths of a point sits still, and a team
+ * that has genuinely pulled clear moves exactly once.
+ *
+ * When the eligible set itself changes — someone joins, someone quits — the table is rebuilt and
+ * `rebaselined` is set with no swaps reported. A team that quits pushes everyone below it up a
+ * place, and that is an artefact of the roster, not of anything that happened in the game; the
+ * caller re-seeds silently and announces again from the next recount.
+ */
+export declare function updateStandings(scores: readonly number[], eligible: Iterable<number>, previous: readonly number[] | null, margin?: number): NewswireStandings;
 /** The wire shape broadcast by the server and replayed from the backlog. */
 export interface NewswireMessage {
     command: 'news';
@@ -120,5 +170,5 @@ export interface NewswireMessage {
     segments: NewswireSegment[];
 }
 /** Build the JSON command for one event. */
-export declare function newswireMessage(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null): NewswireMessage;
+export declare function newswireMessage(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null, places?: NewswirePlaces | null): NewswireMessage;
 //# sourceMappingURL=newswire.d.ts.map

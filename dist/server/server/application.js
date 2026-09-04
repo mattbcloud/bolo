@@ -12,7 +12,8 @@ import { WebSocketServer } from 'ws';
 import { MapIndex } from './map_index';
 import * as helpers from '../helpers';
 import BoloWorldMixin from '../world_mixin';
-import { newswireMessage, findLeadChange, teamActor } from '../newswire';
+import { newswireMessage, updateStandings, teamActor, } from '../newswire';
+import { isNickTaken, normalizeNick } from '../nick';
 import * as allObjectsModule from '../objects/all';
 import { Tank } from '../objects/tank';
 import WorldMap from '../world_map';
@@ -48,6 +49,9 @@ export class BoloServerWorld extends ServerWorld {
         this.teamScoresTick = 0; // Counter for sending team scores
         // The team currently holding the lead, for the newswire. Null until someone scores.
         this.leadTeam = null;
+        // The scoreline's standing order — the teams fielding tanks, best first. Null until the first
+        // recount; fed back into updateStandings() so its margin acts as hysteresis. See newswire.ts.
+        this.standings = null;
         // ── Team discovered map (overview) ───────────────────────────────────────
         // One byte per tile per team, recording every tile any tank on that team has been near.
         // The client keeps its own copy for what it witnesses live, but only the server can tell
@@ -474,18 +478,33 @@ export class BoloServerWorld extends ServerWorld {
      * that this new tank is his.
      */
     onJoinMessage(ws, message) {
+        // These return now. Without it an invalid nick was only logged, and the join went ahead
+        // anyway — spawning a tank named `undefined`.
         if (typeof message.nick !== 'string' || message.nick.length > 20) {
-            this.onError(ws, new Error('Client specified invalid nickname.'));
+            return this.onError(ws, new Error('Client specified invalid nickname.'));
         }
         if (typeof message.team !== 'number' || message.team < 0 || message.team > 5) {
-            this.onError(ws, new Error('Client specified invalid team.'));
+            return this.onError(ws, new Error('Client specified invalid team.'));
+        }
+        // The name is stored trimmed, so the comparison and the name everyone sees are the same
+        // string. The client already refuses an empty field; this covers a hand-made message.
+        const nick = normalizeNick(message.nick);
+        if (!nick) {
+            return this.onError(ws, new Error('Client specified an empty nickname.'));
+        }
+        // One name to a game — see src/nick.ts for what counts as the same name, and why a player
+        // reconnecting inside the reaper's window is refused their own name rather than handed it.
+        if (isNickTaken(this.tanks, nick)) {
+            console.log(`[JOIN REJECTED] "${nick}" is already in use — asking the client for another name.`);
+            ws.send(JSON.stringify({ command: 'joinRejected', reason: 'nickTaken', nick }));
+            return;
         }
         ws.tank = this.spawn(Tank, message.team);
-        ws.tank.name = message.nick;
-        ws.nick = message.nick;
+        ws.tank.name = nick;
+        ws.nick = nick;
         // Log player join with details
         const teamName = getTeamName(message.team);
-        console.log(`[PLAYER JOIN] Player "${message.nick}" joined team ${teamName} (tank idx=${ws.tank.idx}, tank_idx=${ws.tank.tank_idx})`);
+        console.log(`[PLAYER JOIN] Player "${nick}" joined team ${teamName} (tank idx=${ws.tank.idx}, tank_idx=${ws.tank.tank_idx})`);
         console.log(`[PLAYERS] Total tanks in game: ${this.tanks.length}`);
         console.log(`[PLAYERS] Connected players: ${this.tanks.map((t) => `${t.name || 'Unknown'} (team=${getTeamName(t.team)})`).join(', ')}`);
         // Mark client as NOT synchronized yet - sendPackets() will handle initial sync
@@ -549,8 +568,8 @@ export class BoloServerWorld extends ServerWorld {
      * happened scroll past as though they were happening now, which is worse than an empty strip.
      * The wire reports what is happening, not what happened.
      */
-    newswire(kind, actor, other) {
-        this.broadcast(JSON.stringify(newswireMessage(kind, actor, other)));
+    newswire(kind, actor, other, places) {
+        this.broadcast(JSON.stringify(newswireMessage(kind, actor, other, places)));
     }
     // ── Team discovered map (overview) ─────────────────────────────────────────
     /**
@@ -739,13 +758,31 @@ export class BoloServerWorld extends ServerWorld {
         if (this.teamScoresTick >= 25) {
             this.teamScoresTick = 0;
             const scores = this.calculateTeamScores();
-            // Announce a change at the top of the table. findLeadChange() applies the hysteresis, so
-            // this fires on real swings only — see NEWSWIRE_LEAD_MARGIN.
-            const newLeader = findLeadChange(scores, this.leadTeam);
-            if (newLeader !== null) {
+            // Announce every change of position, not just at the top. Only the sides fielding tanks
+            // are ranked — an empty team sliding down the table is news about nobody — and
+            // updateStandings() applies the hysteresis, so this fires on real swings only. See
+            // NEWSWIRE_POSITION_MARGIN.
+            const fielded = new Set();
+            for (const tank of this.tanks) {
+                if (tank.team >= 0 && tank.team <= 5)
+                    fielded.add(tank.team);
+            }
+            const standings = updateStandings(scores, fielded, this.standings);
+            this.standings = standings.order;
+            if (standings.leader !== null && standings.leader !== this.leadTeam) {
                 const previous = this.leadTeam;
-                this.leadTeam = newLeader;
-                this.newswire('lead_change', teamActor(newLeader), previous === null ? null : teamActor(previous));
+                this.leadTeam = standings.leader;
+                // A rebaseline moved the title by roster change, not by play — take the new leader as
+                // read so the next real overtake is announced against the truth, but say nothing now.
+                if (!standings.rebaselined) {
+                    this.newswire('lead_change', teamActor(standings.leader), previous === null ? null : teamActor(previous));
+                }
+            }
+            for (const swap of standings.swaps) {
+                // First place is the lead_change line above, which already names both parties.
+                if (swap.riserPlace === 1)
+                    continue;
+                this.newswire('position_change', teamActor(swap.riser), swap.faller === null ? null : teamActor(swap.faller), [swap.riserPlace, swap.fallerPlace ?? 0]);
             }
             // Record team scores to Firebase for stats
             statsService.recordTeamScores(scores).catch((error) => {

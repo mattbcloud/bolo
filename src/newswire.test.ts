@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 
 import {
-  formatNewswire, teamActor, actorOf, pillboxActor, newswireMessage, findLeadChange, channelOf,
-  NEWSWIRE_HEADER, NEWSWIRE_CHANNEL_LABELS, NEWSWIRE_LEAD_MARGIN, NewswireKind,
+  formatNewswire, teamActor, actorOf, pillboxActor, newswireMessage, updateStandings, channelOf,
+  placeName, NEWSWIRE_HEADER, NEWSWIRE_CHANNEL_LABELS, NEWSWIRE_POSITION_MARGIN, NewswireKind,
 } from './newswire';
 import TEAM_COLORS, { teamTextColor, contrastOnBlack, rgbToHsl, NEUTRAL_TEXT_COLOR, MIN_TEXT_CONTRAST, MIN_CHANNEL } from './team_colors';
 
@@ -26,6 +26,8 @@ describe('formatNewswire', () => {
     expect(text(formatNewswire('player_quit', BLUE))).toBe('Bravo has quit game');
     expect(text(formatNewswire('lead_change', teamActor(5), teamActor(4))))
       .toBe('Team Purple takes the lead from Team Orange');
+    expect(text(formatNewswire('position_change', teamActor(5), teamActor(3), [2, 3])))
+      .toBe('Team Purple moves into second place, Team Green falls to third place');
     expect(text(formatNewswire('pill_kill', RED, pillboxActor(1))))
       .toBe('Redshirt was destroyed by a Team Blue Pillbox');
     expect(text(formatNewswire('pill_kill', RED, pillboxActor(255))))
@@ -131,6 +133,29 @@ describe('formatNewswire', () => {
     expect(text(formatNewswire('lead_change', teamActor(3)))).toBe('Team Green takes the lead');
   });
 
+  it('colours both sides of a position change and none of the prose', () => {
+    expect(formatNewswire('position_change', teamActor(5), teamActor(3), [2, 3])).toEqual([
+      { t: 'Team Purple', team: 5 },
+      { t: ' moves into second place, ', team: null },
+      { t: 'Team Green', team: 3 },
+      { t: ' falls to third place', team: null },
+    ]);
+  });
+
+  it('names every place in the table', () => {
+    expect([1, 2, 3, 4, 5, 6].map(placeName))
+      .toEqual(['first', 'second', 'third', 'fourth', 'fifth', 'sixth']);
+    // Six teams means six places; a seventh is a corrupt index and should be visible as one.
+    expect(placeName(7)).toBe('7th');
+  });
+
+  it('rewords a position change with no places rather than inventing a standing', () => {
+    expect(text(formatNewswire('position_change', teamActor(5), teamActor(3))))
+      .toBe('Team Purple overtakes Team Green');
+    expect(text(formatNewswire('position_change', teamActor(5), null, [4, 0])))
+      .toBe('Team Purple moves into fourth place');
+  });
+
   it('rewords a steal with no previous owner rather than inventing one', () => {
     expect(text(formatNewswire('base_steal', BLUE))).toBe('Bravo just stole a base');
     expect(text(formatNewswire('pill_steal', BLUE))).toBe('Bravo just stole a pillbox');
@@ -150,8 +175,9 @@ describe('formatNewswire', () => {
 });
 
 describe('channels', () => {
-  it('routes lead changes to the score channel and everything else to news', () => {
+  it('routes standings events to the score channel and everything else to news', () => {
     expect(channelOf('lead_change')).toBe('score');
+    expect(channelOf('position_change')).toBe('score');
     for (const kind of ['base_capture', 'base_steal', 'pill_capture', 'pill_steal',
                         'builder_lost', 'tank_kill', 'tank_mined', 'tank_sunk',
                         'player_join', 'player_quit', 'pill_kill'] as NewswireKind[]) {
@@ -164,46 +190,123 @@ describe('channels', () => {
   });
 });
 
-describe('findLeadChange', () => {
+describe('updateStandings', () => {
   const scores = (partial: Record<number, number>): number[] =>
     Array.from({ length: 6 }, (_, t) => partial[t] ?? 0);
 
-  it('says nothing while the board is empty', () => {
-    expect(findLeadChange(scores({}), null)).toBe(null);
+  /** The teams named in a score table — the sides fielding tanks, in these tests. */
+  const fielding = (partial: Record<number, number>) => Object.keys(partial).map(Number);
+
+  /** One recount: score the table, then read the swaps it reports. */
+  const recount = (partial: Record<number, number>, previous: number[] | null) =>
+    updateStandings(scores(partial), fielding(partial), previous);
+
+  it('says nothing on the first recount — there is no previous table to have changed', () => {
+    const first = recount({ 3: 40, 1: 20, 5: 10 }, null);
+    expect(first.order).toEqual([3, 1, 5]);
+    expect(first.swaps).toEqual([]);
+    expect(first.leader).toBe(3);
+    expect(first.rebaselined).toBe(false);
   });
 
-  it('calls the first team to score', () => {
-    expect(findLeadChange(scores({ 3: 12 }), null)).toBe(3);
+  it('reports a mid-table overtake as one swap naming both new places', () => {
+    // Purple (5) passes Green (3) for second. Red (0) is untouched on top.
+    const before = recount({ 0: 80, 3: 40, 5: 20 }, null);
+    expect(before.order).toEqual([0, 3, 5]);
+    const after = recount({ 0: 80, 3: 40, 5: 50 }, before.order);
+    expect(after.order).toEqual([0, 5, 3]);
+    expect(after.swaps).toEqual([{ riser: 5, riserPlace: 2, faller: 3, fallerPlace: 3 }]);
+    // The lead did not move, so nothing about first place is reported.
+    expect(after.leader).toBe(0);
   });
 
-  it('stays quiet while the incumbent is still ahead', () => {
-    expect(findLeadChange(scores({ 3: 40, 1: 20 }), 3)).toBe(null);
+  it('stays quiet while the table holds', () => {
+    const before = recount({ 0: 80, 3: 40, 5: 20 }, null);
+    expect(recount({ 0: 82, 3: 41, 5: 19 }, before.order).swaps).toEqual([]);
   });
 
-  it('calls a real overtake', () => {
-    expect(findLeadChange(scores({ 3: 40, 1: 55 }), 3)).toBe(1);
+  it('holds a place through a near-tie rather than trading it every half second', () => {
+    const before = recount({ 3: 40, 1: 30 }, null);
+    expect(recount({ 3: 40, 1: 40.4 }, before.order).swaps).toEqual([]);
+    expect(recount({ 3: 40, 1: 40 + NEWSWIRE_POSITION_MARGIN }, before.order).swaps).toEqual([]);
+    expect(recount({ 3: 40, 1: 40 + NEWSWIRE_POSITION_MARGIN + 0.01 }, before.order).swaps)
+      .toEqual([{ riser: 1, riserPlace: 1, faller: 3, fallerPlace: 2 }]);
   });
 
-  it('holds the title through a near-tie rather than trading it every half second', () => {
-    // The whole point of the margin: 40.0 vs 40.4 is noise, not a lead change.
-    expect(findLeadChange(scores({ 3: 40, 1: 40.4 }), 3)).toBe(null);
-    expect(findLeadChange(scores({ 3: 40, 1: 40 + NEWSWIRE_LEAD_MARGIN }), 3)).toBe(null);
-    expect(findLeadChange(scores({ 3: 40, 1: 40 + NEWSWIRE_LEAD_MARGIN + 0.01 }), 3)).toBe(1);
-  });
-
-  it('is hysteresis, not a one-way ratchet — the old leader must also clear the margin', () => {
-    let leader: number | null = 3;
-    // 1 overtakes decisively.
-    leader = findLeadChange(scores({ 3: 40, 1: 45 }), leader) ?? leader;
-    expect(leader).toBe(1);
-    // 3 creeps back level: no announcement.
-    expect(findLeadChange(scores({ 3: 45.5, 1: 45 }), leader)).toBe(null);
+  it('is hysteresis at every boundary, not just at the top', () => {
+    // Same test as the lead's, run one rank down: 0 holds first throughout.
+    let order = recount({ 0: 90, 3: 40, 1: 30 }, null).order;
+    expect(order).toEqual([0, 3, 1]);
+    // 1 overtakes 3 decisively for second.
+    order = recount({ 0: 90, 3: 40, 1: 45 }, order).order;
+    expect(order).toEqual([0, 1, 3]);
+    // 3 creeps back level: no announcement, and the order holds.
+    const level = recount({ 0: 90, 3: 45.5, 1: 45 }, order);
+    expect(level.swaps).toEqual([]);
+    expect(level.order).toEqual([0, 1, 3]);
     // 3 pulls clear: announced.
-    expect(findLeadChange(scores({ 3: 47, 1: 45 }), leader)).toBe(3);
+    expect(recount({ 0: 90, 3: 47, 1: 45 }, order).swaps)
+      .toEqual([{ riser: 3, riserPlace: 2, faller: 1, fallerPlace: 3 }]);
+  });
+
+  it('reports one line per pair when several places change at once', () => {
+    const before = recount({ 0: 90, 1: 70, 2: 50, 3: 30 }, null);
+    expect(before.order).toEqual([0, 1, 2, 3]);
+    // 2 leaps from third to first, and 3 from fourth to third. Each names the side it squeezed
+    // in front of, and they do not name the same one twice.
+    const after = recount({ 0: 90, 1: 70, 2: 100, 3: 80 }, before.order);
+    expect(after.order).toEqual([2, 0, 3, 1]);
+    expect(after.swaps).toEqual([
+      { riser: 2, riserPlace: 1, faller: 0, fallerPlace: 2 },
+      { riser: 3, riserPlace: 3, faller: 1, fallerPlace: 4 },
+    ]);
+    expect(after.leader).toBe(2);
+  });
+
+  it('names no side twice when more teams move up than were passed', () => {
+    const before = recount({ 0: 90, 1: 50, 2: 40 }, null);
+    expect(before.order).toEqual([0, 1, 2]);
+    // 1 and 2 both leap 0, but only 0 fell. The second line keeps its own standing and stops
+    // there rather than blaming 0 a second time.
+    const after = recount({ 0: 50, 1: 100, 2: 90 }, before.order);
+    expect(after.order).toEqual([1, 2, 0]);
+    expect(after.swaps).toEqual([
+      { riser: 1, riserPlace: 1, faller: 0, fallerPlace: 3 },
+      { riser: 2, riserPlace: 2, faller: null, fallerPlace: null },
+    ]);
+    expect(text(formatNewswire('position_change', teamActor(2), null, [2, 0])))
+      .toBe('Team Yellow moves into second place');
+  });
+
+  it('ranks only the teams fielding tanks', () => {
+    // Teams 2 and 4 have scores on the board but no players; they are not in the table at all.
+    const table = updateStandings(scores({ 0: 90, 2: 80, 3: 40, 4: 70 }), [0, 3], null);
+    expect(table.order).toEqual([0, 3]);
+  });
+
+  it('rebuilds silently when the roster changes, since the shift is not about play', () => {
+    const before = recount({ 0: 90, 1: 70, 2: 50 }, null);
+    // Team 1 quits: 2 inherits second place without having earned it.
+    const after = updateStandings(scores({ 0: 90, 2: 50 }), [0, 2], before.order);
+    expect(after.order).toEqual([0, 2]);
+    expect(after.swaps).toEqual([]);
+    expect(after.rebaselined).toBe(true);
+    // And the next recount announces against the rebuilt table.
+    expect(updateStandings(scores({ 0: 90, 2: 95 }), [0, 2], after.order).swaps)
+      .toEqual([{ riser: 2, riserPlace: 1, faller: 0, fallerPlace: 2 }]);
   });
 
   it('will not crown a team on a zero score', () => {
-    expect(findLeadChange(scores({}), 2)).toBe(null);
+    expect(updateStandings(scores({}), [0, 1, 2], null).leader).toBe(null);
+    // ...and an all-zero board reports no movement, whatever order it happens to be in.
+    const flat = updateStandings(scores({}), [0, 1, 2], [2, 1, 0]);
+    expect(flat.order).toEqual([2, 1, 0]);
+    expect(flat.swaps).toEqual([]);
+  });
+
+  it('survives an empty table', () => {
+    expect(updateStandings(scores({}), [], null))
+      .toEqual({ order: [], swaps: [], leader: null, rebaselined: false });
   });
 });
 

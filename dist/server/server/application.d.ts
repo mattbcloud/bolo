@@ -8,7 +8,7 @@
 import * as http from 'http';
 import { MapIndex } from './map_index';
 import { BoloWorldMixin as BoloWorldMixinInterface } from '../world_mixin';
-import { NewswireActor, NewswireKind } from '../newswire';
+import { NewswireActor, NewswireKind, NewswirePlaces } from '../newswire';
 import { ServerWorld } from '../villain/world/net/server';
 export declare class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterface {
     authority: boolean;
@@ -23,6 +23,7 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
     emptyStartTime: number | null;
     teamScoresTick: number;
     leadTeam: number | null;
+    standings: number[] | null;
     teamDiscovered: (Uint8Array | null)[];
     teamDiscoveredPending: number[][];
     teamDiscoveredTick: number;
@@ -95,7 +96,7 @@ export declare class BoloServerWorld extends ServerWorld implements BoloWorldMix
      * happened scroll past as though they were happening now, which is worse than an empty strip.
      * The wire reports what is happening, not what happened.
      */
-    newswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null): void;
+    newswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null, places?: NewswirePlaces | null): void;
     /**
      * Widen each team's discovered map by what its living tanks can see this tick, and note
      * the newly discovered tiles so they can be sent out as a delta. Vision is shared across
