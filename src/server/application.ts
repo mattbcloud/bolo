@@ -16,7 +16,7 @@ import * as helpers from '../helpers';
 import BoloWorldMixin, { BoloWorldMixin as BoloWorldMixinInterface } from '../world_mixin';
 import {
   newswireMessage, updateStandings, teamActor,
-  NewswireActor, NewswireKind, NewswirePlaces,
+  NewswireActor, NewswireKind, NewswirePositionDetail,
 } from '../newswire';
 import { isNickTaken, normalizeNick } from '../nick';
 import * as allObjectsModule from '../objects/all';
@@ -63,6 +63,9 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   // The scoreline's standing order — the teams fielding tanks, best first. Null until the first
   // recount; fed back into updateStandings() so its margin acts as hysteresis. See newswire.ts.
   standings: number[] | null = null;
+  // Rotates the wording of the position lines. A counter rather than a random pick, so
+  // consecutive lines are guaranteed to read differently instead of merely likely to.
+  positionLineVariant: number = 0;
 
   // ── Team discovered map (overview) ───────────────────────────────────────
   // One byte per tile per team, recording every tile any tank on that team has been near.
@@ -644,9 +647,9 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     kind: NewswireKind,
     actor: NewswireActor,
     other?: NewswireActor | null,
-    places?: NewswirePlaces | null
+    detail?: NewswirePositionDetail | null
   ): void {
-    this.broadcast(JSON.stringify(newswireMessage(kind, actor, other, places)));
+    this.broadcast(JSON.stringify(newswireMessage(kind, actor, other, detail)));
   }
 
   // ── Team discovered map (overview) ─────────────────────────────────────────
@@ -877,7 +880,11 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
           'position_change',
           teamActor(swap.riser),
           swap.faller === null ? null : teamActor(swap.faller),
-          [swap.riserPlace, swap.fallerPlace ?? 0]
+          {
+            riser: swap.riserPlace,
+            faller: swap.fallerPlace,
+            variant: this.positionLineVariant++,
+          }
         );
       }
 

@@ -84,14 +84,30 @@ export declare function actorOf(obj: {
 }): NewswireActor;
 export declare function placeName(place: number): string;
 /**
- * The two new standings a `position_change` line reports: `[riser's place, faller's place]`.
+ * What a `position_change` line reports beyond its two parties: where each of them landed, and
+ * which of the phrasings to use.
  *
- * Both are needed because the sentence says where each side landed, not merely that they
- * swapped — "moves into second place, falls to third place". They are the only kind-specific
- * data on the wire beyond the two parties, which is why they ride in their own parameter rather
- * than being smuggled into an actor's name.
+ * `faller` is the second team's *new* place, null when there is no second team to name — see
+ * `NewswirePositionSwap`. `variant` rotates the wording; the caller supplies a counter rather
+ * than a random number so a given line is reproducible, and so consecutive lines are guaranteed
+ * to differ instead of merely being likely to.
  */
-export type NewswirePlaces = readonly [number, number];
+export interface NewswirePositionDetail {
+    riser: number;
+    faller: number | null;
+    variant?: number;
+}
+/**
+ * How many ways a position change can be worded. One phrasing, repeated every time the table
+ * moves, stops being read after the first evening — the eye files it as furniture. These are
+ * three different *sentences*, not three synonyms for the same one, because a rotation between
+ * near-identical lines still reads as a single line.
+ *
+ * The overtake shape names only the riser's place, so it is used only when the faller landed
+ * directly below — where its place is implied and nothing is lost. `positionShapeCount` is what
+ * decides that, and it is exported so the caller can reason about the rotation the same way.
+ */
+export declare function positionShapeCount(detail: NewswirePositionDetail, named: boolean): number;
 /**
  * Render one event as coloured segments.
  *
@@ -101,9 +117,9 @@ export type NewswirePlaces = readonly [number, number];
  * mirroring the `shell.attribution.$ !== this` guard at the call site, so a self-kill reads
  * "X was destroyed" rather than "X destroyed X".
  *
- * `places` is read by `position_change` alone and ignored by every other kind.
+ * `detail` is read by `position_change` alone and ignored by every other kind.
  */
-export declare function formatNewswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null, places?: NewswirePlaces | null): NewswireSegment[];
+export declare function formatNewswire(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null, detail?: NewswirePositionDetail | null): NewswireSegment[];
 /**
  * How far a challenger must be clear of the team above before a position is called changed.
  *
@@ -170,5 +186,5 @@ export interface NewswireMessage {
     segments: NewswireSegment[];
 }
 /** Build the JSON command for one event. */
-export declare function newswireMessage(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null, places?: NewswirePlaces | null): NewswireMessage;
+export declare function newswireMessage(kind: NewswireKind, actor: NewswireActor, other?: NewswireActor | null, detail?: NewswirePositionDetail | null): NewswireMessage;
 //# sourceMappingURL=newswire.d.ts.map

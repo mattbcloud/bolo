@@ -153,14 +153,34 @@ export function placeName(place: number): string {
 }
 
 /**
- * The two new standings a `position_change` line reports: `[riser's place, faller's place]`.
+ * What a `position_change` line reports beyond its two parties: where each of them landed, and
+ * which of the phrasings to use.
  *
- * Both are needed because the sentence says where each side landed, not merely that they
- * swapped — "moves into second place, falls to third place". They are the only kind-specific
- * data on the wire beyond the two parties, which is why they ride in their own parameter rather
- * than being smuggled into an actor's name.
+ * `faller` is the second team's *new* place, null when there is no second team to name — see
+ * `NewswirePositionSwap`. `variant` rotates the wording; the caller supplies a counter rather
+ * than a random number so a given line is reproducible, and so consecutive lines are guaranteed
+ * to differ instead of merely being likely to.
  */
-export type NewswirePlaces = readonly [number, number];
+export interface NewswirePositionDetail {
+  riser: number;
+  faller: number | null;
+  variant?: number;
+}
+
+/**
+ * How many ways a position change can be worded. One phrasing, repeated every time the table
+ * moves, stops being read after the first evening — the eye files it as furniture. These are
+ * three different *sentences*, not three synonyms for the same one, because a rotation between
+ * near-identical lines still reads as a single line.
+ *
+ * The overtake shape names only the riser's place, so it is used only when the faller landed
+ * directly below — where its place is implied and nothing is lost. `positionShapeCount` is what
+ * decides that, and it is exported so the caller can reason about the rotation the same way.
+ */
+export function positionShapeCount(detail: NewswirePositionDetail, named: boolean): number {
+  if (!named || detail.faller === null) return 2;         // the overtake needs a side to name
+  return detail.faller === detail.riser + 1 ? 3 : 2;      // ...and an unambiguous drop
+}
 
 /**
  * Render one event as coloured segments.
@@ -171,13 +191,13 @@ export type NewswirePlaces = readonly [number, number];
  * mirroring the `shell.attribution.$ !== this` guard at the call site, so a self-kill reads
  * "X was destroyed" rather than "X destroyed X".
  *
- * `places` is read by `position_change` alone and ignored by every other kind.
+ * `detail` is read by `position_change` alone and ignored by every other kind.
  */
 export function formatNewswire(
   kind: NewswireKind,
   actor: NewswireActor,
   other?: NewswireActor | null,
-  places?: NewswirePlaces | null
+  detail?: NewswirePositionDetail | null
 ): NewswireSegment[] {
   switch (kind) {
     case 'base_capture':
@@ -233,19 +253,44 @@ export function formatNewswire(
       // this kind covers every rank below it.
       //
       // Both parties are sides, and a swap always has two of them: one team can only rise past
-      // another. The one-party branch is the same kind of reword the steals do — degrade the
+      // another. The one-party branches are the same kind of reword the steals do — degrade the
       // sentence rather than invent a side that was not passed.
-      if (!places) {
+      if (!detail) {
         return other
           ? [name(actor), seg(' overtakes '), name(other)]
           : [name(actor), seg(' moves up the table')];
       }
-      return other
-        ? [
-            name(actor), seg(` moves into ${placeName(places[0])} place, `),
-            name(other), seg(` falls to ${placeName(places[1])} place`),
-          ]
-        : [name(actor), seg(` moves into ${placeName(places[0])} place`)];
+
+      const risen = placeName(detail.riser);
+      const shapes = positionShapeCount(detail, other != null);
+      // Modulo twice so a negative counter still lands in range rather than off the end.
+      const shape = (((detail.variant ?? 0) % shapes) + shapes) % shapes;
+
+      switch (shape) {
+        case 0:
+          // Clipped wire-service register, and the shortest of the three — the one that fits
+          // when the strip is busy. No "place": the ordinal carries it.
+          return other && detail.faller !== null
+            ? [
+                name(actor), seg(` up to ${risen}, `),
+                name(other), seg(` down to ${placeName(detail.faller)}`),
+              ]
+            : [name(actor), seg(` up to ${risen}`)];
+        case 1:
+          // Climbing and slipping are things teams do; moving and falling are things that happen
+          // to numbers. Same shape as the terse line, told as effort and accident.
+          return other && detail.faller !== null
+            ? [
+                name(actor), seg(` climbs to ${risen} place, `),
+                name(other), seg(` slips to ${placeName(detail.faller)}`),
+              ]
+            : [name(actor), seg(` climbs to ${risen} place`)];
+        default:
+          // The only shape whose subject is the contest rather than the table: it puts the two
+          // sides next to each other in the sentence. Reached only when the faller is directly
+          // below the riser, so naming one place states the whole outcome.
+          return [name(actor), seg(' overtakes '), name(other!), seg(` for ${risen} place`)];
+      }
     }
     default: {
       const exhaustive: never = kind;
@@ -406,7 +451,7 @@ export function newswireMessage(
   kind: NewswireKind,
   actor: NewswireActor,
   other?: NewswireActor | null,
-  places?: NewswirePlaces | null
+  detail?: NewswirePositionDetail | null
 ): NewswireMessage {
-  return { command: 'news', kind, segments: formatNewswire(kind, actor, other, places) };
+  return { command: 'news', kind, segments: formatNewswire(kind, actor, other, detail) };
 }

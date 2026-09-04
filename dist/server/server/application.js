@@ -52,6 +52,9 @@ export class BoloServerWorld extends ServerWorld {
         // The scoreline's standing order — the teams fielding tanks, best first. Null until the first
         // recount; fed back into updateStandings() so its margin acts as hysteresis. See newswire.ts.
         this.standings = null;
+        // Rotates the wording of the position lines. A counter rather than a random pick, so
+        // consecutive lines are guaranteed to read differently instead of merely likely to.
+        this.positionLineVariant = 0;
         // ── Team discovered map (overview) ───────────────────────────────────────
         // One byte per tile per team, recording every tile any tank on that team has been near.
         // The client keeps its own copy for what it witnesses live, but only the server can tell
@@ -568,8 +571,8 @@ export class BoloServerWorld extends ServerWorld {
      * happened scroll past as though they were happening now, which is worse than an empty strip.
      * The wire reports what is happening, not what happened.
      */
-    newswire(kind, actor, other, places) {
-        this.broadcast(JSON.stringify(newswireMessage(kind, actor, other, places)));
+    newswire(kind, actor, other, detail) {
+        this.broadcast(JSON.stringify(newswireMessage(kind, actor, other, detail)));
     }
     // ── Team discovered map (overview) ─────────────────────────────────────────
     /**
@@ -782,7 +785,11 @@ export class BoloServerWorld extends ServerWorld {
                 // First place is the lead_change line above, which already names both parties.
                 if (swap.riserPlace === 1)
                     continue;
-                this.newswire('position_change', teamActor(swap.riser), swap.faller === null ? null : teamActor(swap.faller), [swap.riserPlace, swap.fallerPlace ?? 0]);
+                this.newswire('position_change', teamActor(swap.riser), swap.faller === null ? null : teamActor(swap.faller), {
+                    riser: swap.riserPlace,
+                    faller: swap.fallerPlace,
+                    variant: this.positionLineVariant++,
+                });
             }
             // Record team scores to Firebase for stats
             statsService.recordTeamScores(scores).catch((error) => {

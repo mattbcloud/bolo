@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest';
 
 import {
   formatNewswire, teamActor, actorOf, pillboxActor, newswireMessage, updateStandings, channelOf,
-  placeName, NEWSWIRE_HEADER, NEWSWIRE_CHANNEL_LABELS, NEWSWIRE_POSITION_MARGIN, NewswireKind,
+  placeName, positionShapeCount, NEWSWIRE_HEADER, NEWSWIRE_CHANNEL_LABELS, NEWSWIRE_POSITION_MARGIN, NewswireKind,
 } from './newswire';
 import TEAM_COLORS, { teamTextColor, contrastOnBlack, rgbToHsl, NEUTRAL_TEXT_COLOR, MIN_TEXT_CONTRAST, MIN_CHANNEL } from './team_colors';
 
 const RED = { name: 'Redshirt', team: 0 };
+/** A team rising to second past the team directly below it — the everyday position change. */
+const SWAP = { riser: 2, faller: 3 };
 const BLUE = { name: 'Bravo', team: 1 };
 
 /** Flatten segments back to the line a reader sees. */
@@ -26,8 +28,8 @@ describe('formatNewswire', () => {
     expect(text(formatNewswire('player_quit', BLUE))).toBe('Bravo has quit game');
     expect(text(formatNewswire('lead_change', teamActor(5), teamActor(4))))
       .toBe('Team Purple takes the lead from Team Orange');
-    expect(text(formatNewswire('position_change', teamActor(5), teamActor(3), [2, 3])))
-      .toBe('Team Purple moves into second place, Team Green falls to third place');
+    expect(text(formatNewswire('position_change', teamActor(5), teamActor(3), SWAP)))
+      .toBe('Team Purple up to second, Team Green down to third');
     expect(text(formatNewswire('pill_kill', RED, pillboxActor(1))))
       .toBe('Redshirt was destroyed by a Team Blue Pillbox');
     expect(text(formatNewswire('pill_kill', RED, pillboxActor(255))))
@@ -134,12 +136,46 @@ describe('formatNewswire', () => {
   });
 
   it('colours both sides of a position change and none of the prose', () => {
-    expect(formatNewswire('position_change', teamActor(5), teamActor(3), [2, 3])).toEqual([
+    expect(formatNewswire('position_change', teamActor(5), teamActor(3), SWAP)).toEqual([
       { t: 'Team Purple', team: 5 },
-      { t: ' moves into second place, ', team: null },
+      { t: ' up to second, ', team: null },
       { t: 'Team Green', team: 3 },
-      { t: ' falls to third place', team: null },
+      { t: ' down to third', team: null },
     ]);
+  });
+
+  it('rotates the wording, so the same sentence is not the whole scoreline', () => {
+    const worded = (variant: number) =>
+      text(formatNewswire('position_change', teamActor(5), teamActor(3), { ...SWAP, variant }));
+
+    expect(worded(0)).toBe('Team Purple up to second, Team Green down to third');
+    expect(worded(1)).toBe('Team Purple climbs to second place, Team Green slips to third');
+    expect(worded(2)).toBe('Team Purple overtakes Team Green for second place');
+    // A counter, not a random pick: it cycles, and a given variant always reads the same way.
+    expect(worded(3)).toBe(worded(0));
+    expect(worded(4)).toBe(worded(1));
+    // Every shape names both sides in their own colours, whichever one comes up.
+    for (const variant of [0, 1, 2]) {
+      const segments = formatNewswire('position_change', teamActor(5), teamActor(3), { ...SWAP, variant });
+      expect(segments.filter((s) => s.team === 5)).toEqual([{ t: 'Team Purple', team: 5 }]);
+      expect(segments.filter((s) => s.team === 3)).toEqual([{ t: 'Team Green', team: 3 }]);
+    }
+  });
+
+  it('drops the overtake shape when the faller did not land directly below', () => {
+    // "overtakes Team Green for second place" would leave a two-place drop unsaid, so a swap
+    // that is not adjacent rotates between the two shapes that name both standings.
+    const far = { riser: 2, faller: 4 };
+    const worded = (variant: number) =>
+      text(formatNewswire('position_change', teamActor(5), teamActor(3), { ...far, variant }));
+
+    expect(worded(0)).toBe('Team Purple up to second, Team Green down to fourth');
+    expect(worded(1)).toBe('Team Purple climbs to second place, Team Green slips to fourth');
+    expect(worded(2)).toBe(worded(0));
+    expect(positionShapeCount(far, true)).toBe(2);
+    expect(positionShapeCount(SWAP, true)).toBe(3);
+    // No side to name, no overtake to describe, whatever the places say.
+    expect(positionShapeCount(SWAP, false)).toBe(2);
   });
 
   it('names every place in the table', () => {
@@ -149,11 +185,14 @@ describe('formatNewswire', () => {
     expect(placeName(7)).toBe('7th');
   });
 
-  it('rewords a position change with no places rather than inventing a standing', () => {
+  it('rewords a position change with no standings rather than inventing one', () => {
     expect(text(formatNewswire('position_change', teamActor(5), teamActor(3))))
       .toBe('Team Purple overtakes Team Green');
-    expect(text(formatNewswire('position_change', teamActor(5), null, [4, 0])))
-      .toBe('Team Purple moves into fourth place');
+    // A riser with no side to name keeps its own standing, in whichever shape came up.
+    expect(text(formatNewswire('position_change', teamActor(5), null, { riser: 4, faller: null })))
+      .toBe('Team Purple up to fourth');
+    expect(text(formatNewswire('position_change', teamActor(5), null, { riser: 4, faller: null, variant: 1 })))
+      .toBe('Team Purple climbs to fourth place');
   });
 
   it('rewords a steal with no previous owner rather than inventing one', () => {
@@ -274,8 +313,8 @@ describe('updateStandings', () => {
       { riser: 1, riserPlace: 1, faller: 0, fallerPlace: 3 },
       { riser: 2, riserPlace: 2, faller: null, fallerPlace: null },
     ]);
-    expect(text(formatNewswire('position_change', teamActor(2), null, [2, 0])))
-      .toBe('Team Yellow moves into second place');
+    expect(text(formatNewswire('position_change', teamActor(2), null, { riser: 2, faller: null })))
+      .toBe('Team Yellow up to second');
   });
 
   it('ranks only the teams fielding tanks', () => {
