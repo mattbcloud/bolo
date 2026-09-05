@@ -351,7 +351,7 @@ export function shoot(
   // Step 1: Turn toward target with tolerance=0 (verified from assembly 0x0178ca)
   // Shoot requires exact aim — keeps turning until angErr===0.
   const targetDir = directionTo(tank.x, tank.y, targetX, targetY);
-  const aimSettled = turnTowardsDir(a4, tank.facingDir, targetDir, 0);
+  turnTowardsDir(a4, tank.facingDir, targetDir, 0);
 
   // Step 2: Range-aware thrust/retreat logic (verified from 0x0178f0-0x017932)
   if (!rangeFlag) {
@@ -392,24 +392,21 @@ export function shoot(
     }
   }
 
-  // Step 4: Aim accuracy check
+  // Step 4: Aim accuracy check. onTarget is the coarse half — is the target in range and
+  // roughly ahead — and it measures from the facing the brain was last shown, with 128 units of
+  // slack, which at 7 tiles is ~4 direction units. A hull sweeping past the target satisfies it
+  // for several ticks in the middle of the swing.
   if (!onTarget(state, targetX, targetY, rangeFlag)) return;
 
-  // ...and don't pull the trigger while the hull is still slewing. onTarget's tolerance is a
-  // flat 128 world units, which at 7 tiles is about 4 direction units of facing error, and a
-  // 4-unit error puts the shell ~117 units off the bearing - right at the 127-unit collision
-  // radius. So onTarget green-lights a shot taken mid-swing that lands on the very edge of the
-  // target or just past it. turnTowardsDir has already decided whether the hull is inside its
-  // deadband (returns 1) or is still being commanded to turn (0); requiring the former costs at
-  // most a tick of delay and spends the shell on a settled bearing instead.
+  // ...so the shot itself is decided by where the barrel will point when the shell leaves.
   //
-  // Measured over 8 seeds of full-brain play: shells released while the hull was turning landed
-  // 51.6% of the time, against 79.9% for shells released settled. That gap is the whole of the
-  // reported 'jerks left to right while firing, less than half the shells land' - and it is far
-  // worse live than here, because in multiplayer the brain's turn commands round-trip to the
-  // server (client.ts _runBrainTick sends START/STOP deltas; authority is false), so the hull
-  // overshoots and hunts and a much larger share of shots get taken mid-swing.
-  if (!aimSettled) return;
+  // Measured over 8 seeds of full-brain play, shells released while the hull was turning landed
+  // 51.6% of the time against 79.9% released settled — and live that gap is far wider, because
+  // the brain's turn commands round-trip to the server (client.ts _runBrainTick sends START/STOP
+  // deltas; authority is false), so the hull overshoots, hunts, and almost every shot goes out
+  // mid-swing. Waiting for a hull that has stopped would fix the accuracy and destroy the rate
+  // of fire against anything that moves; predicting the release bearing keeps both.
+  if (!shotWillConnect(a4, state, targetX, targetY)) return;
 
   // Step 5: Fire
   if (!rateGate) {
@@ -429,6 +426,87 @@ export function shoot(
       a4.shotFiredThisTick = 1;
     }
   }
+}
+
+/**
+ * Where the barrel will be pointing when a trigger pulled NOW actually releases a shell.
+ *
+ * Two delays sit between the brain and the shell. The facing it reads is what the server sent
+ * some ticks ago, and the trigger it pulls takes some ticks to arrive. The hull keeps rotating
+ * through both. `aimLoopDelay` measures the pair together (updateAimTracker times a command all
+ * the way round to the facing moving), which is exactly the span the hull rotates over between
+ * the facing being sampled and the shell leaving.
+ *
+ * There is deliberately no floor under the delay. `Tank.update` calls `shootOrReload()` BEFORE
+ * `turn()` (objects/tank.ts), so a shell leaves on the facing the hull held at the START of its
+ * tick — the facing the brain was handed, with this tick's rotation not yet applied. On a local
+ * game the delay really is zero, and adding a tick "for safety" would bias every shot on a
+ * rotating hull by a full turn step: ~46 world units at 7 tiles, which is most of the way
+ * across a pillbox and more than the whole width of a cover graze.
+ */
+export function releaseFacing(a4: A4State, facing: number): number {
+  return facing + a4.aimOmega * a4.aimLoopDelay;
+}
+
+/**
+ * Will a shell fired now actually hit? — the one question every fire gate should be asking.
+ *
+ * The old gates asked a different one: "is the hull pointing near enough to the target right
+ * now?" On a hull that is sweeping past the target, the answer is yes for the few ticks in the
+ * middle of the swing, so the trigger got pulled there every time and the shell left on a
+ * bearing the hull had already left behind. Shots landed by coincidence, which is precisely the
+ * reported behaviour — the tank waving across its target, firing continuously, hitting
+ * occasionally.
+ *
+ * This asks the real question instead: take the bearing the barrel will hold at release, and
+ * measure how close the shell's path passes to the target. That is the same closest-approach
+ * geometry the cover-fire gate already uses, and it makes both cases fall out of one rule — a
+ * stopped hull predicts to its own facing and fires when aligned, while a tracking hull fires
+ * when the swing is about to carry the barrel onto the target rather than when it happens to be
+ * crossing it.
+ *
+ * @param margin  Lateral miss the shell can afford. A shell hits within 127 units of a target's
+ *                centre (shell.ts collide), so the default leaves slack for its discrete 32-unit
+ *                steps rather than betting on the exact edge.
+ */
+export function shotWillConnect(
+  a4: A4State,
+  state: BrainState,
+  targetX: number,
+  targetY: number,
+  margin = 110,
+): boolean {
+  const tank = state.tank;
+  const rdx = signedWord(targetX - tank.x);
+  const rdy = signedWord(targetY - tank.y);
+  const dist = Math.sqrt(rdx * rdx + rdy * rdy);
+  if (dist < 1) return true;                              // point blank: nothing to miss by
+
+  // The shell dies at the tank's range setting, so a target past it is not a shot at all.
+  const shotRange = (tank.shellCount & 0xFF) << 7;
+  if (dist - 128 > shotRange) return false;
+
+  // Shell velocity is (cos, sin) of ((256 - dir)/256 · 2π) — shell.ts move().
+  const rad = ((256 - releaseFacing(a4, tank.facingDir)) * 2 * Math.PI) / 256;
+  const proj = rdx * Math.cos(rad) + rdy * Math.sin(rad);
+  if (proj <= 0) return false;                            // target is behind the barrel
+  const closest = Math.sqrt(Math.max(0, rdx * rdx + rdy * rdy - proj * proj));
+
+  // How much to trust that prediction. Extrapolating a rotating hull assumes the rate holds,
+  // and `Tank.turn` does not hold it: the rate is HALVED until turnSpeedup reaches 10 and the
+  // ramp resets on any pause or reversal, so a bearing carried forward over D ticks can be out
+  // by roughly half the rotation it predicts. Charge that error against the margin, and the
+  // gate tightens exactly when it should — a hull swinging hard has to be almost dead-on before
+  // it may fire, while a still hull (no rotation, no error) keeps the full window and shoots as
+  // freely as it ever did.
+  //
+  // The floor of one tick is on the DOUBT, not on the lead. ω is measured across a single tick
+  // and the engine may halve or double it on the next one, so even a zero-latency shot taken
+  // mid-swing is worth less than one taken from a stopped hull — but the aim point itself must
+  // not be led when there is nothing to lead by, or every shot inherits a turn-step of bias.
+  const drift = Math.abs(a4.aimOmega) * Math.max(1, a4.aimLoopDelay) * 0.5;
+  const uncertainty = dist * Math.abs(Math.sin((drift * 2 * Math.PI) / 256));
+  return closest + uncertainty <= margin;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -466,7 +544,7 @@ export function shootPill(
   // turning while still 3-5 units off the true bearing, and at 7 tiles a 3-unit error is a
   // ~130-unit miss (just past the pill's 127 collision radius), so it fired and missed.
   // A tight tolerance keeps the hull fine-tuning until it's near-exactly on the bearing.
-  const aimSettled = turnTowardsDir(a4, tank.facingDir, dir, 1);
+  turnTowardsDir(a4, tank.facingDir, dir, 1);
 
   // STATIONARY mode fires via the firingWord (sets shooting, NOT accelerating) so the tank
   // can hold a dead stop while firing; the forward-fire path (steeringWord 0x40/0x10 →
@@ -498,7 +576,9 @@ export function shootPill(
   // ≤3-unit error AND simulated the shot along the intended bearing, not the real facing —
   // so at range the real shell flew off-angle and missed.)
   const tolUnits  = Math.max(1, Math.floor(Math.asin(Math.min(1, 115 / Math.max(1, dist))) * 256 / (2 * Math.PI)));
-  const facingErr = computeDirectionDelta(tank.facingDir, dir);
+  // Measured from the bearing the barrel will hold at RELEASE, not the one the brain was last
+  // shown: on a rotating hull those differ by the whole of the loop's dead time (releaseFacing).
+  const facingErr = computeDirectionDelta(releaseFacing(a4, tank.facingDir), dir);
   if (facingErr > tolUnits) {
     if (!stationary && skipCheck === 0) a4.steeringWord |= 0x10;   // close in: wider cone up close
     return 0;
@@ -520,8 +600,8 @@ export function shootPill(
   // skipCheck bypasses this, as it does the barrier test: that is the point-blank reclaim path,
   // where an adjacent pill must be shot even under an awkward aim and where refusing to fire
   // re-creates the freeze that gate exists to fix.
-  if (!aimSettled && skipCheck === 0) {
-    if (!stationary) a4.steeringWord |= 0x10;   // keep closing while the hull settles
+  if (skipCheck === 0 && !shotWillConnect(a4, state, pillX, pillY)) {
+    if (!stationary) a4.steeringWord |= 0x10;   // keep closing while the hull comes round
     return 0;
   }
 
@@ -614,12 +694,14 @@ export function shootPillFromCover(
   if ((tank.shellCount & 0xFF) < 14) return 0;
   const HIT_MARGIN = 110;   // < 127 collision radius, leaving slack for the discrete 32u shell step
   const projDist = computeDistanceBetween(tank.x, tank.y, pillX, pillY);
-  const shot = locationFromDir(tank.facingDir & 0xFF, projDist, tank.x, tank.y);
+  const shot = locationFromDir(releaseFacing(a4, tank.facingDir) & 0xFF, projDist, tank.x, tank.y);
   if (checkBarriers(a4, tank.x, tank.y, shot.x & 0xFFFF, shot.y & 0xFFFF) > 0) return 0;  // blocked by cover
   // Closest approach of the facing ray to the pill centre. The shell velocity unit is
   // (cos,sin) of ((256-dir)/256·2π), matching shell.ts move().
   const rdx = signedWord(pillX - tank.x), rdy = signedWord(pillY - tank.y);
-  const frad = ((256 - (tank.facingDir & 0xFF)) * 2 * Math.PI) / 256;
+  // The bearing at RELEASE — the edge graze is a ~2-unit target at 7 tiles, so a hull still
+  // coming round, or a facing the network delivered late, misses it entirely.
+  const frad = ((256 - releaseFacing(a4, tank.facingDir)) * 2 * Math.PI) / 256;
   const fux = Math.cos(frad), fuy = Math.sin(frad);
   const proj = rdx * fux + rdy * fuy;
   if (proj <= 0) return 0;                                          // pill is behind our facing
@@ -956,10 +1038,22 @@ export function doCommonStuff(
       a4.enemyPrevTick[eIdx] = a4.tickCounter;
 
       const aim = linearAim(state, tank.x, tank.y, enemy.x, enemy.y, enemy.direction, tgtSpeed);
-      if (onTarget(state, aim.x, aim.y, 0)) {
+      // This is the opportunistic shot — it never steers, it just takes the shot if the hull
+      // happens to be pointing the right way. `onTarget` alone is not enough to decide that.
+      // It asks whether a shell fired ALONG THE CURRENT FACING would land within 128 units of
+      // the aim point, and at 7 tiles 128 units is ~4 direction units of slack — so on a hull
+      // that is sweeping past the target it is true for a few consecutive ticks in the middle
+      // of the swing, and the trigger gets pulled there every time. That is the "fires while
+      // sweeping across, hits by chance" behaviour: the shot is not aimed, it is timed by luck.
+      //
+      // Requiring a settled hull turns the same gate into an aimed shot: the facing is only
+      // meaningful once it has stopped changing, and under network latency it is only KNOWN
+      // once the hull has been observed still for longer than the loop's dead time.
+      if (shotWillConnect(a4, state, aim.x, aim.y)) {
         const barriers = checkBarriers(a4, tank.x, tank.y, aim.x, aim.y);
         if (barriers === 0) {
           a4.steeringWord |= 0x40;   // SHOOT
+          a4.aimHoldHull = 1;        // settle for the next one
         }
       }
     }

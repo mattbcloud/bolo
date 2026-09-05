@@ -16,6 +16,7 @@ import { decodeBase64 } from '../../client/base64';
 import { Tank } from '../../objects/tank';
 import { brainOpen, syncBrainState } from '../brain_init';
 import { buildBrainState, applyControls, _resetStaticTerrainCache, resetStaticTerrainCache } from '../aindy_interface';
+import { aIndy_Think } from '../aindy_think';
 import { navigateToCoords } from '../navigation';
 
 const TILE = 256; // BWorld units per tile
@@ -208,6 +209,77 @@ export function runFullLoopScenario(
     } else { stuckTile = tile; stuckSince = t; }
   }
   return m;
+}
+
+/**
+ * THE NETWORK-LATENCY DRIVER — the thing this harness could not do.
+ *
+ * Every other scenario here runs BoloLocalWorld with authority=true: `runBrainTick` writes the
+ * brain's control flags straight onto the tank in-process, and reads the tank's facing back the
+ * same tick. Zero latency in both directions. In a real game the brain is a CLIENT
+ * (client/world/client.ts `_runBrainTick`): it writes its flags into a throwaway object, ships
+ * START/STOP deltas down a WebSocket, and reads back a facing the server replicated to it. So a
+ * turn command costs a trip out and its result costs a trip back, and the aim loop the brain
+ * closes is a delayed loop — which is a completely different control problem from the one the
+ * harness has been measuring. That gap is why aim fixes keep passing here and failing live.
+ *
+ * `cmdLatency` is the uplink: ticks from the brain deciding to turn to the engine acting on it
+ * (the live telemetry in client.ts measures exactly this). `obsLatency` is the downlink: how
+ * stale the facing the brain reads is. They default to the same value, so `cmdLatency: 3` means
+ * a 6-tick loop.
+ *
+ * Only the FACING is delayed on the downlink. Live, the whole replicated world is stale, but
+ * facing is the loop under test and delaying position as well would move navigation errors into
+ * an aim measurement. The uplink delays everything, including the trigger — which is faithful,
+ * and part of the bug: a shot decided on a good bearing still leaves the barrel `cmdLatency`
+ * ticks later, wherever the hull has swung to by then.
+ *
+ * The world's own brain is left DISABLED; call `step()` instead of `world.tick()`.
+ */
+export function makeLatentDriver(
+  world: any,
+  { cmdLatency = 0, obsLatency = cmdLatency }: { cmdLatency?: number; obsLatency?: number } = {},
+) {
+  const maps = makeBrainMaps();
+  let tickN = 0;
+  const seed = buildBrainState(world.player, world.map, world.tanks ?? [], tickN++, ...mapsArr(maps));
+  const a4: any = brainOpen(seed) ?? null;
+  if (!a4) throw new Error('brainOpen returned null');
+  world.brainEnabled = false;   // we are the brain loop now
+
+  const cmdQ: Array<{ steeringWord: number; firingWord: number }> = [];
+  const dirQ: number[] = [];
+
+  return {
+    a4,
+    /** One brain tick + one engine tick, with the loop delays applied. */
+    step() {
+      const p = world.player;
+
+      // ── Downlink: hand the brain the facing it would have received by now ──
+      dirQ.push(p.direction);
+      const seenDir = dirQ.length > obsLatency ? dirQ.shift()! : dirQ[0];
+      const liveDir = p.direction;
+      p.direction = seenDir;
+
+      let controls: any;
+      try {
+        const state = buildBrainState(p, world.map, world.tanks ?? [], tickN++, ...mapsArr(maps));
+        controls = aIndy_Think(a4, state);
+      } finally {
+        p.direction = liveDir;   // the ENGINE always runs on the truth
+      }
+
+      // ── Uplink: the engine acts on what was decided cmdLatency ticks ago ──
+      p.accelerating = p.braking = false;
+      p.turningClockwise = p.turningCounterClockwise = false;
+      p.shooting = p.layingMine = false;
+      cmdQ.push({ steeringWord: controls.steeringWord, firingWord: controls.firingWord });
+      if (cmdQ.length > cmdLatency) applyControls(p, cmdQ.shift()!);
+
+      world.tick();
+    },
+  };
 }
 
 /** Step navigation IN ISOLATION (no goal selection, no combat). Brain must be

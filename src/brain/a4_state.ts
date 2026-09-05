@@ -131,6 +131,38 @@ export class A4State {
   /** A4[13722] long — wall-clock TickCount snapshot (updated end of each tick) */
   wallClockTick = 0;
 
+  // ── AIM LOOP TRACKER ────────────────────────────────────────────────────────
+  // Not from the binary. The gun is hull-fixed, so aiming is a closed loop: command a turn,
+  // read the facing back, decide again. In a real game both halves of that loop cross a
+  // network — the brain is a client (client/world/client.ts `_runBrainTick` ships START/STOP
+  // deltas and reads a replicated facing), so the loop carries several ticks of dead time, and
+  // a bang-bang controller with dead time and no prediction hunts instead of settling. These
+  // fields let `turnTowardsDir` measure that dead time and aim through it. See its comments.
+
+  /** Last facing the brain was shown, at full precision. Null before the first sample. */
+  aimPrevFacing: number | null = null;
+
+  /** Observed hull rotation in direction units per tick, signed. The stream is stale, but a
+   *  constant delay does not distort a rate — only its phase — so this is accurate. */
+  aimOmega = 0;
+
+  /** Estimated dead time of the whole loop (command out + facing back), in ticks. */
+  aimLoopDelay = 0;
+
+  /** Tick a turn was commanded while the hull was observed still — the stopwatch start. */
+  aimTurnCmdAtTick = -1;
+
+  /** Whether a turn was commanded last tick, so the estimator can find a rising edge. */
+  aimPrevTurnCmd = 0;
+
+  /** Set when a shot has just been committed at an enemy TANK. The hull then holds its bearing
+   *  for the rest of the tick — see the turn reconciliation at the end of aIndy_Think. */
+  aimHoldHull = 0;
+
+  /** How many dead-time samples have been folded in (0 = the estimate is still unseeded). */
+  aimLatencyN = 0;
+
+
   /** A4[13600] byte — saved ammo level from last tick (ammo-change detection) */
   savedAmmo = 0;
 

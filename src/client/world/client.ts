@@ -351,6 +351,11 @@ export class BoloClientWorld extends ClientWorld {
       // Ticks from turn command to the hull moving. ~0-1 locally; a round trip live.
       cmdLatency: A.latN ? Math.round((10 * A.latSum) / A.latN) / 10 : null,
       latN: A.latN,
+      // What the BRAIN independently measured for the same loop and is now leading its aim by
+      // (a4.aimLoopDelay, see pathfinding.ts updateAimTracker). Reported separately from
+      // cmdLatency above so the two can be compared: this one is the number actually steering
+      // the tank, and if it reads near zero on a laggy connection the aim is flying blind.
+      brainDelay: this.brainA4 ? Math.round(10 * (this.brainA4 as any).aimLoopDelay) / 10 : null,
     };
     A.ticks = A.turnCmdTicks = A.turnCmdReversals = 0;
     A.hullTurnTicks = A.hullReversals = 0;
@@ -3066,7 +3071,7 @@ export class BoloClientWorld extends ClientWorld {
       // Silence with `window.__AIMSTATS__ = false`.
       if ((globalThis as any).__AIMSTATS__ !== false) {
         const A = aimStats;
-        console.log(`[AIM] cmdLatency=${A.cmdLatency ?? '-'}t (n=${A.latN}) ` +
+        console.log(`[AIM] cmdLatency=${A.cmdLatency ?? '-'}t (n=${A.latN}) lead=${A.brainDelay ?? '-'}t ` +
           `turnCmd=${A.turnCmd ?? '-'}% cmdRev=${A.cmdReversals ?? '-'}% hullRev=${A.hullReversals ?? '-'}% ` +
           `fires=${A.fires} fireWhileTurning=${A.fireWhileTurning ?? '-'}% aimErr=${A.aimErrAvg ?? '-'}u`);
       }

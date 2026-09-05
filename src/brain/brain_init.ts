@@ -19,6 +19,7 @@
 import { A4State } from './a4_state.js';
 import type { BrainState, TankState, PillState, BaseState, ManState } from './aindy_interface.js';
 import { tickCount, PILL_BITMASK, resetStaticTerrainCache } from './aindy_interface.js';
+import { updateAimTracker } from './pathfinding.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BRAIN OPEN
@@ -340,6 +341,14 @@ export function syncBrainState(a4: A4State, state: BrainState): void {
       a4.worldCostsInitDone = 0;   // restart A* with updated terrain
     }
   }
+
+  // ── Aim loop ───────────────────────────────────────────────────────────────
+  // Last, so it sees this tick's tickCounter (set above) alongside LAST tick's control words —
+  // aIndy_Think clears those immediately after this function returns, and timing a command
+  // needs both halves. Full-precision facing, not the truncated a4.tankDirection: a whole
+  // direction unit of rounding is 44 world units of miss at 7 tiles, and the rotation this
+  // measures is often smaller than that.
+  updateAimTracker(a4, t.facingDir);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

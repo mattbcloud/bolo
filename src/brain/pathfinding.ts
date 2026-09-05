@@ -582,15 +582,110 @@ export function computeDistanceBetween(
 // TurnTowardsDir (0x017b6a) — steer tank toward a direction
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Signed shortest angular difference a - b, in direction units (-128..127). */
+function dirDelta(a: number, b: number): number {
+  let d = (((a - b) % 256) + 256) % 256;
+  if (d > 128) d -= 256;
+  return d;
+}
+
+/**
+ * Fold this tick's observed facing into the aim tracker. Call once per tick, before the
+ * control words are cleared — it reads last tick's words to time the loop.
+ *
+ * The two things it learns:
+ *
+ * ω — how fast the hull is actually rotating. Read from the facing stream rather than assumed
+ * from the turn rate, because the engine's rate is not a constant: `Tank.turn` HALVES it until
+ * `turnSpeedup` reaches 10, and resets that ramp whenever the tank stops turning or reverses
+ * (objects/tank.ts). A hunting hull therefore turns at half rate, which is exactly when
+ * guessing the rate would be most wrong.
+ *
+ * D — the loop's dead time: ticks from asking for a turn to seeing the facing move. Offline
+ * this is ~1 (the flags are written straight onto the tank). Live it is a round trip, and the
+ * client's own [AIM] telemetry reports the same number. Measuring it rather than configuring it
+ * means the aim adapts to the connection it actually has, and costs nothing on a local game.
+ */
+export function updateAimTracker(a4: A4State, facing: number): void {
+  const prev = a4.aimPrevFacing;
+  let delta = prev === null ? 0 : dirDelta(facing, prev);
+  a4.aimPrevFacing = facing;
+
+  // A tank cannot turn more than `getTankTurn × 2.6555` in a tick, and getTankTurn peaks at 1.
+  // Anything past that is not rotation — it is a respawn, a teleport, or a dropped run of
+  // updates — and extrapolating from it would throw the aim right off for the next few ticks.
+  // Treat the discontinuity as no information rather than as a very fast turn.
+  if (Math.abs(delta) > 4) delta = 0;
+
+  const moving = Math.abs(delta) > 1e-9;
+  a4.aimOmega = delta;
+
+  // Time a command only from a FRESH, UNAMBIGUOUS one issued at a standstill — the rising edge
+  // of a single-direction turn request, with the hull observed still. Every clause is load
+  // bearing:
+  //
+  //   fresh — mid-hunt the brain asks for a turn every tick, so a stopwatch started on any
+  //     command that coincides with a still hull starts on one already in flight and stops when
+  //     THAT one lands, reporting about the one-way trip. Under-reading is the failure that
+  //     matters, since the number exists to lead the command by.
+  //   unambiguous — `Tank.turn` refuses to rotate at all when both turn flags are held, so a
+  //     conflicting command is a stall, not a delay. Timing one would invent a large loop delay
+  //     on a LOCAL game, and the aim would then lead a shot that needs no leading.
+  //   cancelled if it changes — the same reasoning: if the request is dropped or reversed
+  //     before the hull answers, whatever moves it next is not the command being timed.
+  const ccwCmd = ((a4.steeringWord | a4.firingWord) & 0x04) !== 0;
+  const cwCmd  = ((a4.steeringWord | a4.firingWord) & 0x08) !== 0;
+  const cmdDir = ccwCmd === cwCmd ? 0 : (ccwCmd ? 1 : -1);   // 0 = none, or a conflicted stall
+  const freshCommand = cmdDir !== 0 && a4.aimPrevTurnCmd === 0;
+  if (a4.aimTurnCmdAtTick >= 0 && cmdDir !== a4.aimPrevTurnCmd) a4.aimTurnCmdAtTick = -1;
+  a4.aimPrevTurnCmd = cmdDir;
+  if (freshCommand && !moving && a4.aimTurnCmdAtTick < 0) a4.aimTurnCmdAtTick = a4.tickCounter;
+
+  if (a4.aimTurnCmdAtTick >= 0 && moving) {
+    const measured = a4.tickCounter - a4.aimTurnCmdAtTick;
+    a4.aimTurnCmdAtTick = -1;
+    // Ignore absurd samples: a stall, a respawn, or a tick counter reset, not a round trip.
+    if (measured >= 0 && measured <= 30) {
+      // Asymmetric on purpose. The two errors are not equally bad: over-estimating costs a
+      // fraction of a tick of extra lead, while under-estimating puts the shot back into the
+      // swing, which is the entire failure being fixed here. Samples also skew low — the timer
+      // can only start from a standstill, and a hull that was already drifting reports less
+      // than the true trip — so the estimate rises quickly on any long sample and forgets a
+      // short one slowly.
+      a4.aimLoopDelay = a4.aimLatencyN === 0
+        ? measured
+        : measured > a4.aimLoopDelay
+          ? (a4.aimLoopDelay + measured * 3) / 4     // a worsening connection: follow it now
+          : (a4.aimLoopDelay * 15 + measured) / 16;  // a better one: let it settle out slowly
+      a4.aimLatencyN++;
+    }
+  }
+}
+
 /**
  * TurnTowardsDir (0x017b6a) — Issue turn commands to rotate toward targetDir.
  *
- * Exact port from turntowardsdir_decode.md (232-byte assembly).
+ * Ported from turntowardsdir_decode.md (232-byte assembly), then given the one thing the
+ * original never needed: the 1993 brain ran inside the game, where a turn command took effect
+ * on the same tick it was issued. This one can be several ticks from the tank it is steering,
+ * and a bang-bang controller with dead time does not settle — it overshoots by ω·D, sees the
+ * overshoot D ticks late, reverses, and hunts, which is the "sweeps across the target while
+ * firing" behaviour. So the deadband test is applied to where the hull WILL be pointing when a
+ * stop command lands, not to where it was last seen pointing.
+ *
+ * There is no rotational inertia to fight: `Tank.turn` returns immediately unless exactly one
+ * turn flag is held, so the hull stops dead the tick the command arrives. That makes the
+ * correction exact rather than a damping term — release ω·D units early and the hull coasts
+ * precisely onto the bearing.
+ *
  * Picks the SHORTER angular path (direct or wraparound).
  *
  * Control bits (REFERENCE + verified decode):
  *   steeringWord 0x04 = large CCW   steeringWord 0x08 = large CW
  *   firingWord   0x04 = fine CCW    firingWord   0x08 = fine CW
+ *
+ * Whether it is safe to FIRE is a separate question with a separate answer — see
+ * `shotWillConnect` in combat.ts. Alignment is about the hull; hitting is about the shell.
  *
  * @returns 1 if aligned within tolerance, 0 if still turning
  */
@@ -606,10 +701,22 @@ export function turnTowardsDir(
   // the gap an edge-graze past cover has to thread.
   const facing = ((currentDir % 256) + 256) % 256;
   const target = ((targetDir % 256) + 256) % 256;
+
+  // LEAD THE COMMAND BY THE LOOP'S DEAD TIME.
+  //
+  // `facing` is what the brain was last SHOWN, which is already stale, and a stop issued now
+  // lands later still. Between the two the hull keeps turning at ω, so the bearing that matters
+  // is facing + ω·D — where D is the whole round trip, which is exactly what updateAimTracker
+  // measures (it times a command all the way to the facing moving, so it spans both halves).
+  //
+  // On a local game D is ~1 and ω·D is a fraction of a unit: this is a no-op. On a real
+  // connection it is the difference between stopping on the bearing and swinging past it.
+  const predicted = facing + a4.aimOmega * a4.aimLoopDelay;
+
   // Signed byte subtraction (simulate 68k MOVE.B + SUB.W behaviour)
-  let delta = facing - target;
-  if (delta > 127)  delta -= 256;
-  if (delta < -128) delta += 256;
+  let delta = predicted - target;
+  while (delta > 127)  delta -= 256;
+  while (delta < -128) delta += 256;
 
   // DEADBAND — do not command a turn the tank would overshoot.
   //

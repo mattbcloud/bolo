@@ -1901,13 +1901,14 @@ export function goalKillTank(a4: A4State, state: BrainState): void {
     // Far (> 7 tiles): close the gap — navigate toward enemy. Fire only if we happen to already
     // have a clear, aligned shot (turnTowardsDir in shoot() costs nothing when we don't).
     navigateToCoords(a4, target.x, target.y, 0);
-    if (hasLOS) shoot(a4, aimX, aimY, state);
+    if (hasLOS) { shoot(a4, aimX, aimY, state); if (a4.shotFiredThisTick) a4.aimHoldHull = 1; }
   } else if (hasLOS) {
     // Within 7 tiles WITH a clear line → stop and aim-shoot at the LEAD position.
     // Pass the current speed so setSpeed actually issues the brake bit — bare setSpeed(a4, 0)
     // compared against undefined (NaN) and set nothing, so the tank never truly dead-stopped.
     setSpeed(a4, 0, state.tank.speed & 0xFF);
     shoot(a4, aimX, aimY, state);
+    if (a4.shotFiredThisTick) a4.aimHoldHull = 1;   // settle before the next shot at a tank
   } else {
     // In range but the shot is BLOCKED → don't fire into the obstacle; move to flank for a clear
     // line. navigateToCoords owns the hull (no combat aim this tick) so nav and combat don't fight.
