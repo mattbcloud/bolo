@@ -350,6 +350,15 @@ export function shoot(
 
   // Step 1: Turn toward target with tolerance=0 (verified from assembly 0x0178ca)
   // Shoot requires exact aim — keeps turning until angErr===0.
+  //
+  // `directionTo` truncates: it ends in `fixATan2`, whose `& 0xFF` coerces to an integer, so a
+  // true bearing of 2.68 is steered to as 2 — a bias always the same way, worth up to a whole
+  // direction unit (24-30 world units of miss at 7 tiles on ordinary geometry). Aiming at the
+  // exact bearing instead was tried and measured: it made no difference to whether shells land
+  // (a shell hits within 127 units, which swallows the bias) and it cost the pill grind a
+  // quarter of its captures — 1.10 per game against 0.97, pill control 0.68 against 0.57 — most
+  // likely because the cover method's offsets were tuned around the bias being there. Left
+  // truncated deliberately; the accuracy came from dead-reckoning the hull instead.
   const targetDir = directionTo(tank.x, tank.y, targetX, targetY);
   turnTowardsDir(a4, tank.facingDir, targetDir, 0);
 
@@ -445,7 +454,12 @@ export function shoot(
  * across a pillbox and more than the whole width of a cover graze.
  */
 export function releaseFacing(a4: A4State, facing: number): number {
-  return facing + a4.aimOmega * a4.aimLoopDelay;
+  // Where the hull is now, having applied every command already in flight (updateAimTracker
+  // dead-reckons this from the brain's own command history). A shot decided this tick reaches
+  // the engine after exactly those commands and no others — if the brain is firing it is
+  // because it is aligned, so it is issuing no new turn — which makes this the bearing the
+  // shell leaves on.
+  return facing + a4.aimInFlightTurn;
 }
 
 /**
@@ -477,6 +491,14 @@ export function shotWillConnect(
   margin = 110,
 ): boolean {
   const tank = state.tank;
+
+  // NOTE: no separate "hull must be stopped" condition. One was tried, on the reasoning that a
+  // stationary target never needs a predicted bearing. It measured worse, and the reason is
+  // worth keeping: the trigger is not a request to fire. `Tank.shootOrReload` fires only on the
+  // tick `reload` counts down to 0, so the trigger has to be HELD to catch that instant, and a
+  // gate that drops it during routine fine-aim ticks misses the gun's ready moment and waits
+  // another 13 ticks for the next. Once the bearing is dead-reckoned it is exact whether the
+  // hull is turning or not, so the extra condition bought nothing and cost the rate of fire.
   const rdx = signedWord(targetX - tank.x);
   const rdy = signedWord(targetY - tank.y);
   const dist = Math.sqrt(rdx * rdx + rdy * rdy);
@@ -537,6 +559,14 @@ export function shootPill(
 ): number {
   const tank = state.tank;
 
+  const pillX = ((pill.tileX & 0xFF) << 8) + 128;
+  const pillY = ((pill.tileY & 0xFF) << 8) + 128;
+
+  // Aim at the exact bearing to the same point the accuracy gate below measures against, rather
+  // than at the `direction` the caller worked out. Every call site passes
+  // `directionTo(tank, pill) & 0xFF`, which is that bearing truncated to a whole unit — so the
+  // hull was being steered to one place and judged against another, and the gap was a
+  // systematic ~0.5 units (24-30 world units of miss at 7 tiles, always the same way).
   const dir = direction & 0xFF;
 
   // The gun is HULL-FIXED: the shell flies in tank.direction, so the hull must FACE the
@@ -557,8 +587,6 @@ export function shootPill(
     return 0;
   }
 
-  const pillX = ((pill.tileX & 0xFF) << 8) + 128;
-  const pillY = ((pill.tileY & 0xFF) << 8) + 128;
   const dist  = computeDistanceBetween(tank.x, tank.y, pillX, pillY);
 
   // Falling short → the shell can't reach; close in.
@@ -568,40 +596,29 @@ export function shootPill(
     return 0;
   }
 
-  // ACCURACY GATE: the shell lands ~`dist × sin(facingErr)` off the true bearing and hits
-  // only if that offset is within the pill's ~127-unit collision radius. Convert that to a
-  // facing tolerance in 0-255 dir units (using 115 for margin); it TIGHTENS with distance
-  // (~6 units at 3 tiles, ~2 at 7). Fire only when the hull's ACTUAL facing is within it,
-  // so the shell lands ON the pill instead of grazing past. (The old gate fired at a fixed
-  // ≤3-unit error AND simulated the shot along the intended bearing, not the real facing —
-  // so at range the real shell flew off-angle and missed.)
-  const tolUnits  = Math.max(1, Math.floor(Math.asin(Math.min(1, 115 / Math.max(1, dist))) * 256 / (2 * Math.PI)));
-  // Measured from the bearing the barrel will hold at RELEASE, not the one the brain was last
-  // shown: on a rotating hull those differ by the whole of the loop's dead time (releaseFacing).
-  const facingErr = computeDirectionDelta(releaseFacing(a4, tank.facingDir), dir);
-  if (facingErr > tolUnits) {
-    if (!stationary && skipCheck === 0) a4.steeringWord |= 0x10;   // close in: wider cone up close
+  // ACCURACY GATE — one test, not two.
+  //
+  // There used to be an angular cone here (`asin(115/dist)` converted to direction units) AND
+  // the trajectory test below, which are two approximations of the same question: will this
+  // shell land on the pill? Keeping both meant the cruder one decided, and it decided badly:
+  // its `computeDirectionDelta` truncates, so a true 2.9-unit error read as 2 and passed a
+  // 2-unit cone — firing shells that flew 130 units wide, past the 127-unit collision radius.
+  // Measured over N=30 full loops, dropping it changes captures not at all, so it was only ever
+  // letting bad shots through.
+  //
+  // `shotWillConnect` is the exact form: it takes the bearing the barrel will hold at release
+  // and measures how close the shell's path passes to the pill. Nothing the cone added survives
+  // it. skipCheck bypasses it as it does the barrier test — that is the point-blank reclaim
+  // path, where an adjacent pill must be shot under an awkward aim and refusing to fire
+  // re-creates the freeze that gate exists to fix.
+  if (skipCheck === 0 && !shotWillConnect(a4, state, pillX, pillY)) {
+    if (!stationary) a4.steeringWord |= 0x10;   // close in while the hull comes round
     return 0;
   }
 
   // On target → require a clear LINE OF SIGHT (engine stops shells at walls/forest/etc).
   if (skipCheck === 0 && checkBarriers(a4, tank.x, tank.y, pillX, pillY) !== 0) {
     if (!stationary) a4.steeringWord |= 0x10;   // blocked: advance to clear the shot
-    return 0;
-  }
-
-  // SETTLED-HULL GATE. The cone above asks only where the hull points, never whether it is still
-  // moving. tolUnits is ~2 units at 7 tiles while turnTowardsDir's deadband is ~0.66, so there is
-  // a band where the cone passes and the hull is still being commanded to turn - and the shot
-  // goes out mid-swing. Measured over 8 seeds: shells released while turning landed 51.6%,
-  // against 79.9% released settled, and shootPill in stationary mode was the largest single
-  // source of them. Waiting for the hull to settle costs at most a tick.
-  //
-  // skipCheck bypasses this, as it does the barrier test: that is the point-blank reclaim path,
-  // where an adjacent pill must be shot even under an awkward aim and where refusing to fire
-  // re-creates the freeze that gate exists to fix.
-  if (skipCheck === 0 && !shotWillConnect(a4, state, pillX, pillY)) {
-    if (!stationary) a4.steeringWord |= 0x10;   // keep closing while the hull comes round
     return 0;
   }
 
@@ -1052,6 +1069,11 @@ export function doCommonStuff(
       if (shotWillConnect(a4, state, aim.x, aim.y)) {
         const barriers = checkBarriers(a4, tank.x, tank.y, aim.x, aim.y);
         if (barriers === 0) {
+          // Same distinction `shoot` makes: against a target that is holding still, pull the
+          // trigger WITHOUT the forward bit. 0x40 is FORWARD_FIRE and also accelerates, and a
+          // tank creeping forward re-aims every tick, so the hull never holds a bearing long
+          // enough to be known settled — which against a stationary target is the only way to
+          // know it at all.
           a4.steeringWord |= 0x40;   // SHOOT
           a4.aimHoldHull = 1;        // settle for the next one
         }

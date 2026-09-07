@@ -590,6 +590,79 @@ function dirDelta(a: number, b: number): number {
 }
 
 /**
+ * The engine's full turn rate for the tank's current cell, in direction units per tick.
+ *
+ * `Tank.turn` uses `cell.getTankTurn(tank) * 2.6555`, and HALVES it until `turnSpeedup` reaches
+ * 10. Rates mirror TERRAIN_TYPE_ATTRIBUTES in world_map.ts, indexed by the brain's terrain code;
+ * anything unknown assumes the fastest (road/grass) rate.
+ */
+function maxTurnPerTick(a4: A4State): number {
+  const TURN_RATE = [0, 0.25, 0.25, 0.25, 1, 0.5, 0.25, 1, 0, 1, 0.5];
+  const terrain = a4.worldMap[((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF)] & 0x0F;
+  return (TURN_RATE[terrain] ?? 1) * 2.6555;
+}
+
+/** How many ticks of command are in flight — the window the dead-reckoner has to cover. */
+function outstandingTicks(a4: A4State): number {
+  return Math.min(32, Math.max(0, Math.ceil(a4.aimLoopDelay)));
+}
+
+/**
+ * How far the hull will still turn from commands already issued but not yet visible.
+ *
+ * Returned as a ROTATION rather than an absolute facing, so callers add it to whatever reference
+ * they hold. `turnTowardsDir` takes the facing to steer from as an argument, and its callers do
+ * not all pass the same thing — navigation passes `a4.tankDirection`, which is truncated to a
+ * whole unit. Substituting an absolute prediction for that argument would quietly change the
+ * heading every drive tick is steered by, whether or not anything was in flight.
+ *
+ * This is the piece that makes fine aim possible over a network, and the reason the previous
+ * attempt — extrapolating the observed rotation rate — could not. That rate is measured from the
+ * same delayed stream it is correcting, so for the first D ticks of a swing the brain sees a hull
+ * that has not started moving yet and predicts no movement at all. It therefore keeps commanding,
+ * issues D commands before the first one is visible, overshoots by D turn-steps, and hunts. The
+ * measured symptom was a tank that could only fire when it happened to already be pointing at its
+ * target: in four of five engagement geometries it never held still long enough to take a shot.
+ *
+ * The command history has no such delay. The brain knows precisely which ticks it asked for a
+ * turn, and `Tank.turn` is a short, exact law, so replaying it over the outstanding window says
+ * where the hull is now rather than guessing. The `turnSpeedup` ramp is replayed too — it halves
+ * the rate until it reaches 10 and resets on any pause or reversal, so it cannot be assumed; the
+ * replay is warmed up over a longer window than it reports so the ramp arrives at the right value.
+ */
+export function inFlightTurn(a4: A4State): number {
+  const inFlight = outstandingTicks(a4);
+  if (inFlight === 0) return 0;
+
+  const maxTurn = maxTurnPerTick(a4);
+  const WARMUP = 24;              // enough for the ramp to reach either extreme before it counts
+  let speedup = 0;
+  let turn = 0;
+
+  for (let k = WARMUP + inFlight; k >= 1; k--) {
+    const tick = a4.tickCounter - k;
+    if (tick < 0) continue;
+    const cmd = a4.aimCmdLog[tick & 63];
+    if (cmd === 0) { speedup = 0; continue; }   // Tank.turn: no rotation, and the ramp resets
+
+    let accel = cmd > 0 ? maxTurn : -maxTurn;
+    if (cmd > 0) {
+      if (speedup < 10) accel /= 2;
+      if (speedup < 0) speedup = 0;
+      speedup++;
+    } else {
+      if (speedup > -10) accel /= 2;
+      if (speedup > 0) speedup = 0;
+      speedup--;
+    }
+    // Only the commands still in flight have yet to show up in `observed`; the warm-up pass is
+    // there to get `speedup` right, not to move the hull twice.
+    if (k <= inFlight) turn += accel;
+  }
+  return turn;
+}
+
+/**
  * Fold this tick's observed facing into the aim tracker. Call once per tick, before the
  * control words are cleared — it reads last tick's words to time the loop.
  *
@@ -636,6 +709,11 @@ export function updateAimTracker(a4: A4State, facing: number): void {
   const ccwCmd = ((a4.steeringWord | a4.firingWord) & 0x04) !== 0;
   const cwCmd  = ((a4.steeringWord | a4.firingWord) & 0x08) !== 0;
   const cmdDir = ccwCmd === cwCmd ? 0 : (ccwCmd ? 1 : -1);   // 0 = none, or a conflicted stall
+
+  // Log LAST tick's command (the words still hold it — aIndy_Think clears them just after this
+  // returns) and dead-reckon the hull forward through everything still in flight.
+  if (a4.tickCounter >= 1) a4.aimCmdLog[(a4.tickCounter - 1) & 63] = cmdDir;
+  a4.aimInFlightTurn = inFlightTurn(a4);
   const freshCommand = cmdDir !== 0 && a4.aimPrevTurnCmd === 0;
   if (a4.aimTurnCmdAtTick >= 0 && cmdDir !== a4.aimPrevTurnCmd) a4.aimTurnCmdAtTick = -1;
   a4.aimPrevTurnCmd = cmdDir;
@@ -702,16 +780,16 @@ export function turnTowardsDir(
   const facing = ((currentDir % 256) + 256) % 256;
   const target = ((targetDir % 256) + 256) % 256;
 
-  // LEAD THE COMMAND BY THE LOOP'S DEAD TIME.
+  // STEER THE HULL WHERE IT ACTUALLY IS, NOT WHERE IT WAS LAST REPORTED.
   //
-  // `facing` is what the brain was last SHOWN, which is already stale, and a stop issued now
-  // lands later still. Between the two the hull keeps turning at ω, so the bearing that matters
-  // is facing + ω·D — where D is the whole round trip, which is exactly what updateAimTracker
-  // measures (it times a command all the way to the facing moving, so it spans both halves).
+  // `currentDir` is what the brain was last SHOWN, which is stale by the downlink, and every
+  // command it has issued since is still on its way. Deciding against that figure is what makes
+  // the loop hunt: it keeps asking for more turn until the first request becomes visible, by
+  // which time it has asked D times. `aimInFlightTurn` replays those outstanding commands through
+  // the engine's own turn law, so the deadband below is applied to the hull's real heading.
   //
-  // On a local game D is ~1 and ω·D is a fraction of a unit: this is a no-op. On a real
-  // connection it is the difference between stopping on the bearing and swinging past it.
-  const predicted = facing + a4.aimOmega * a4.aimLoopDelay;
+  // On a local game nothing is in flight and this is exactly `currentDir`.
+  const predicted = facing + a4.aimInFlightTurn;
 
   // Signed byte subtraction (simulate 68k MOVE.B + SUB.W behaviour)
   let delta = predicted - target;
@@ -731,9 +809,7 @@ export function turnTowardsDir(
   // accurate move. Rates mirror TERRAIN_TYPE_ATTRIBUTES in world_map.ts, indexed by the brain's
   // terrain code; anything unknown assumes the fastest (road/grass) rate, which errs toward a wider
   // deadband rather than a hunting one.
-  const TURN_RATE = [0, 0.25, 0.25, 0.25, 1, 0.5, 0.25, 1, 0, 1, 0.5];
-  const terrain = a4.worldMap[((a4.tankTileY & 0xFF) << 8) | (a4.tankTileX & 0xFF)] & 0x0F;
-  const stepPerTick = (TURN_RATE[terrain] ?? 1) * 2.6555 / 2;
+  const stepPerTick = maxTurnPerTick(a4) / 2;
   const deadband = Math.max(tolerance, stepPerTick / 2);
   if (Math.abs(delta) <= deadband) return 1;
 

@@ -146,6 +146,16 @@ export class A4State {
    *  constant delay does not distort a rate — only its phase — so this is accurate. */
   aimOmega = 0;
 
+  /** Ring of the turn direction commanded on each recent tick (-1 CW, 0 none, +1 CCW), indexed
+   *  by `tickCounter & 63`. The brain's own command history is the one thing about the hull it
+   *  knows without delay, and it is what `updateAimTracker` dead-reckons the facing from. */
+  aimCmdLog = new Int8Array(64);
+
+  /** Rotation still on its way to the hull: the sum of the commands issued but not yet visible
+   *  in the replicated facing. Add it to whatever facing you hold to get the hull's real one.
+   *  Zero on a local game, where nothing is ever in flight. */
+  aimInFlightTurn = 0;
+
   /** Estimated dead time of the whole loop (command out + facing back), in ticks. */
   aimLoopDelay = 0;
 
