@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as url from 'url';
 import * as path from 'path';
 import * as http from 'http';
+import { timingSafeEqual } from 'crypto';
 import { WebSocketServer } from 'ws';
 import { MapIndex } from './map_index';
 import * as helpers from '../helpers';
@@ -117,9 +118,12 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     this.changes.push(['create', obj, obj.idx]);
   }
 
-  close(): void {
+  close(reason: string = 'Game closed'): void {
+    // `ws` v8 has no `end()` — calling it threw on the first connected client, which left the
+    // game unregistered but its players still attached to a world that no longer ticked.
+    // 4001 is ours: "the server ended this game on purpose", as opposed to a dropped socket.
     for (const client of this.clients) {
-      client.end();
+      try { client.close(4001, reason); } catch { /* already closing */ }
     }
   }
 
@@ -1237,7 +1241,9 @@ export class Application {
     });
 
     this.connectServer.use('/api/games', (req: any, res: any) => {
-      if (req.method === 'GET') {
+      if (req.method === 'DELETE') {
+        this.handleCancelGame(req, res);
+      } else if (req.method === 'GET') {
         // List active games
         try {
           res.setHeader('Content-Type', 'application/json');
@@ -1404,11 +1410,52 @@ export class Application {
     return game;
   }
 
-  closeGame(game: any): void {
+  closeGame(game: any, reason?: string): void {
     delete this.games[game.gid];
     this.possiblyStopLoop();
-    game.close();
+    game.close(reason);
     console.log(`Closed game '${game.gid}'`);
+  }
+
+  /**
+   * Hidden admin endpoint: `DELETE /api/games/<gid>` with `Authorization: Bearer <token>`.
+   *
+   * Enabled only when BOLO_ADMIN_TOKEN is set. Every unauthorised request — no token configured,
+   * header missing, token wrong — gets the same 404 as an unknown route, so the endpoint can't be
+   * discovered by probing. Players need nothing new: their socket closes, the reconnect flow finds
+   * the game gone from GET /api/games, and it sends them back to the lobby.
+   */
+  handleCancelGame(req: any, res: any): void {
+    res.setHeader('Content-Type', 'application/json');
+    const notFound = () => { res.statusCode = 404; res.end(JSON.stringify({ error: 'Not found' })); };
+
+    const expected = process.env.BOLO_ADMIN_TOKEN;
+    const header = String(req.headers?.authorization ?? '');
+    const given = header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (!expected || !given) return notFound();
+    const a = Buffer.from(given);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) return notFound();
+
+    // connect strips the mount path, so req.url is "/<gid>" here.
+    const gid = (req.url ?? '').split('?')[0].replace(/^\/+|\/+$/g, '');
+    const game = gid && Object.prototype.hasOwnProperty.call(this.games, gid) ? this.games[gid] : null;
+    if (!game) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ error: 'Game not found' }));
+      return;
+    }
+    if (game === this.demo) {
+      res.statusCode = 409;
+      res.end(JSON.stringify({ error: 'The demo game cannot be cancelled' }));
+      return;
+    }
+
+    const players = game.tanks.length;
+    const mapName = game.map?.name || 'Unknown';
+    this.closeGame(game, 'Game closed by admin');
+    console.log(`[ADMIN] Cancelled game '${gid}' (${mapName}, ${players} players)`);
+    res.end(JSON.stringify({ ok: true, gid, mapName, players }));
   }
 
   registerIrcClient(irc: any): void {
