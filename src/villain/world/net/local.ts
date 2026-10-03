@@ -46,28 +46,37 @@ export class NetLocalWorld {
       obj.anySpawn();
     }
 
-    // Track tanks separately
-    if (obj.constructor.name === 'Tank') {
-      this.tanks.push(obj);
-    }
+    // Tanks register themselves: Tank.anySpawn() calls addTank(), which also sets tank_idx.
+    // Pushing here as well listed every tank twice (a mine blast then hit it twice; fix-list 12).
 
     return obj;
   }
 
+  /**
+   * As ServerWorld.destroy (fix-list 12): leave a null in the object's slot instead of splicing.
+   * Objects destroy themselves inside their own update() (shells, explosions), and a splice during
+   * tick() slid the next object into the freed slot, so it missed that tick's update; it also left
+   * every later object's `idx` stale.
+   */
   destroy(obj: any): void {
-    const idx = this.objects.indexOf(obj);
-    if (idx !== -1) {
-      this.objects.splice(idx, 1);
-    }
-
-    // Remove from tanks array if it's a tank
-    const tankIdx = this.tanks.indexOf(obj);
-    if (tankIdx !== -1) {
-      this.tanks.splice(tankIdx, 1);
-    }
-
+    // The object's own clean-up first (a tank drops its pillboxes and destroys its builder).
     if (obj.destroy) {
       obj.destroy();
+    }
+
+    if (this.objects[obj.idx] === obj) {
+      this.objects[obj.idx] = null;
+    }
+
+    // Remove from tanks through removeTank (WorldMixin), which renumbers tank_idx and the map
+    // objects' owner_idx, as on the server.
+    const tankIdx = this.tanks.indexOf(obj);
+    if (tankIdx !== -1) {
+      if (typeof (this as any).removeTank === 'function') {
+        (this as any).removeTank(obj);
+      } else {
+        this.tanks.splice(tankIdx, 1);
+      }
     }
   }
 }
