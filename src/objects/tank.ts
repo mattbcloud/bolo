@@ -295,6 +295,8 @@ export class Tank extends BoloObject {
    * We've taken a hit. Check if we were killed, otherwise slide and possibly kill our boat.
    */
   takeShellHit(shell: Shell): number {
+    // The client is not authoritative for hits: the server decides them and sends the result.
+    if (!this.world.authority) return sounds.HIT_TANK;
     this.armour -= 5;
     if (this.armour < 0) {
       const largeExplosion = this.shells + this.mines > 20;
@@ -347,6 +349,8 @@ export class Tank extends BoloObject {
    * We've taken a hit from a mine. Mostly similar to the above.
    */
   takeMineHit(): void {
+    // The client is not authoritative for hits: the server decides them and sends the result.
+    if (!this.world.authority) return;
     this.armour -= 10;
     if (this.armour < 0) {
       const largeExplosion = this.shells + this.mines > 20;
@@ -403,7 +407,8 @@ export class Tank extends BoloObject {
   }
 
   destroy(): void {
-    this.dropPillboxes();
+    // Dropping pillboxes changes other objects: server only, the update brings the result.
+    if (this.world.authority) this.dropPillboxes();
     // Only destroy on server (ClientWorld doesn't have this method)
     if (this.world.destroy) {
       this.world.destroy(this.builder.$);
@@ -687,8 +692,8 @@ export class Tank extends BoloObject {
 
   sink(): void {
     this.world.soundEffect(sounds.TANK_SINKING, this.x, this.y);
-    // Track death from sinking
-    this.deaths++;
+    // Track death from sinking. The score is the server's; it arrives with the next update.
+    if (this.world.authority) this.deaths++;
     // FIXME: Somehow blame a killer, if instigated by a shot?
     if (this.world.authority) this.world.newswire?.('tank_sunk', actorOf(this));
     this.kill();
@@ -697,7 +702,11 @@ export class Tank extends BoloObject {
   kill(): void {
     // The newswire announces the death; each caller knows how it happened (shell, mine, deep
     // sea) and puts the line on the wire before calling here. FIXME: a scoreboard, still.
-    this.dropPillboxes();
+    //
+    // Dropping pillboxes changes other objects, so only the server does it; its update delivers
+    // the dropped pills (inTank=false, x/y) to every client. A client-side drop made "ghost"
+    // pillboxes around a tank that had only died in that one browser.
+    if (this.world.authority) this.dropPillboxes();
     this.x = this.y = null;
     this.armour = 255;
     // The respawnTimer attribute exists only on the server.

@@ -3509,7 +3509,9 @@ export class BoloClientWorld extends ClientWorld {
       }
 
       case net.UPDATE_MESSAGE: {
+        this._notePillCells();
         const bytes = this.netTick(data, offset, this.objectsCreatedInThisPacket);
+        this._reconcilePillCells();
         return bytes;
       }
 
@@ -3573,6 +3575,53 @@ export class BoloClientWorld extends ClientWorld {
   }
 
   // Helpers
+
+  // ── Pillbox cell references (safety net) ──────────────────────────────
+  //
+  // A map cell holds `cell.pill`, a back-reference to the pillbox on it, which is what draws the
+  // pillbox and makes it solid. Only WorldPillbox.updateCell() maintains it, and only for the
+  // pill's own current cell. Ghost pillboxes (drawn, but nothing there on the server) were seen
+  // live and never reproduced; one way to get a wrong reference is a correction that moves
+  // several pills into overlapping cells, where one pill's updateCell() deletes another's
+  // reference. So after every UPDATE, check the cells pills have pointed at against the pills'
+  // real state. There are only ~16 pills, so this is cheap.
+
+  /** Cells a pillbox has pointed at on this client: the only places a stale reference can be. */
+  _pillCells: Set<any> = new Set();
+
+  _notePillCells(): void {
+    for (const pill of this.map?.pills ?? []) {
+      if (pill.cell) this._pillCells.add(pill.cell);
+    }
+  }
+
+  _reconcilePillCells(): void {
+    if (!this.map?.pills) return;
+    this._notePillCells();
+    const live = new Set(this.map.pills);
+    const dev = (import.meta as any).env?.DEV;
+
+    // A cell pointing at a pill that is gone, in a tank, or now on another cell: clear it.
+    for (const cell of this._pillCells) {
+      const pill = cell.pill;
+      if (!pill) { this._pillCells.delete(cell); continue; }
+      if (live.has(pill) && !pill.inTank && !pill.carried && pill.cell === cell) continue;
+      if (dev) console.warn(`[PILLCELL] cleared stale pillbox reference at ${cell.x},${cell.y}`);
+      delete cell.pill;
+      cell.retile();
+      this._pillCells.delete(cell);
+    }
+
+    // A placed pill whose cell doesn't point back to it: re-point it, but only into an empty
+    // cell, so two pills can never take turns stealing one cell from each other.
+    for (const pill of this.map.pills) {
+      if (!pill.inTank && !pill.carried && pill.x != null && !(pill.cell?.pill)) {
+        if (dev) console.warn(`[PILLCELL] restored missing pillbox reference for pill ${pill.idx}`);
+        pill.updateCell();
+        if (pill.cell) this._pillCells.add(pill.cell);
+      }
+    }
+  }
 
   /**
    * Fill `@map.pills` and `@map.bases` based on the current object list.

@@ -403,6 +403,10 @@ export class BaseRenderer {
         // cover hides you from the enemy, not from your own side.
         if (obj.hidden && obj.isHiddenFrom?.(this.world.player)) continue;
 
+        // A shell that has hit something is only waiting for the server's DESTROY (see
+        // Shell.spent); drawing it would show it flying on through its target.
+        if (obj.spent) continue;
+
         if (obj.styled != null && obj.x != null && obj.y != null) {
           const [tx, ty] = obj.getTile();
           const ox = mathRound(lerpPos(obj.prevX, obj.x, alpha) / PIXEL_SIZE_WORLD) - TILE_SIZE_PIXELS / 2;

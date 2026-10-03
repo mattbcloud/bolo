@@ -304,6 +304,8 @@ export class WorldBase extends BoloObject {
   }
 
   takeShellHit(shell: any): number {
+    // The client is not authoritative for hits: the server decides them and sends the result.
+    if (!this.world.authority) return sounds.SHOT_BUILDING;
     if (this.owner) {
       for (const pill of this.world.map.pills) {
         if (!pill.inTank && !pill.carried && pill.armour > 0) {

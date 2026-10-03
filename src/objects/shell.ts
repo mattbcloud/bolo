@@ -40,6 +40,10 @@ export class Shell extends BoloObject {
   attribution?: any;
   cell: any;
   radians?: number;
+  /** Client only, never serialized: this shell has hit something and is waiting for the
+   *  server's DESTROY. The client can't destroy objects, so without this a shell keeps flying
+   *  after a hit and can register again on every tick it still overlaps the target. */
+  spent: boolean = false;
 
   constructor(world: any) {
     super(world);
@@ -109,9 +113,17 @@ export class Shell extends BoloObject {
   }
 
   update(): void {
+    if (this.spent) return;
     this.move();
     const collision = this.collide();
     if (collision) {
+      // The client is not authoritative for hits: the server decides them and sends the result
+      // (armour, slides, deaths, terrain changes, the explosion). Applying them here too is what
+      // produced phantom damage and phantom deaths. Stop and hide the shell until its DESTROY.
+      if (!this.world.authority) {
+        this.spent = true;
+        return;
+      }
       const [mode, victim] = collision;
       const sfx = victim.takeShellHit(this);
       let x: number, y: number;

@@ -287,6 +287,8 @@ export class WorldPillbox extends BoloObject {
   }
 
   takeShellHit(shell: any): number {
+    // The client is not authoritative for hits: the server decides them and sends the result.
+    if (!this.world.authority) return sounds.SHOT_BUILDING;
     this.aggravate();
     this.armour = max(0, this.armour - 1);
     this.cell.retile();

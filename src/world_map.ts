@@ -154,6 +154,13 @@ export class WorldMapCell extends MapCell {
   }
 
   takeShellHit(shell: any): number {
+    // The client is not authoritative for hits: the server decides them and sends the result
+    // (as map changes). Only an explicit `authority === false` world is a client: a map with no
+    // world, or the headless harness's stand-in world (which has no `authority` field), keeps
+    // applying hits as before.
+    const world = (this.map as unknown as WorldMap).world;
+    if (world?.authority === false) return this.isType('#') ? sounds.SHOT_TREE : sounds.SHOT_BUILDING;
+
     // FIXME: check for a mine
     let sfx = sounds.SHOT_BUILDING;
 
