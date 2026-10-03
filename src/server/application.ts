@@ -12,6 +12,7 @@ import * as path from 'path';
 import * as http from 'http';
 import { timingSafeEqual } from 'crypto';
 import { WebSocketServer } from 'ws';
+import { buildCharge } from '../build_cost';
 import { MapIndex } from './map_index';
 import * as helpers from '../helpers';
 import BoloWorldMixin, { BoloWorldMixin as BoloWorldMixinInterface } from '../world_mixin';
@@ -484,15 +485,27 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       case net.BUILD_ORDER: {
         const parts = message.slice(2).split(',');
         const action = parts[0];
-        const trees = parseInt(parts[1]);
-        const x = parseInt(parts[2]);
-        const y = parseInt(parts[3]);
+        // Number(), not parseInt(): parseInt('abc') is NaN, which slipped past a `< 0` check and
+        // became the tank's tree count. The client's tree count is parsed only to reject garbage;
+        // it is never charged.
+        const claimed = Number(parts[1]);
+        const x = Number(parts[2]);
+        const y = Number(parts[3]);
         const builder = tank.builder.$;
-        if (trees < 0 || !builder.states.actions.hasOwnProperty(action)) {
+        if (!builder.states.actions.hasOwnProperty(action) ||
+            !Number.isInteger(claimed) || claimed < 0 ||
+            !Number.isInteger(x) || !Number.isInteger(y) ||
+            x < 0 || y < 0 || x >= MAP_SIZE_TILES || y >= MAP_SIZE_TILES) {
           this.onError(ws, new Error('Received invalid build order'));
-        } else {
-          builder.performOrder(action, trees, this.map.cellAtTile(x, y));
+          break;
         }
+        const cell = this.map.cellAtTile(x, y);
+        // The server prices the order itself. A cell the action can't target, or an order the
+        // tank can't afford, is a normal race with a client whose map view is a tick behind, so
+        // it's ignored quietly, as performOrder already ignores an unaffordable order.
+        const charge = buildCharge(action, cell, tank.trees);
+        if (charge === null) break;
+        builder.performOrder(action, charge, cell);
         break;
       }
       default: {

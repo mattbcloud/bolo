@@ -4,6 +4,7 @@
  * The `BoloLocalWorld` class implements a game local to the player's computer/browser.
  */
 
+import { buildCharge } from '../../build_cost';
 import { NetLocalWorld } from '../../villain/world/net/local';
 import WorldMap from '../../world_map';
 import EverardIsland from '../everard';
@@ -475,7 +476,11 @@ export class BoloLocalWorld extends NetLocalWorld {
   }
 
   buildOrder(action: string, trees: number, cell: any): void {
-    this.player.builder.$.performOrder(action, trees, cell);
+    // This world is its own authority (offline play, and the brain harness), so it prices the
+    // order the way the server does instead of trusting the requested tree count.
+    const charge = buildCharge(action, cell, this.player.trees);
+    if (charge === null) return;
+    this.player.builder.$.performOrder(action, charge, cell);
   }
 }
 

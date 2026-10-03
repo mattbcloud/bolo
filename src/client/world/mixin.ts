@@ -4,6 +4,7 @@
  * Common logic between `BoloLocalWorld` and `BoloClientWorld`
  */
 
+import { buildCost } from '../../build_cost';
 import { createLoop } from '../../villain/loop';
 import { Progress } from '../progress';
 import { Vignette } from '../vignette';
@@ -512,66 +513,55 @@ export const BoloClientWorldMixin = {
         if (cell.base || cell.pill || !cell.isType('#')) {
           result = [false];
         } else {
-          result = ['forest', 0];
+          result = ['forest'];
         }
         break;
       case 'road':
         if (cell.base || cell.pill || cell.isType('|', '}', 'b', '^')) {
           result = [false];
         } else if (cell.isType('#')) {
-          result = ['forest', 0];
+          result = ['forest'];
         } else if (cell.isType('=')) {
           result = [false];
         } else if (cell.isType(' ') && cell.hasTankOnBoat()) {
           result = [false];
         } else {
-          result = ['road', 2];
+          result = ['road'];
         }
         break;
       case 'building':
         if (cell.base || cell.pill || cell.isType('b', '^')) {
           result = [false];
         } else if (cell.isType('#')) {
-          result = ['forest', 0];
+          result = ['forest'];
         } else if (cell.isType('}')) {
-          result = ['repair', 1];
+          result = ['repair'];
         } else if (cell.isType('|')) {
           result = [false];
         } else if (cell.isType(' ')) {
           if (cell.hasTankOnBoat()) {
             result = [false];
           } else {
-            result = ['boat', 5];
+            result = ['boat'];
           }
         } else if (cell === this.player.cell) {
           result = [false];
         } else {
-          result = ['building', 2];
+          result = ['building'];
         }
         break;
       case 'pillbox':
         if (cell.pill) {
-          if (cell.pill.armour === 16) {
-            result = [false];
-          } else if (cell.pill.armour >= 11) {
-            result = ['repair', 1, true];
-          } else if (cell.pill.armour >= 7) {
-            result = ['repair', 2, true];
-          } else if (cell.pill.armour >= 3) {
-            result = ['repair', 3, true];
-          } else if (cell.pill.armour < 3) {
-            result = ['repair', 4, true];
-          } else {
-            result = [false];
-          }
+          // Priced (and refused at full armour) by buildCost below.
+          result = ['repair'];
         } else if (cell.isType('#')) {
-          result = ['forest', 0];
+          result = ['forest'];
         } else if (cell.base || cell.isType('b', '^', '|', '}', ' ')) {
           result = [false];
         } else if (cell === this.player.cell) {
           result = [false];
         } else {
-          result = ['pillbox', 4];
+          result = ['pillbox'];
         }
         break;
       case 'mine':
@@ -585,22 +575,29 @@ export const BoloClientWorldMixin = {
         result = [false];
     }
 
-    const [resultAction, trees, flexible] = result;
+    const [resultAction] = result;
     if (!resultAction) return [false];
 
     if (resultAction === 'mine') {
       if (this.player.mines === 0) return [false];
       return ['mine'];
     }
-    if (resultAction === 'pill') {
-      const pills = this.player.getCarryingPillboxes();
-      if (pills.length === 0) return [false];
-    }
-    if (trees != null && this.player.trees < trees) {
-      if (!flexible) return [false];
+    // The price comes from the same function the server charges with, so the two can't drift.
+    const priced = buildCost(resultAction, cell);
+    if (!priced) return [false];
+    const [trees, flexible] = priced;
+
+    // Placing needs a carried pillbox. (This compared against 'pill', which no action is called,
+    // so it never ran and the server quietly refused the order instead.)
+    if (resultAction === 'pillbox' && this.player.getCarryingPillboxes().length === 0) return [false];
+
+    if (this.player.trees < trees) {
+      // Only pillbox repair can go ahead with fewer trees, and not with none: the server charges
+      // what the tank has and refuses a repair that would cost nothing.
+      if (!flexible || this.player.trees === 0) return [false];
       return [resultAction, this.player.trees, flexible];
     }
-    return result;
+    return [resultAction, trees, flexible];
   },
 };
 

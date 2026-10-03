@@ -112,8 +112,9 @@ function _dir8(direction: number): readonly [number, number] {
   return DIR8_OFFSETS[Math.round((direction & 0xFF) / 32) & 7];
 }
 
-const PLACE_PILL_TREES = 1;       // builder 'pillbox' cost: plant a carried pill (engine consumes this many trees)
+const PLACE_PILL_TREES = 4;       // builder 'pillbox' cost: plant a carried pill. The server prices it (build_cost.ts); it used to charge whatever count we sent, and 1 was accepted
 const COVER_WALL_TREES = 2;       // builder 'building' cost for one wall tile
+const WALL_REPAIR_TREES = 1;      // builder 'repair' cost for a damaged wall `}`
 const COVER_FINISH_ARMOUR = 8;    // finish a pill from cover once its armour drops to this
 const COVER_TREE_TARGET = 6;      // stock this many trees before engaging (≈3 walls for rebuilds)
 const COVER_SLOT_TOL = 48;        // close enough to a firing slot: the window is re-tested where we stand
@@ -429,9 +430,9 @@ function _coverMethodAttack(a4: A4State, state: BrainState, pill: PillState, pil
     if (tookHit && a4.coverCoolUntil <= a4.tickCounter) a4.coverCoolUntil = a4.tickCounter + COOL_TICKS;  // start a cool pass
     if (pillDistPh < RETREAT_TO) { retreat(RETREAT_TO); return true; }   // pull the tank out of range first
     // Out of range now — the pill is dormant, so the builder can safely refresh the wall: REPAIR a
-    // damaged `}` (0 trees) in place, else the !coverPresent branch above rebuilds a wall that's gone.
-    if (covTerr === 8 && tank.builderInTank && !a4.pendingBuilderAction) {
-      a4.pendingBuilderAction = { action: 'repair', trees: 0, tileX: covX, tileY: covY };
+    // damaged `}` (1 tree) in place, else the !coverPresent branch above rebuilds a wall that's gone.
+    if (covTerr === 8 && tank.builderInTank && !a4.pendingBuilderAction && tank.resourceCount >= WALL_REPAIR_TREES) {
+      a4.pendingBuilderAction = { action: 'repair', trees: WALL_REPAIR_TREES, tileX: covX, tileY: covY };
       a4.coverBuilderDispatchTick = a4.tickCounter;
     }
     setSpeed(a4, 0, tank.speed & 0xFF);  // hold out of range while it cools + the wall is refreshed
@@ -567,13 +568,13 @@ export function goalPlacePill(a4: A4State, state: BrainState): void {
     return;
   }
 
-  // Deploy a CAPTURED pillbox to DEFEND a friendly base: farm a tree if short, drive next
-  // to the base, then dispatch the builder to plant the carried pill (armour 15, costs 1
-  // tree). The old flow drove the builder via myMan.actionCode — a field the engine NEVER
-  // reads (only pendingBuilderAction → performOrder does anything), so it never actually
-  // placed; and it required 4 trees (the engine consumes the `trees` arg = 1).
+  // Deploy a CAPTURED pillbox to DEFEND a friendly base: farm trees if short, drive next
+  // to the base, then dispatch the builder to plant the carried pill (armour 15, costs 4
+  // trees, priced by the server). The old flow drove the builder via myMan.actionCode — a
+  // field the engine NEVER reads (only pendingBuilderAction → performOrder does anything).
 
-  // 1. Need ≥1 tree (performOrder('pillbox') aborts if tank.trees < trees). Farm forest.
+  // 1. Need PLACE_PILL_TREES (the server refuses the order otherwise). Farm forest: one
+  //    harvest yields 4 trees.
   if (tank.resourceCount < PLACE_PILL_TREES) {
     if (!tank.builderInTank || tank.onBoat) { setSpeed(a4, 0, tank.speed & 0xFF); a4.placePillHold = 1; return; }
     const adj = _findAdjacentForest(a4);

@@ -393,7 +393,8 @@ export function placePillGoalCost(a4: A4State, state: BrainState): number {
   const FARM_STALL_TICKS = 1500;      // ~3 failed harvest round-trips (a working harvest gains trees in ~1)
   const FARM_ABANDON_COOLDOWN = 3000; // yield window before retrying PlacePill (mirrors cover-abandon)
   if (a4.tickCounter < a4.placePillFarmAbandonUntil) return 0xFFFF;
-  if (carried && state.tank.resourceCount < 1) {
+  // Farm phase = fewer trees than placing a pillbox costs (4, priced by the server; build_cost.ts).
+  if (carried && state.tank.resourceCount < 4) {
     const stationary = (state.tank.speed ?? 0) < 4;   // holding to farm, not travelling to a forest/base
     if (!stationary || state.tank.resourceCount > a4.placePillFarmPrevTrees) {
       a4.placePillFarmStallSince = 0;                  // moving or trees rose → not stalled
