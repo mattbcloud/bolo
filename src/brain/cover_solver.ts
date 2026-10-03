@@ -11,10 +11,11 @@
  *
  * So this module does not approximate. It runs the ENGINE'S OWN shell resolution:
  *
- *   shell.ts move()    — radians = ((256 - direction)/256)·2π, then
- *                        x += round(cos·32), y += round(sin·32) — a CONSTANT INTEGER step,
- *                        so a shell flies a straight integer-lattice line, and directions
- *                        that round to the same step vector are the SAME trajectory.
+ *   shell.ts move()    — radians = ((256 - direction)/256)·2π, then an EXACT step of
+ *                        (cos·32, sin·32) accumulated in floating point and rounded to
+ *                        integer x/y after every move. So a shell flies a straight line and
+ *                        travels exactly range·256 units on every heading (it used to step by
+ *                        a rounded vector, which made reach depend on heading: fix-list 2/4).
  *   shell.ts collide() — checks the pill in the cell it landed in FIRST (armour > 0, within
  *                        127 of that cell's centre), and only then terrain — and a pill's
  *                        underlying terrain ('=', '~', '.') is never in the barrier list. So a
@@ -25,8 +26,8 @@
  *   ctor               — spawns at the owner's centre and moves ONCE before any collision
  *                        check, and never collides with its owner (`pill !== this.owner.$`).
  *
- * THE MECHANISM, which only this model can express: a shell's integer step vector is fixed at
- * launch, so which cells it crosses depends on where it was FIRED FROM within its tile. The
+ * THE MECHANISM, which only this model can express: a shell's line is fixed at launch, so which
+ * cells it crosses depends on where it was FIRED FROM within its tile. The
  * pill always fires from its own cell centre and has no such choice; the tank picks its phase.
  * Measured at (116,111)+(32,128) against pill (112,108) / cover (113,108): the tank's shot
  * threads (113,109) and hits, while the pill's reply along the same line clips the cover at
@@ -63,10 +64,10 @@ export function dirToFloat(x1: number, y1: number, x2: number, y2: number): numb
   return ((Math.atan2(-(y2 - y1), x2 - x1) * 256) / TWO_PI + 256) % 256;
 }
 
-/** The engine's per-tick shell displacement: a constant INTEGER step (shell.ts move()). */
+/** The engine's per-move shell displacement: an exact 32-unit step (shell.ts move()). */
 function shellStep(dir: number): [number, number] {
   const rad = ((256 - dir) * TWO_PI) / 256;
-  return [Math.round(Math.cos(rad) * 32), Math.round(Math.sin(rad) * 32)];
+  return [Math.cos(rad) * 32, Math.sin(rad) * 32];
 }
 
 /**
@@ -81,11 +82,12 @@ export function traceShell(
   pillTx: number, pillTy: number, range = 7,
 ): 'hit' | 'blocked' | 'miss' {
   const [stepX, stepY] = shellStep(dir);
-  if (stepX === 0 && stepY === 0) return 'miss';
   const moves = range * 8;                       // ctor move + (lifespan+1) update moves
-  let x = sx, y = sy;
+  let fx = sx, fy = sy;
   for (let i = 1; i <= moves; i++) {
-    x += stepX; y += stepY;
+    // As the engine: the exact position accumulates, and x/y are it rounded after each move.
+    fx += stepX; fy += stepY;
+    const x = Math.round(fx), y = Math.round(fy);
     if (i === 1) continue;                       // the spawn move resolves no collision
     const tx = (x >> 8) & 0xFF, ty = (y >> 8) & 0xFF;
     const terr = a4.worldMap[(ty << 8) | tx] & 0x0F;
@@ -115,10 +117,10 @@ export function pillShotReaches(
 ): boolean {
   const pcx = (pillTx << 8) + 128, pcy = (pillTy << 8) + 128;
   const [stepX, stepY] = shellStep(dirToFloat(pcx, pcy, tx, ty));
-  if (stepX === 0 && stepY === 0) return false;
-  let x = pcx, y = pcy;
+  let fx = pcx, fy = pcy;
   for (let i = 1; i <= 56; i++) {                // pillbox shells always use the default range 7
-    x += stepX; y += stepY;
+    fx += stepX; fy += stepY;
+    const x = Math.round(fx), y = Math.round(fy);
     if (i === 1) continue;
     if (Math.hypot(x - tx, y - ty) <= HIT_RADIUS) return true;   // it reaches us
     const cellX = (x >> 8) & 0xFF, cellY = (y >> 8) & 0xFF;

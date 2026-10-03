@@ -39,7 +39,13 @@ export class Shell extends BoloObject {
   owner?: any;
   attribution?: any;
   cell: any;
-  radians?: number;
+  // Exact position and step. A rounded step was 31.4-32.65 units long depending on the heading,
+  // so reach depended on heading (fix-list 2, 4). x/y stay integers for the network ('H'); these
+  // aren't serialized.
+  private fx?: number;
+  private fy?: number;
+  private sx?: number;
+  private sy?: number;
   /** Client only, never serialized: this shell has hit something and is waiting for the
    *  server's DESTROY. The client can't destroy objects, so without this a shell keeps flying
    *  after a hit and can register again on every tick it still overlaps the target. */
@@ -142,12 +148,26 @@ export class Shell extends BoloObject {
     }
   }
 
+  /**
+   * Move one exact 32-unit step along the heading. Every shell travels range × 256 units (±1 for
+   * rounding) on every heading, so a tank's shells and a pillbox's both reach exactly 1,919
+   * centre to centre at range 7, which is what the pillbox's targeting assumes.
+   */
   move(): void {
-    if (!this.radians) {
-      this.radians = ((256 - this.direction) * 2 * PI) / 256;
+    if (this.sx === undefined) {
+      const radians = ((256 - this.direction) * 2 * PI) / 256;
+      this.sx = cos(radians) * 32;
+      this.sy = sin(radians) * 32;
     }
-    this.x = this.x! + round(cos(this.radians) * 32);
-    this.y = this.y! + round(sin(this.radians) * 32);
+    // First move, or the server moved us (a netSync on the client): carry on from where we are.
+    if (this.fx === undefined || round(this.fx) !== this.x || round(this.fy!) !== this.y) {
+      this.fx = this.x!;
+      this.fy = this.y!;
+    }
+    this.fx += this.sx;
+    this.fy! += this.sy!;
+    this.x = round(this.fx);
+    this.y = round(this.fy!);
     this.updateCell();
   }
 

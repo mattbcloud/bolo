@@ -47,10 +47,15 @@ describe('cover firing solver', () => {
 
   it('the asymmetry that makes cover work: our shot threads where the reply does not', () => {
     const a4 = makeA4(0);
-    const [x, y] = at(PILL_X + 4, PILL_Y + 3, 32, 128);
-    // Same line, opposite directions, different outcomes — because a shell flies in constant
-    // integer steps from where it was FIRED, and the pill is stuck firing from its cell centre
-    // while the tank picks its sub-tile phase.
+    const [x, y] = at(PILL_X + 2, PILL_Y - 2, 128, 192);
+    // Same line, opposite directions, different outcomes — because a shell is sampled every 32
+    // units from where it was FIRED, and the pill is stuck firing from its cell centre while the
+    // tank picks its sub-tile phase.
+    //
+    // This spot was (PILL_X+4, PILL_Y+3)+(32,128) when shells stepped by a ROUNDED vector, whose
+    // integer lattice made the asymmetry far more common (83 of 3,520 sampled positions around
+    // this pill, against 11 with the exact step of fix-list 2/4). That old spot no longer works:
+    // our own shot clips the cover there now. Re-measured under the exact step.
     const toPill = dirToFloat(x, y, (PILL_X << 8) + 128, (PILL_Y << 8) + 128);
     expect(traceShell(a4, x, y, toPill, PILL_X, PILL_Y)).toBe('hit');
     expect(pillShotReaches(a4, PILL_X, PILL_Y, x, y)).toBe(false);

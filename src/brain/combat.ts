@@ -102,8 +102,8 @@ export function linearAim(
   const dist = computeDistanceBetween(srcX, srcY, tgtX, tgtY);
 
   // Lead time = flight time, and a shell's flight time is exactly linear in distance: shell.ts
-  // move() steps a CONSTANT round(cos*32), round(sin*32) every tick, i.e. 32 world units per
-  // tick regardless of range, so reaching `dist` takes dist/32 ticks.
+  // move() steps an exact 32 world units per tick along its heading (x/y rounded after each
+  // move), regardless of range or heading, so reaching `dist` takes dist/32 ticks.
   //
   // This used to be `sqrt(dist * 2.6 + 1.5)`, which is not that curve and is not even the same
   // dimension — it agrees with dist/32 only at dist 2662 (10.4 tiles), past our own 7-tile reach.
