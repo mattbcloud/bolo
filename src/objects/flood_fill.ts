@@ -12,6 +12,9 @@ export class FloodFill extends BoloObject {
   lifespan: number = 0;
   cell: any;
   neighbours: any[] = [];
+  /** Whether this FloodFill started on a crater. Set in anySpawn(), so client and server agree;
+   *  not serialized. */
+  wasCrater: boolean = false;
 
   serialization(isCreate: boolean, p: Function): void {
     if (isCreate) {
@@ -37,6 +40,7 @@ export class FloodFill extends BoloObject {
       this.cell.neigh(-1, 0),
       this.cell.neigh(0, -1),
     ];
+    this.wasCrater = this.cell.isType('%');
   }
 
   update(): void {
@@ -61,6 +65,11 @@ export class FloodFill extends BoloObject {
   }
 
   flood(): void {
+    // A FloodFill started on a crater has nothing to do once that crater has already flooded
+    // (another FloodFill got there first). Without this, the duplicates re-flood and re-spread,
+    // and multiply exponentially across a crater field (fix-list 9). One started on a tile that
+    // has just become water (a sunk boat, a shot) isn't a crater, so it still floods and spreads.
+    if (this.wasCrater && !this.cell.isType('%')) return;
     if (this.canGetWet()) {
       this.cell.setType(' ', false);
       this.spread();
