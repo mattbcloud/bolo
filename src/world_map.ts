@@ -298,7 +298,9 @@ export class WorldMap extends Map {
   }
 
   getRandomStart(): any {
-    return this.starts[round(Math.random() * (this.starts.length - 1))];
+    // floor(random × n) picks each start equally often. round(random × (n − 1)) gave the first and
+    // last start half the chance of each of the others (fix-list 5).
+    return this.starts[Math.floor(Math.random() * this.starts.length)];
   }
 }
 
