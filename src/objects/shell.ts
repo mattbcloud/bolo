@@ -107,7 +107,8 @@ export class Shell extends BoloObject {
     }
 
     // Default direction is the owner's.
-    this.direction = options.direction || this.owner.$.direction;
+    // `??`, not `||`: a requested direction of exactly 0 (due east) is a real heading (fix-list 19).
+    this.direction = options.direction ?? this.owner.$.direction;
     // Default lifespan (fired by pillboxes) is 7 tiles.
     this.lifespan = ((options.range || 7) * TILE_SIZE_WORLD) / 32 - 2;
     // Default for onWater (fired by pillboxes) is no.

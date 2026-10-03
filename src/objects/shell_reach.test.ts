@@ -38,8 +38,7 @@ function range_rig() {
 function reaches(range: number): number[] {
   const { shooter, fire } = range_rig();
   const out: number[] = [];
-  // Direction 0 falls back to the owner's direction in Shell.spawn (`options.direction ||`), so
-  // aim the shooter itself too.
+  // Aim the shooter too, as a tank's own shots use its direction.
   for (let dir = 0; dir < 256; dir++) {
     shooter.direction = dir;
     const path = fire(dir, range);
@@ -137,5 +136,18 @@ describe('client and server agree on a shell\'s line', () => {
       expect(Math.abs(client.x - server[i][0]), `move ${i}`).toBeLessThanOrEqual(1);
       expect(Math.abs(client.y - server[i][1]), `move ${i}`).toBeLessThanOrEqual(1);
     }
+  });
+});
+
+describe('Shell.spawn direction', () => {
+  it('a requested direction of 0 flies due east, whatever way the owner faces (fix-list 19)', () => {
+    const { world, shooter } = range_rig();
+    shooter.direction = 100;                     // facing roughly west-north-west
+    const shell = world.spawn(Shell, shooter, { direction: 0 });
+    expect(shell.direction).toBe(0);
+    const [x0, y0] = [shell.x, shell.y];
+    shell.update();
+    expect(shell.x - x0).toBe(32);
+    expect(shell.y - y0).toBe(0);
   });
 });
