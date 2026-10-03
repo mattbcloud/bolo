@@ -435,11 +435,50 @@ export class Tank extends BoloObject {
 
     this.shells--;
     this.reload = 13;
+    // A tank boxed in by forest is hidden from pillboxes, which is fair, but its shell used to
+    // leave through a corner between two trees and touch neither, so it could fire and stay
+    // hidden (fix-list 3). The shot hits its own cover instead, which exposes it.
+    if (this.world.authority && this.hidden && this.fireIntoCover()) {
+      this.soundEffect(sounds.SHOOTING);
+      return;
+    }
     // Only spawn on server (ClientWorld doesn't have this method)
     if (this.world.spawn) {
       this.world.spawn(Shell, this, { range: this.firingRange, onWater: this.onBoat });
     }
     this.soundEffect(sounds.SHOOTING);
+  }
+
+  /**
+   * Spend a hidden tank's shot on its own forest cover: the orthogonal neighbour closest to the
+   * firing direction (the quadrants world_map.ts uses for a shot on a road) takes a shell hit, so
+   * the forest becomes grass and updateHiddenStatus() exposes the tank on the next tick. No shell
+   * flies: classic Bolo shells stop at the first tree. One tile even on an exact diagonal, since
+   * one is enough to expose the tank. Returns false, firing normally instead, if that tile is no
+   * longer forest (`hidden` is from the last tick).
+   */
+  fireIntoCover(): boolean {
+    const d = this.direction;
+    const [dx, dy] = (d >= 224 || d < 32) ? [1, 0] : d < 96 ? [0, -1] : d < 160 ? [-1, 0] : [0, 1];
+    const cell = this.world.map.cellAtTile(this.cell.x + dx, this.cell.y + dy);
+    if (!cell.isType('#')) return false;
+
+    const sfx = cell.takeShellHit({ direction: d });
+    const [x, y] = cell.getWorldCoordinates();
+    this.world.soundEffect(sfx, x, y);
+    // Everything else a shell landing on that cell does (Shell.asplode, 'cell' mode): it kills a
+    // builder working there, sets off a mine, and shows an explosion.
+    for (const tank of this.world.tanks) {
+      const builder = tank.builder?.$;
+      if (!builder) continue;
+      const { inTank, parachuting } = builder.states;
+      if (builder.order !== inTank && builder.order !== parachuting && builder.cell === cell) builder.kill();
+    }
+    if (this.world.spawn) {
+      this.world.spawn(Explosion, x, y);
+      this.world.spawn(MineExplosion, cell);
+    }
+    return true;
   }
 
   layMine(): void {
