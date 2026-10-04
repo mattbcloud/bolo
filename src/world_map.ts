@@ -71,6 +71,18 @@ export class WorldMapCell extends MapCell {
   /**
    * Does this cell contain a tank with a boat?
    */
+  /**
+   * Is a live tank on this cell? Building a pillbox or a wall here would trap it for good: a live
+   * pillbox or a wall gives speed and turn 0 on its cell (fix-list 21). Any tank, not only the
+   * builder's own, so one player can't wall another in.
+   */
+  hasTank(): boolean {
+    for (const tank of (this.map as unknown as WorldMap).world?.tanks ?? []) {
+      if (tank.armour !== 255 && tank.cell === this) return true;
+    }
+    return false;
+  }
+
   hasTankOnBoat(): boolean {
     for (const tank of (this.map as unknown as WorldMap).world.tanks) {
       if (tank.armour !== 255 && tank.cell === this) {

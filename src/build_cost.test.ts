@@ -206,3 +206,88 @@ describe('server BUILD_ORDER handler', () => {
     expect(builder.order).toBe(builder.states.actions.forest);
   });
 });
+
+// ── Fix-list 21: no pillbox or wall under a tank ──────────────────────────────
+
+describe('no pillbox or wall on a tile a tank is standing on', () => {
+  it('buildCost refuses a pillbox or a wall under a live tank, and not under a dead one', () => {
+    const c = cell('.');
+    const tank = { armour: 40, cell: c };
+    map.world.tanks = [tank];
+    try {
+      expect(buildCost('pillbox', c)).toBeNull();
+      expect(buildCost('building', c)).toBeNull();
+      // Other builds don't trap a tank and are unchanged.
+      expect(buildCost('road', c)).toEqual([2, false]);
+      expect(buildCost('mine', c)).toEqual([0, false]);
+      tank.armour = 255;                                  // dead: doesn't block
+      expect(buildCost('pillbox', c)).toEqual([4, false]);
+      expect(buildCost('building', c)).toEqual([2, false]);
+    } finally {
+      map.world.tanks = [];
+    }
+  });
+
+  /** A server world: tank A on grass with 10 trees and a carried pillbox, tank B two tiles east. */
+  function twoTanks() {
+    const world: any = new BoloServerWorld(WorldMap.load(decodeBase64(EverardIsland)));
+    const a: any = world.spawn(Tank, 0);
+    const b: any = world.spawn(Tank, 1);
+    let spot: [number, number] | null = null;
+    for (let y = 0; y < 256 && !spot; y++) for (let x = 0; x < 250 && !spot; x++) {
+      let ok = true;
+      for (let dx = 0; dx <= 4 && ok; dx++) { const c = world.map.cellAtTile(x + dx, y); ok = c.isType('.') && !c.pill && !c.base && !c.mine; }
+      if (ok) spot = [x, y];
+    }
+    const [tx, ty] = spot!;
+    const put = (t: any, x: number) => { t.x = (x + 0.5) * TILE_SIZE_WORLD; t.y = (ty + 0.5) * TILE_SIZE_WORLD; t.onBoat = false; t.updateCell(); };
+    put(a, tx); put(b, tx + 2);
+    a.trees = 10;
+    const pill = world.map.pills[0];
+    pill.armour = 0; pill.inTank = true; pill.x = pill.y = null; pill.updateCell(); pill.ref('owner', a); pill.updateOwner();
+    const send = (order: string) => world.onSimpleMessage({ tank: a }, `${net.BUILD_ORDER},${order}`);
+    const builder = a.builder.$;
+    /** Run the builder until it's back in the tank. */
+    const settle = () => { for (let i = 0; i < 400 && !(builder.order === builder.states.inTank && i > 0); i++) builder.update(); };
+    return { world, a, b, tx, ty, put, pill, send, builder, settle };
+  }
+
+  it('the server refuses a pillbox on the ordering tank\'s own tile and on another tank\'s tile, charging nothing', () => {
+    const { a, tx, ty, send, builder } = twoTanks();
+    send(`pillbox,4,${tx},${ty}`);                        // own tile
+    send(`pillbox,4,${tx + 2},${ty}`);                    // tank B's tile
+    send(`building,2,${tx + 2},${ty}`);                   // a wall on B's tile
+    expect(a.trees).toBe(10);
+    expect(builder.order).toBe(builder.states.inTank);
+  });
+
+  for (const [action, cost] of [['pillbox', 4], ['building', 2]] as const) {
+    it(`the race: the tank drives onto the tile before the builder arrives (${action})`, () => {
+      const { world, a, tx, ty, put, pill, send, builder, settle } = twoTanks();
+      send(`${action},${cost},${tx + 1},${ty}`);           // empty tile between the two tanks
+      expect(a.trees).toBe(10 - cost);
+      expect(builder.order).toBe(builder.states.actions[action]);
+      put(a, tx + 1);                                       // A drives onto the target tile
+      settle();
+      const target = world.map.cellAtTile(tx + 1, ty);
+      // (Booleans: a failing match on a game object would print the whole world.)
+      expect(!!target.pill).toBe(false);                    // nothing built under the tank
+      expect(target.type.ascii).toBe('.');
+      expect(a.trees).toBe(10);                             // trees refunded
+      expect(pill.inTank).toBe(true);                       // the pillbox is back in the tank
+      expect(a.getCarryingPillboxes().includes(pill)).toBe(true);
+    });
+  }
+
+  for (const [action, cost] of [['pillbox', 4], ['building', 2]] as const) {
+    it(`a ${action} on an empty tile next to the tank still gets built`, () => {
+      const { world, a, tx, ty, pill, send, settle } = twoTanks();
+      send(`${action},${cost},${tx + 1},${ty}`);
+      settle();
+      const target = world.map.cellAtTile(tx + 1, ty);
+      if (action === 'pillbox') { expect(target.pill === pill).toBe(true); expect(pill.inTank).toBe(false); }
+      else expect(target.type.ascii).toBe('|');
+      expect(a.trees).toBe(10 - cost);
+    });
+  }
+});

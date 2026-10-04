@@ -319,12 +319,17 @@ export class Builder extends BoloObject {
         break;
       case this.states.actions.building:
         if (this.cell.base || this.cell.pill || this.cell.isType('b', '^', '#', '}', '|', ' ')) break;
+        // A tank may have driven onto the tile since the order: don't wall it in (fix-list 21).
+        if (this.cell.hasTank()) break;
         this.cell.setType('|');
         this.trees = 0;
         this.soundEffect(sounds.MAN_BUILDING);
         break;
       case this.states.actions.pillbox:
         if (this.cell.pill || this.cell.base || this.cell.isType('b', '^', '#', '|', '}', ' ')) break;
+        // A tank may have driven onto the tile since the order: don't trap it (fix-list 21). The
+        // carried pillbox goes back to the tank with the builder, and the trees are refunded.
+        if (this.cell.hasTank()) break;
         this.pillbox.$.armour = 15;
         this.trees = 0;
         this.pillbox.$.placeAt(this.cell);

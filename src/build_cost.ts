@@ -36,6 +36,7 @@ export function buildCost(action: string, cell: MapCell): [number, boolean] | nu
 
     case 'building':
       if (c.base || c.pill || c.isType('b', '^', '#', '}', '|', ' ')) return null;
+      if (c.hasTank?.()) return null;   // a wall under a tank traps it (fix-list 21)
       return [2, false];
 
     case 'repair':
@@ -57,6 +58,7 @@ export function buildCost(action: string, cell: MapCell): [number, boolean] | nu
     case 'pillbox':
       // Placement; needing a carried pillbox is checked by the caller.
       if (c.pill || c.base || c.isType('b', '^', '#', '|', '}', ' ')) return null;
+      if (c.hasTank?.()) return null;   // a pillbox under a tank traps it (fix-list 21)
       return [4, false];
 
     case 'mine':
