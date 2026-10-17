@@ -20,6 +20,11 @@ import { brainOpen, syncBrainState } from '../../brain/brain_init';
 import { aIndy_Think } from '../../brain/aindy_think';
 import { buildBrainState, applyControls, resetStaticTerrainCache } from '../../brain/aindy_interface';
 import { A4State } from '../../brain/a4_state';
+import {
+  loadCaptureBrain, legacyBrainRequested, isBrainDifficulty,
+  type CaptureBrain, type CaptureBrainModule, type BrainDifficulty,
+} from '../../brain/capture_loader';
+import { createBrainIndicator, nextBrainDifficulty } from '../brain_indicator';
 
 // Visual effects
 import { DeathOverlay } from '../death_overlay';
@@ -48,6 +53,16 @@ export class BoloLocalWorld extends NetLocalWorld {
   brainEnabled: boolean = false;
   brainA4: A4State | null = null;
   brainTickCount: number = 0;
+
+  // The capture brain drives the toggle; `?brain=legacy` keeps the A4/aIndy brain below for one
+  // release. The capture brain is created on each engage and loaded on first use.
+  private _legacyBrain: boolean = legacyBrainRequested();
+  private _captureBrainModule: CaptureBrainModule | null = null;
+  private _captureBrain: CaptureBrain | null = null;
+  private _captureBrainGen: number = 0;
+  private _brainDifficulty: BrainDifficulty = 'normal';
+  /** The capture brain's clock: 20 ms of game time per tick, as in the campaign's simulator. */
+  private _captureBrainTicks: number = 0;
 
   // Pre-allocated map arrays (65536 bytes each, reused every tick)
   private _brainWorldMap:    Uint8Array = new Uint8Array(65536);
@@ -119,7 +134,11 @@ export class BoloLocalWorld extends NetLocalWorld {
     }
 
     // ── Brain tick ─────────────────────────────────────────────────────────
-    if (this.brainEnabled && this.brainA4 && this.player) {
+    // The capture brain steps every tick, dead or alive: it tracks its own deaths and respawns.
+    if (this.brainEnabled && this._captureBrain) {
+      this._captureBrainTicks++;
+      this._captureBrain.step();
+    } else if (this.brainEnabled && this.brainA4 && this.player) {
       const armour = this.player.armour as number;
       if (armour !== 255) {
         this.runBrainTick();
@@ -291,11 +310,137 @@ export class BoloLocalWorld extends NetLocalWorld {
   }
 
   /**
-   * Toggle brain control on/off.
+   * Toggle brain control on/off. The capture brain drives the tank; `?brain=legacy` keeps the
+   * A4/aIndy brain. Returns a promise that settles once the capture brain is running (or, on
+   * disengage, at once), for the headless harness; the game ignores it.
+   */
+  toggleBrainControl(): Promise<void> {
+    if (this._legacyBrain) {
+      this._toggleLegacyBrain();
+      return Promise.resolve();
+    }
+    if (this.brainEnabled) {
+      this._disengageCaptureBrain();
+      return Promise.resolve();
+    }
+    return this._engageCaptureBrain();
+  }
+
+  /**
+   * Set the capture brain's level: 'easy' | 'normal' | 'hard' (default 'normal'). Levels change only
+   * reaction time and thinking rate. While the brain is on it is replaced at once with one at the new
+   * level; while it is off only the stored level changes. Unknown levels are ignored, and so is
+   * every call with `?brain=legacy` (the old brain has no levels).
+   */
+  setBrainDifficulty(level: BrainDifficulty): void {
+    if (this._legacyBrain || !isBrainDifficulty(level)) return;
+    this._brainDifficulty = level;
+    if (!this._captureBrain) return;
+    this._captureBrain.stop();
+    this._captureBrain = null;
+    // stop() releases only the keys the brain tracks; its idle hold sets a brake it doesn't.
+    this._releaseBrainControls();
+    this._startCaptureBrain();
+  }
+
+  getBrainDifficulty(): BrainDifficulty {
+    return this._brainDifficulty;
+  }
+
+  private _engageCaptureBrain(): Promise<void> {
+    // Input locks out at once; the brain itself starts when the package has loaded, unless the
+    // player has toggled off again by then.
+    this.brainEnabled = true;
+    const gen = ++this._captureBrainGen;
+    return loadCaptureBrain().then((mod) => {
+      if (gen !== this._captureBrainGen || !this.brainEnabled) return;
+      this._captureBrainModule = mod;
+      this._startCaptureBrain();
+      this._showBrainIndicator();
+    }).catch((err) => {
+      console.error('[Brain] failed to load the capture brain:', err);
+      if (gen === this._captureBrainGen) this.brainEnabled = false;
+    });
+  }
+
+  private _startCaptureBrain(): void {
+    this._captureBrain = this._captureBrainModule!.createBrain({
+      app: this._captureBrainApp(), now: () => this._captureBrainTicks * 20, fair: true, forever: true,
+      difficulty: this._brainDifficulty,
+    });
+    this._captureBrain.start();
+  }
+
+  private _disengageCaptureBrain(): void {
+    this.brainEnabled = false;
+    this._captureBrainGen++;
+    this._captureBrain?.stop();
+    this._captureBrain = null;
+    this._releaseBrainControls();
+    // Gentle brake to stop, as the legacy toggle does.
+    if (this.player) this.player.braking = true;
+    this._hideBrainIndicator();
+  }
+
+  private _releaseBrainControls(): void {
+    if (!this.player) return;
+    this.player.accelerating            = false;
+    this.player.braking                 = false;
+    this.player.turningClockwise        = false;
+    this.player.turningCounterClockwise = false;
+    this.player.shooting                = false;
+    this.player.layingMine              = false;
+    this.autoSlowdownActive             = false;
+  }
+
+  /**
+   * The capture brain's view of this world. There is no websocket offline, so `ws.send` applies the
+   * protocol's key codes to the player's control flags and passes build orders to buildOrder(),
+   * exactly as the campaign's simulator does (sim_runner.js applyInput).
+   */
+  private _captureBrainApp(): any {
+    const world = this;
+    const FLAGS: Record<string, string> = {
+      A: 'accelerating', B: 'braking', L: 'turningCounterClockwise',
+      R: 'turningClockwise', S: 'shooting', M: 'layingMine',
+    };
+    return {
+      get player() { return world.player; },
+      get map() { return world.map; },
+      get tanks() { return (world as any).tanks ?? []; },
+      get objects() { return (world as any).objects ?? []; },
+      ws: {
+        readyState: 1,
+        send(m: string): void {
+          const p = world.player;
+          if (!p) return;
+          if (m.startsWith('O,')) {
+            const [action, trees, x, y] = m.slice(2).split(',');
+            const cell = world.map?.cellAtTile(+x, +y);
+            if (cell) world.buildOrder(action, +trees || 0, cell);
+          } else if (m === 'I') {
+            p.increaseRange();
+          } else if (m === 'D') {
+            p.decreaseRange();
+          } else if (m.length === 1 && FLAGS[m.toUpperCase()]) {
+            p[FLAGS[m.toUpperCase()]] = m === m.toUpperCase();
+          }
+        },
+      },
+    };
+  }
+
+  /** Diagnostics for the headless harness: the capture brain's error and death counts. */
+  captureBrainStats(): ReturnType<CaptureBrain['stats']> | null {
+    return this._captureBrain?.stats() ?? null;
+  }
+
+  /**
+   * The A4/aIndy brain (`?brain=legacy`).
    * On first enable: initialises the A4 state via brainOpen.
    * On disable: clears all tank control flags so the tank stops cleanly.
    */
-  toggleBrainControl(): void {
+  private _toggleLegacyBrain(): void {
     if (this.brainEnabled) {
       // Disengage brain
       this.brainEnabled = false;
@@ -350,26 +495,13 @@ export class BoloLocalWorld extends NetLocalWorld {
    */
   private _showBrainIndicator(): void {
     if (this._brainIndicator) return;
-
-    const el = document.createElement('div');
-    el.id = 'brain-indicator';
-    el.textContent = '🧠 Brain Active';
-    el.style.cssText = `
-      position: fixed;
-      top: 16px;
-      left: 16px;
-      z-index: 9000;
-      background: #000;
-      color: #fff;
-      font-family: 'Chicago', 'Charcoal', 'Courier New', monospace;
-      font-size: 11px;
-      padding: 4px 10px;
-      border: 2px solid #fff;
-      box-shadow: 2px 2px 0 rgba(255,255,255,0.3);
-      pointer-events: none;
-      user-select: none;
-      letter-spacing: 0.05em;
-    `;
+    // The capture brain's icon cycles its difficulty on click; the legacy brain has no levels.
+    const el = this._legacyBrain
+      ? createBrainIndicator(null)
+      : createBrainIndicator(this._brainDifficulty, () => {
+          this.setBrainDifficulty(nextBrainDifficulty(this._brainDifficulty));
+          return this._brainDifficulty;
+        });
     document.body.appendChild(el);
     this._brainIndicator = el;
   }

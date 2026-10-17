@@ -60,6 +60,9 @@ export function bootHeadlessWorld(seed = 0x9e3779b9): any {
   seedHarness(seed);
   _resetStaticTerrainCache(); // fresh terrain per boot — no cross-trial leakage
   const world: any = new BoloLocalWorld();
+  // These scenarios measure the A4/aIndy brain, which the toggle now reaches only with
+  // `?brain=legacy`. The capture brain has its own harness entry, enableCaptureBrain().
+  world._legacyBrain = true;
   // Replicates BoloLocalWorld.loaded() MINUS commonInitialization()/renderer/
   // initHud()/loop.start() — none of which the simulation tick needs.
   world.map = WorldMap.load(decodeBase64(EverardIsland));
@@ -95,6 +98,14 @@ export function enableBrain(world: any): any {
   world.toggleBrainControl();
   if (!world.brainEnabled || !world.brainA4) throw new Error('brain failed to enable');
   return world.brainA4;
+}
+
+/** Engage the capture brain (src/brain/capture/) through the normal toggle, at a difficulty. */
+export async function enableCaptureBrain(world: any, difficulty: 'easy' | 'normal' | 'hard' = 'hard'): Promise<void> {
+  world._legacyBrain = false;
+  world.setBrainDifficulty(difficulty);
+  await world.toggleBrainControl();
+  if (!world.brainEnabled || !world._captureBrain) throw new Error('capture brain failed to enable');
 }
 
 /** Move the tank to a tile centre. Placing on land clears onBoat (a tank spawns
