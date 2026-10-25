@@ -33,7 +33,7 @@ import { ServerWorld } from '../villain/world/net/server';
 import { pack } from '../struct';
 
 import connect from 'connect';
-import serveStatic from 'serve-static';
+import { mountStatic } from './static';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1360,10 +1360,8 @@ export class Application {
       }
     });
 
-    // Serve built client files (index.html and assets)
-    this.connectServer.use('/', serveStatic(path.join(webroot, 'dist/client')));
-    // Serve static assets (images, sounds, css, maps) from root
-    this.connectServer.use('/', serveStatic(webroot));
+    // The built client, plus the images and sounds it loads (see static.ts for cache lifetimes).
+    mountStatic(this.connectServer, webroot);
 
     this.loop = createLoop({
       rate: TICK_LENGTH_MS,
