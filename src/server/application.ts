@@ -1527,7 +1527,7 @@ export class Application {
     this.tickCounter++;
     if (this.tickCounter % 1000 === 0) {
       const now = Date.now();
-      const ONE_HOUR_MS = 60 * 60 * 1000;
+      const EMPTY_GAME_MS = 15 * 60 * 1000;
 
       for (const [gid, game] of Object.entries(this.games)) {
         // Skip the demo game - never close it
@@ -1549,8 +1549,8 @@ export class Application {
           continue;
         }
 
-        // Check if game has been empty for over an hour
-        if ((now - game.emptyStartTime) > ONE_HOUR_MS) {
+        // Check if game has been empty for over 15 minutes
+        if ((now - game.emptyStartTime) > EMPTY_GAME_MS) {
           console.log(`Closing empty game '${gid}' (empty for ${Math.floor((now - game.emptyStartTime) / 1000 / 60)} minutes)`);
           this.closeGame(game);
         }
