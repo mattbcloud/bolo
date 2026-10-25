@@ -136,6 +136,46 @@ describe('bug 11: shells', () => {
   });
 });
 
+/** A shell on open grass heading east, far from every tank, with `lifespan` ticks left. */
+function shellInOpen(world: any, lifespan: number): any {
+  const [tx, ty] = findOpenGrass(world);
+  placeTank(world, tx + 40, ty + 40);   // the player, well clear of the shell's path
+  const shell = world.spawn(Shell, spawnShooter(world), { direction: 0 });
+  shell.x = tileToBWorld(tx - 2);
+  shell.y = tileToBWorld(ty);
+  shell.updateCell();
+  shell.lifespan = lifespan;
+  return shell;
+}
+
+describe('shells at the end of their range', () => {
+  it('a client shell stops at its last position and is marked spent (so it is not drawn)', () => {
+    const world = makeWorld(false);
+    const shell = shellInOpen(world, 1);
+
+    shell.update();                        // 1 -> 0: one more step
+    expect(shell.spent).toBe(false);
+    shell.update();                        // reaches zero: end of life
+    expect(shell.spent).toBe(true);        // the renderer skips spent objects
+    expect(world.objects.includes(shell)).toBe(true);   // the server's DESTROY removes it
+
+    const [x, y] = [shell.x, shell.y];
+    for (let i = 0; i < 5; i++) shell.update();
+    expect([shell.x, shell.y]).toEqual([x, y]);
+  });
+
+  it('a server shell still explodes and is destroyed at end of life', () => {
+    const world = makeWorld(true);
+    const shell = shellInOpen(world, 1);
+
+    shell.update();
+    expect(world.objects.includes(shell)).toBe(true);
+    shell.update();
+    expect(world.objects.includes(shell)).toBe(false);
+    expect(shell.spent).toBe(false);
+  });
+});
+
 describe('bug 14: a death on the client does not drop pillboxes', () => {
   it('client kill(): carried pills stay in the tank and no cell references them', () => {
     const world = makeWorld(false);

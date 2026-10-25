@@ -46,9 +46,10 @@ export class Shell extends BoloObject {
   private fy?: number;
   private sx?: number;
   private sy?: number;
-  /** Client only, never serialized: this shell has hit something and is waiting for the
-   *  server's DESTROY. The client can't destroy objects, so without this a shell keeps flying
-   *  after a hit and can register again on every tick it still overlaps the target. */
+  /** Client only, never serialized: this shell has hit something or run out of range and is
+   *  waiting for the server's DESTROY. The client can't destroy objects, so without this a shell
+   *  keeps flying after a hit (and can register again on every tick it still overlaps the
+   *  target) or past the end of its range. */
   spent: boolean = false;
 
   constructor(world: any) {
@@ -145,6 +146,12 @@ export class Shell extends BoloObject {
       }
       this.asplode(x, y, mode);
     } else if (this.lifespan-- === 0) {
+      // Out of range. As on a hit, the client stops and hides the shell until the server's
+      // DESTROY; it used to fly on past its range for about an update.
+      if (!this.world.authority) {
+        this.spent = true;
+        return;
+      }
       this.asplode(this.x!, this.y!, 'eol');
     }
   }

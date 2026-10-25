@@ -403,8 +403,8 @@ export class BaseRenderer {
         // cover hides you from the enemy, not from your own side.
         if (obj.hidden && obj.isHiddenFrom?.(this.world.player)) continue;
 
-        // A shell that has hit something is only waiting for the server's DESTROY (see
-        // Shell.spent); drawing it would show it flying on through its target.
+        // A shell that has hit something or run out of range is only waiting for the server's
+        // DESTROY (see Shell.spent); drawing it would show it flying on.
         if (obj.spent) continue;
 
         if (obj.styled != null && obj.x != null && obj.y != null) {
