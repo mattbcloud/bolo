@@ -25,6 +25,7 @@
     "start": "tsx src/server/command.ts config.railway.json",
     "type-check": "tsc --noEmit",
     "test": "vitest run",
+    "test:slow": "SLOW=1 vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist"
   },
