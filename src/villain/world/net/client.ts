@@ -10,6 +10,8 @@ export class ClientWorld {
   static types: any[] = [];
   static typesByName: Map<string, number> = new Map();
   _isSynchronized: boolean = false;
+  /** netSpawn's occupied-slot warning is logged once per session. */
+  static _warnedOccupiedSpawn: boolean = false;
 
   constructor() {}
 
@@ -59,6 +61,18 @@ export class ClientWorld {
       this.objects.push(null);
     }
 
+    // The server only reuses a slot after destroying its object, so an occupied slot means a
+    // DESTROY never arrived. Clean it up as netDestroy would, or the old object's cell reference
+    // (cell.pill / cell.base) survives as a ghost. Hardening: no current path does this.
+    const occupant = this.objects[idx];
+    if (occupant) {
+      if (!ClientWorld._warnedOccupiedSpawn) {
+        ClientWorld._warnedOccupiedSpawn = true;
+        console.warn(`[NETSPAWN] spawn into occupied slot ${idx} (type ${typeIdx}); removing the old object first`);
+      }
+      this._netRemove(idx, occupant);
+    }
+
     // Place object at the server-specified index
     this.objects[idx] = obj;
 
@@ -87,23 +101,38 @@ export class ClientWorld {
 
     // Mark the object as destroyed (set to null)
     if (this.objects[idx]) {
-      const obj = this.objects[idx];
-
-      // Remove from tanks array if it's a tank
-      // Use type index comparison instead of constructor.name to avoid minification issues
-      const TankClass = (this.constructor as typeof ClientWorld).types[3]; // Tank is registered as type index 3
-      if (obj.constructor === TankClass) {
-        const tankIndex = this.tanks.indexOf(obj);
-        if (tankIndex !== -1) {
-          this.tanks.splice(tankIndex, 1);
-        }
-      }
-
-      this.objects[idx] = null;
+      this._netRemove(idx, this.objects[idx]);
     }
 
     // Return the number of bytes consumed (2 bytes for the index)
     return 2;
+  }
+
+  /**
+   * Take an object out of the world: out of the tanks array if it's a tank, off any map cell
+   * that still points back at it, and out of its slot. Shared by netDestroy and netSpawn.
+   */
+  _netRemove(idx: number, obj: any): void {
+    // Remove from tanks array if it's a tank
+    // Use type index comparison instead of constructor.name to avoid minification issues
+    const TankClass = (this.constructor as typeof ClientWorld).types[3]; // Tank is registered as type index 3
+    if (obj.constructor === TankClass) {
+      const tankIndex = this.tanks.indexOf(obj);
+      if (tankIndex !== -1) {
+        this.tanks.splice(tankIndex, 1);
+      }
+    }
+
+    // Clear the cell's back-reference, but only if it still points at this object.
+    const cell = obj.cell;
+    if (cell) {
+      let changed = false;
+      if (cell.pill === obj) { delete cell.pill; changed = true; }
+      if (cell.base === obj) { delete cell.base; changed = true; }
+      if (changed && cell.retile) cell.retile();
+    }
+
+    this.objects[idx] = null;
   }
 
   netUpdate(obj: any, data: number[], offset: number): number {
