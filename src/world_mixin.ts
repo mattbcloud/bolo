@@ -4,6 +4,8 @@
  * Common logic between all bolo world classes.
  */
 
+import { ForestRegrowth } from './forest_regrowth';
+
 export interface BoloWorldMixin {
   tanks: any[];
   authority: boolean;
@@ -14,6 +16,7 @@ export interface BoloWorldMixin {
   removeTank(tank: any): void;
   reclaimTeamObjects(tank: any): void;
   getAllMapObjects(): any[];
+  growForest(): any;
   spawnMapObjects(): void;
   resolveMapObjectOwners(): void;
   insert(obj: any): void;
@@ -109,6 +112,20 @@ export const BoloWorldMixin = {
     if (this.tanks.length === 0 && this.emptyStartTime !== undefined) {
       this.emptyStartTime = Date.now();
     }
+  },
+
+  // Terrain
+
+  /**
+   * Forest regrowth, one tick (see forest_regrowth.ts). Authoritative worlds only: the server,
+   * offline play and the headless harness. A networked client gets new trees as map changes.
+   * Uses the world's own random source if it has one. Returns the cell a tree grew on, if any.
+   */
+  growForest(this: any): any {
+    if (!this.authority || !this.map) return null;
+    this._forestRegrowth ??= new ForestRegrowth();
+    const random = typeof this.random === 'function' ? () => this.random() : Math.random;
+    return this._forestRegrowth.tick(this.map, random);
   },
 
   // Map helpers

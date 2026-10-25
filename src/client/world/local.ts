@@ -117,6 +117,9 @@ export class BoloLocalWorld extends NetLocalWorld {
   tick(): void {
     super.tick();
 
+    // Forest regrowth: this world is its own authority (offline play, the headless harness).
+    this.growForest();
+
     // Step the newswire crawl one tick. Driven from the world tick and not rAF: a hidden tab
     // suspends rAF entirely and freezes timers for tens of seconds, and the right degradation
     // is a stalled crawl whose queue survives, not a dropped one.

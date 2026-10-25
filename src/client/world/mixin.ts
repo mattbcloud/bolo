@@ -42,6 +42,7 @@ export interface IBoloClientWorldMixin {
   getAllMapObjects(): any[];
   spawnMapObjects(): void;
   resolveMapObjectOwners(): void;
+  growForest(): any;
   insert(obj: any): void;
 }
 
