@@ -574,6 +574,9 @@ export class Tank extends BoloObject {
       if (this.y! % TILE_SIZE_WORLD >= halftile) this.y!++;
       else this.y!--;
       this.speed = max(0.0, this.speed - 1);
+      // The tile must follow the position, or the nudge rocks the tank across the tile's edge for
+      // good: still registered on the solid tile, it can neither drive nor turn.
+      this.followPosition();
     }
 
     // Tank-tank collision: push apart so two tanks never stack on one tile. The old code nudged
@@ -582,8 +585,9 @@ export class Tank extends BoloObject {
     // each tank away from the other ALONG THE LINE BETWEEN THEIR CENTRES, proportional to the
     // overlap, so both tanks settle ~COLLISION_DIST apart within a few ticks (winbolo's escalating
     // nudge, done proportionally instead of with a running counter). Capped per tick so it can't
-    // teleport or shove a tank through a wall. Runs BEFORE move() (see update order), so the
-    // separation holds against the tanks' drive toward each other.
+    // teleport. Runs BEFORE move() (see update order), so the separation holds against the tanks'
+    // drive toward each other. Each axis of the push is applied only if it doesn't carry the tank
+    // into a wall, by the same test move() uses: a shove stops where driving would.
     const COLLISION_DIST = 272;   // ~1 tile — keep tank centres about a tile apart (no overlap)
     const MAX_PUSH = 24;          // > any land drive speed, so the push wins the tug-of-war
     for (const other of this.world.tanks) {
@@ -599,9 +603,26 @@ export class Tank extends BoloObject {
       }
       const len = Math.max(1, Math.hypot(ox, oy));
       const push = Math.min(MAX_PUSH, (COLLISION_DIST - d) / 2 + 1);
-      this.x! += Math.round((ox / len) * push);
-      this.y! += Math.round((oy / len) * push);
+      const px = Math.round((ox / len) * push);
+      const py = Math.round((oy / len) * push);
+      if (px !== 0 && this.world.map.cellAtWorld(this.x! + px + (px > 0 ? 64 : -64), this.y!).getTankSpeed(this) !== 0) {
+        this.x! += px;
+      }
+      if (py !== 0 && this.world.map.cellAtWorld(this.x!, this.y! + py + (py > 0 ? 64 : -64)).getTankSpeed(this) !== 0) {
+        this.y! += py;
+      }
     }
+    this.followPosition();
+  }
+
+  /**
+   * After fixPosition() moves the tank, bring its tile up to date, with the same effects as
+   * driving onto a new tile (a mine, the water's edge).
+   */
+  followPosition(): void {
+    const oldcell = this.cell;
+    this.updateCell();
+    if (this.cell !== oldcell) this.checkNewCell(oldcell);
   }
 
   move(): void {
