@@ -442,16 +442,10 @@ describe('NewswireTicker', () => {
     expect(ticker.lineText(0)).toBe(lane(''));
   });
 
-  it('persists the visibility toggle', () => {
-    const first = makeTicker();
-    expect(first.isVisible()).toBe(true);
-    first.toggle();
-    expect(first.isVisible()).toBe(false);
-    expect(first.element.style.display).toBe('none');
-
-    const second = makeTicker();
-    expect(second.isVisible()).toBe(false);
-    second.setVisible(true);
-    expect(makeTicker().isVisible()).toBe(true);
+  it('is always shown, even for a player who hid it when that was still possible', () => {
+    // The old show/hide key saved its choice here; the newswire no longer reads it.
+    localStorage.setItem('hud-newswire-visible', '0');
+    expect(makeTicker().element.style.display).toBe('');
+    localStorage.removeItem('hud-newswire-visible');
   });
 });

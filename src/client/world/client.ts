@@ -725,7 +725,6 @@ export class BoloClientWorld extends ClientWorld {
       pillboxView: 'KeyP',
       overview: 'KeyO',
       toggleBrain: 'KeyB',
-      toggleNewswire: 'KeyN',
       autoSlowdown: true,
       autoGunsight: true
     };
@@ -957,23 +956,6 @@ export class BoloClientWorld extends ClientWorld {
               <label style="width: 120px;">Toggle overview:</label>
               <input type="text" readonly class="key-input" data-binding="overview"
                 value="${getFriendlyKeyName(keys.overview)}"
-                style="
-                  width: 80px;
-                  border: 1px solid black;
-                  background: white;
-                  padding: 4px;
-                  text-align: center;
-                  cursor: pointer;
-                  font-family: 'Chicago', 'Charcoal', monospace;
-                  font-size: 12px;
-                ">
-            </div>
-
-            <div style="font-weight: bold; margin-bottom: 8px;">Newswire</div>
-            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-              <label style="width: 120px;">Show/hide:</label>
-              <input type="text" readonly class="key-input" data-binding="toggleNewswire"
-                value="${getFriendlyKeyName(keys.toggleNewswire)}"
                 style="
                   width: 80px;
                   border: 1px solid black;

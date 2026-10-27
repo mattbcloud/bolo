@@ -142,7 +142,6 @@ export class NewswireTicker {
   private tickCounter = 0;
   /** True while nothing is queued and the crawl is entirely blank — skips repainting. */
   private idle = true;
-  private visible = true;
 
   // ── Header state ───────────────────────────────────────────────────────────
   /**
@@ -172,8 +171,6 @@ export class NewswireTicker {
     this.crawlElement.className = 'newswire-line newswire-crawl';
     this.element.appendChild(this.crawlElement);
 
-    this.visible = readVisiblePreference();
-    this.applyVisibility();
     this.paintHeader();
     this.paintCrawl();
   }
@@ -398,30 +395,6 @@ export class NewswireTicker {
     return this.headerLine.join('');
   }
 
-  // ── Visibility ─────────────────────────────────────────────────────────────
-
-  isVisible(): boolean {
-    return this.visible;
-  }
-
-  setVisible(visible: boolean): void {
-    this.visible = visible;
-    this.applyVisibility();
-    try {
-      localStorage.setItem(VISIBLE_KEY, visible ? '1' : '0');
-    } catch {
-      // Private browsing / storage disabled — the toggle just won't persist.
-    }
-  }
-
-  toggle(): void {
-    this.setVisible(!this.visible);
-  }
-
-  private applyVisibility(): void {
-    this.element.style.display = this.visible ? '' : 'none';
-  }
-
   // ── Test / debug accessors ─────────────────────────────────────────────────
 
   /**
@@ -471,16 +444,6 @@ export class NewswireTicker {
 
   destroy(): void {
     this.element.textContent = '';
-  }
-}
-
-const VISIBLE_KEY = 'hud-newswire-visible';
-
-function readVisiblePreference(): boolean {
-  try {
-    return localStorage.getItem(VISIBLE_KEY) !== '0';
-  } catch {
-    return true;
   }
 }
 
