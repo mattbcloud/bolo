@@ -263,6 +263,9 @@ export const BoloClientWorldMixin = {
     const handleKeydown = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      // A held key's auto-repeat: the first keydown started the action and the keyup stops it.
+      // Below the preventDefault, so a held Tab or Space still can't act on the page.
+      if (e.repeat) return;
       const code = e.code;
 
       // Overview map: toggles from anywhere. While it's open every other key is
