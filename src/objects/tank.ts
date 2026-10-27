@@ -500,8 +500,11 @@ export class Tank extends BoloObject {
       return;
     }
 
-    // Place the mine
+    // Place the mine. Only the authority does: a player's game learns of mines from the server,
+    // which with hidden mines on tells only those who may see each one.
+    if (!this.world.authority) return;
     behindCell.setType(null, true, 0);
+    this.world.mineLaid?.(behindCell, this, true);
     this.mines--;
     this.soundEffect(sounds.MAN_LAY_MINE);
   }

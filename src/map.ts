@@ -987,7 +987,11 @@ export class Map {
   /**
    * Dump the map to an array of octets in BMAP format.
    */
-  dump(options?: { noPills?: boolean; noBases?: boolean; noStarts?: boolean }): number[] {
+  /**
+   * Serialize the map. `noMines` leaves out every mine but the mined sea round the edge (hidden
+   * mines: the server sends each player the mines they may see separately).
+   */
+  dump(options?: { noPills?: boolean; noBases?: boolean; noStarts?: boolean; noMines?: boolean }): number[] {
     options = options || {};
 
     // Private helper for collecting consecutive cells of the same type.
@@ -998,7 +1002,8 @@ export class Map {
 
       for (let x = 0; x < row.length; x++) {
         const cell = row[x];
-        const num = cell.getNumericType();
+        let num = cell.getNumericType();
+        if (options!.noMines && cell.mine && !cell.isEdgeCell() && num >= 8) num -= 8;
 
         if (currentType === num) {
           count++;

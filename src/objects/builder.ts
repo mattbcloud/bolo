@@ -338,7 +338,12 @@ export class Builder extends BoloObject {
         break;
       case this.states.actions.mine:
         if (this.cell.base || this.cell.pill || this.cell.isType('^', ' ', '|', 'b', '}')) break;
-        this.cell.setType(null, true, 0);
+        // Only the authority lays it: a player's game learns of mines from the server, which with
+        // hidden mines on tells only those who may see each one.
+        if (this.world.authority) {
+          this.cell.setType(null, true, 0);
+          this.world.mineLaid?.(this.cell, this.owner.$, false);
+        }
         this.hasMine = false;
         this.soundEffect(sounds.MAN_LAY_MINE);
         break;

@@ -334,3 +334,37 @@ describe('bug 14 safety net: _reconcilePillCells repairs wrong cell references',
     expect(world.map.pills.every((p: any) => p.cell.pill === p)).toBe(true);
   });
 });
+
+describe('mines: only the server lays them (hidden mines)', () => {
+  // A player's game also runs other tanks' and builders' code. If it laid their mines itself, an
+  // enemy's hidden mine would appear on that player's map whatever the server sent.
+  it('a client tank dropping a mine leaves the ground clear; a server tank lays it', () => {
+    for (const authority of [false, true]) {
+      const world = makeWorld(authority);
+      const [x, y] = findOpenGrass(world);
+      placeTank(world, x, y);
+      const tank = world.player;
+      tank.direction = 0;                          // east, so it drops to the west
+      tank.mines = 10;
+      tank.layingMine = true;
+      tank.layMine();
+      expect([authority, world.map.cellAtTile(x - 1, y).mine]).toEqual([authority, authority]);
+    }
+  });
+
+  it('a client builder at a mine order leaves the ground clear; a server builder lays it', () => {
+    for (const authority of [false, true]) {
+      const world = makeWorld(authority);
+      const [x, y] = findOpenGrass(world);
+      placeTank(world, x, y);
+      const builder = world.player.builder.$;
+      world.player.mines = 10;
+      builder.performOrder('mine', 0, world.map.cellAtTile(x - 1, y));
+      builder.x = tileToBWorld(x - 1);
+      builder.y = tileToBWorld(y);
+      builder.updateCell();
+      builder.reached();
+      expect([authority, world.map.cellAtTile(x - 1, y).mine]).toEqual([authority, authority]);
+    }
+  });
+});

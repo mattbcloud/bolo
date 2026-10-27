@@ -34,6 +34,7 @@ import { pack } from '../struct';
 
 import connect from 'connect';
 import { mountStatic } from './static';
+import { HiddenMines, mineVisibleTo, minesVisibleTo } from './hidden_mines';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -84,6 +85,9 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   //   'strict'     respawn 0 bullets ALWAYS (even first spawn); 0 mines, 0 trees.
   // No victory condition — the "all bases owned" lockout is emergent from the ammo economy.
   gameMode: 'open' | 'tournament' | 'strict' = 'open';
+  // Hidden mines (see hidden_mines.ts): each player is told only about the mines they may see.
+  hiddenMines: boolean = false;
+  private hiddenMinesState = new HiddenMines();
 
   // Methods from BoloWorldMixin (applied via helpers.extend at the bottom of the file)
   boloInit!: () => void;
@@ -200,6 +204,9 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // Forest regrowth, as in 1989 (forest_regrowth.ts, shared with the offline world).
     this.growForest();
 
+    // Hidden mines: each tank finds any hidden mine on the square in front of it.
+    if (this.hiddenMines) this.hiddenMinesState.detect(this.map, this.tanks);
+
     if (++this._stateDumpTick % 50 === 0) this._dumpAuthoritativeState();
 
     this.sendPackets();
@@ -265,6 +272,27 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
   }
 
   /**
+   * A mine was laid on `cell` by `tank`, dropped from its back or buried by its builder.
+   */
+  mineLaid(cell: any, tank: any, dropped: boolean): void {
+    if (this.hiddenMines) this.hiddenMinesState.laid(cell, tank, dropped, this.tanks);
+  }
+
+  /**
+   * The MAPCHANGE messages that show `tank`'s player the mines on `cells` it may see. With hidden
+   * mines on, the shared packet carries no mines; these follow it, to each player separately.
+   */
+  private visibleMineChanges(cells: Iterable<any>, tank: any): number[] {
+    let data: number[] = [];
+    for (const cell of cells) {
+      if (!mineVisibleTo(cell, tank) || cell.isEdgeCell()) continue;
+      data = data.concat([net.MAPCHANGE_MESSAGE],
+        pack('BBBBf', cell.x, cell.y, cell.type.ascii.charCodeAt(0), cell.life, true));
+    }
+    return data;
+  }
+
+  /**
    * Record map changes.
    */
   mapChanged(cell: any, oldType: string, hadMine: boolean, oldLife: number): void {
@@ -318,7 +346,8 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     // Send the current map state. We don't send pillboxes and bases, because the client
     // receives create messages for those, and then fills the map structure based on those.
     // The client expects this as a separate message.
-    let packet: any = this.map.dump({ noPills: true, noBases: true });
+    // With hidden mines on, it carries no mines: they follow at sync, once the player's team is known.
+    let packet: any = this.map.dump({ noPills: true, noBases: true, noMines: this.hiddenMines });
     packet = Buffer.from(packet).toString('base64');
     ws.send(packet);
 
@@ -373,6 +402,7 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
                   `tank idx=${ws.tank.idx}) — server saw code=${code}${reason ? ` reason=${reason}` : ''}`);
       // Announce BEFORE destroy() — afterwards the tank is gone and the name with it.
       this.newswire('player_quit', { name: playerName, team: ws.tank.team });
+      this.hiddenMinesState.forget(ws.tank);
       this.destroy(ws.tank);
       console.log(`[PLAYERS] Total tanks remaining: ${this.tanks.length}`);
     }
@@ -788,6 +818,15 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       }
     }
 
+    // Hidden mines: the cells changed this tick, before changesPacket() clears the list. Each
+    // player is shown the mines among them that they may see.
+    const changedCells = new Set<any>();
+    if (this.hiddenMines) {
+      for (const change of this.changes) {
+        if (change[0] === 'mapChange') changedCells.add(this.map.cellAtTile(change[1], change[2]));
+      }
+    }
+
     // Check if any clients need initial sync
     const newClients = this.clients.filter(c => c.needsInitialSync);
     const hasNewClients = newClients.length > 0;
@@ -799,16 +838,28 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
     let smallPacket: any;
     let largePacket: any;
 
+    let smallData: number[];
+    let largeData: number[];
     if (this.oddTick) {
-      smallPacket = this.changesPacket(true);
-      smallPacket = Buffer.from(smallPacket).toString('base64');
-      largePacket = smallPacket;
+      smallData = this.changesPacket(true);
+      largeData = smallData;
     } else {
-      smallPacket = this.changesPacket(false);
-      largePacket = smallPacket.concat(this.updatePacket());
-      smallPacket = Buffer.from(smallPacket).toString('base64');
-      largePacket = Buffer.from(largePacket).toString('base64');
+      smallData = this.changesPacket(false);
+      largeData = smallData.concat(this.updatePacket());
     }
+    smallPacket = Buffer.from(smallData).toString('base64');
+    largePacket = largeData === smallData ? smallPacket : Buffer.from(largeData).toString('base64');
+
+    // With hidden mines on, a player who may see mines in this tick's changes, or has just found
+    // some, gets them added to the end of their own copy of the packet.
+    const minesFor = (client: any): number[] => {
+      if (!this.hiddenMines || !client.tank) return [];
+      const cells = new Set(changedCells);
+      for (const cell of this.hiddenMinesState.takeRevealed(client.tank)) cells.add(cell);
+      return this.visibleMineChanges(cells, client.tank);
+    };
+    const withMines = (data: number[], packet: string, mines: number[]): string =>
+      mines.length ? Buffer.from(data.concat(mines)).toString('base64') : packet;
 
     // For new clients, create a separate full sync packet
     let newClientPacket: any;
@@ -931,6 +982,15 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
         }
         client.catchupChanges = null;
 
+        // Hidden mines: the connect-time map and the shared changes carried none, so send every
+        // mine this player may see — their team's, and any they found before (a rejoin is a new
+        // tank, so none).
+        if (this.hiddenMines) {
+          this.hiddenMinesState.takeRevealed(client.tank);
+          const mines = this.visibleMineChanges(minesVisibleTo(this.map, client.tank), client.tank);
+          if (mines.length) client.send(Buffer.from(mines).toString('base64'));
+        }
+
         // Send welcome packet
         const welcomePacket = Buffer.from(pack('BH', net.WELCOME_MESSAGE, client.tank.idx)).toString('base64');
         client.send(welcomePacket);
@@ -970,16 +1030,17 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
       // objects that cause "Message length mismatch" over-reads on every subsequent UPDATE.
       if (client.justSynchronized) {
         client.justSynchronized = false;
-        client.send(smallPacket);  // Changes (CREATE/DESTROY) but no UPDATE
+        client.send(withMines(smallData, smallPacket, minesFor(client)));  // Changes (CREATE/DESTROY) but no UPDATE
         if (teamScoresPacket) client.send(teamScoresPacket);
         continue;
       }
 
+      const mines = minesFor(client);
       if (client.heartbeatTimer > 40) {
-        client.send(smallPacket);
+        client.send(withMines(smallData, smallPacket, mines));
         client.heartbeatTimer++;  // keep climbing so the stale-client reaper can fire
       } else {
-        client.send(largePacket);
+        client.send(withMines(largeData, largePacket, mines));
         client.heartbeatTimer++;
       }
       client.sinceMessage++;
@@ -1062,7 +1123,9 @@ export class BoloServerWorld extends ServerWorld implements BoloWorldMixinInterf
         case 'mapChange': {
           const x = change[1], y = change[2], ascii = change[3], life = change[4], mine = change[5];
           const asciiCode = ascii.charCodeAt(0);
-          const packed = pack('BBBBf', x, y, asciiCode, life, mine);
+          // With hidden mines on, nobody is told about a mine here; each player who may see it
+          // gets it separately (visibleMineChanges).
+          const packed = pack('BBBBf', x, y, asciiCode, life, mine && !this.hiddenMines);
           data = data.concat([net.MAPCHANGE_MESSAGE], packed);
           break;
         }
@@ -1259,7 +1322,7 @@ export class Application {
         req.on('data', (chunk: any) => body += chunk);
         req.on('end', () => {
           try {
-            const { mapName, gameMode } = JSON.parse(body);
+            const { mapName, gameMode, hiddenMines } = JSON.parse(body);
             const mapDescriptor = this.maps.get(mapName);
 
             if (!mapDescriptor) {
@@ -1282,7 +1345,7 @@ export class Application {
               }
 
               try {
-                const game = this.createGame(data, gameMode);
+                const game = this.createGame(data, gameMode, hiddenMines === true);
                 game.map.name = mapName; // Store map name for reference
 
                 res.setHeader('Content-Type', 'application/json');
@@ -1381,7 +1444,7 @@ export class Application {
     return gid;
   }
 
-  createGame(mapData: Buffer, gameMode: 'open' | 'tournament' | 'strict' = 'open'): any {
+  createGame(mapData: Buffer, gameMode: 'open' | 'tournament' | 'strict' = 'open', hiddenMines = false): any {
     const map = WorldMap.load(mapData);
 
     const gid = this.createGameId();
@@ -1390,7 +1453,8 @@ export class Application {
     game.gid = gid;
     game.url = `${this.options.general.base}/match/${gid}`;
     game.gameMode = (gameMode === 'tournament' || gameMode === 'strict') ? gameMode : 'open';
-    console.log(`Created game '${gid}' (mode: ${game.gameMode})`);
+    game.hiddenMines = hiddenMines;
+    console.log(`Created game '${gid}' (mode: ${game.gameMode}, hidden mines: ${hiddenMines ? 'on' : 'off'})`);
     this.startLoop();
 
     return game;

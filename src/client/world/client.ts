@@ -477,7 +477,7 @@ export class BoloClientWorld extends ClientWorld {
         <div id="create-game-section">
           <h2 style="margin: 20px 0 10px 0; font-size: 14px;">Create New Game</h2>
           <div style="margin-bottom: 10px; font-size: 12px;">
-            <label for="map-select" style="display: inline-block; width: 72px;">Select Map:</label>
+            <label for="map-select" style="display: inline-block; width: 92px; white-space: nowrap;">Select Map:</label>
             <select id="map-select" style="
               margin-left: 10px;
               padding: 4px 8px;
@@ -492,7 +492,7 @@ export class BoloClientWorld extends ClientWorld {
             </select>
           </div>
           <div style="margin-bottom: 10px; font-size: 12px;">
-            <label for="mode-select" style="display: inline-block; width: 72px;">Game Mode:</label>
+            <label for="mode-select" style="display: inline-block; width: 92px; white-space: nowrap;">Game Mode:</label>
             <select id="mode-select" style="
               margin-left: 10px;
               padding: 4px 8px;
@@ -506,6 +506,12 @@ export class BoloClientWorld extends ClientWorld {
               <option value="tournament">Tourney</option>
               <option value="strict">Strict</option>
             </select>
+          </div>
+          <div style="margin-bottom: 10px; font-size: 12px; display: flex; align-items: center;">
+            <label for="hidden-mines" style="display: inline-block; width: 92px; white-space: nowrap;">Hidden Mines:</label>
+            <!-- system.css draws the box on the empty label that follows the (hidden) input. 13px puts
+                 it under the dropdowns: their 10px margin plus the space the flex row drops. -->
+            <input type="checkbox" id="hidden-mines"><label for="hidden-mines" aria-label="Hidden Mines" style="margin-left: 13px; height: 13px;"></label>
           </div>
           <button id="create-game-btn" class="btn" disabled>Create Game</button>
         </div>
@@ -677,12 +683,14 @@ export class BoloClientWorld extends ClientWorld {
 
     const mapName = select.value;
     const gameMode = (document.getElementById('mode-select') as HTMLSelectElement)?.value || 'open';
+    // Mines visible only to the team that laid them (and to enemies who find them).
+    const hiddenMines = !!(document.getElementById('hidden-mines') as HTMLInputElement)?.checked;
 
     try {
       const response = await fetch('/api/games', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mapName, gameMode })
+        body: JSON.stringify({ mapName, gameMode, hiddenMines })
       });
 
       const game = await response.json();

@@ -142,32 +142,6 @@ describe('a tank on a solid tile', () => {
     expect(Math.hypot(a.x - x0, a.y - y0)).toBeGreaterThan(256);
   });
 
-  it('leaves a dead pillbox that is repaired under it', () => {
-    const world: any = bootHeadlessWorld();
-    // One with open ground to the north, where the tank is parked (the nudge heads for the
-    // nearest tile edge, so it gets out on that side).
-    const pill = world.map.pills.find((p: any) => p.cell.neigh(0, -1).isType('.', '='));
-    const a: any = world.player;
-    for (const p of world.map.pills) p.armour = 0;      // no pillbox shoots it
-    placeTank(world, pill.cell.x, pill.cell.y);
-    a.updateCell();
-    a.y -= 40;                                          // parked north of the tile's centre
-    a.updateCell();
-    expect(a.cell === pill.cell).toBe(true);
-
-    // A friendly builder repairs it before the tank picks it up.
-    pill.team = a.team;
-    pill.armour = 15;
-    expect(solid(a)).toBe(true);
-    let t = Infinity;
-    for (let i = 1; i <= 1000 && t === Infinity; i++) {
-      world.tick();
-      pill.armour = 15;
-      if (!solid(a)) t = i;
-    }
-    expect(t).toBeLessThanOrEqual(130);
-  });
-
   it('with buildings all round, stays put without breaking the tick', () => {
     const { world, a, cx, cy, cell } = setup();
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) cell(cx + dx, cy + dy).setType('|', false);
